@@ -70,6 +70,21 @@ number of frames — see `frames_per_cycle`/`achieved_frequency_hz` in
 CSV/Parquet export). That math is trustworthy on its own — what it *can't* catch is dropped
 frames on real hardware, which is exactly what the diode capture is for.
 
+**Don't hand-derive the statistics below from the raw CSV.** Run the analyzer instead:
+
+```powershell
+.venv\Scripts\python.exe tests\manual_hardware\analyze_verification_run.py `
+  --events-csv "<path the manual_hardware script printed>"
+```
+
+It prints inter-flip interval mean/stddev/outlier count, trigger-to-flip latency, a trigger-code
+breakdown, the requested-vs-achieved frequency echo, and an RT summary — the exact numbers to
+put next to the oscilloscope capture. `--refresh-rate-hz` is auto-detected from a logged
+`refresh_rate_measured` event for FPVS runs; pass it explicitly for Dummy runs (which don't
+measure a refresh rate) or to override. See `src/xpman/core/verification_report.py` for what
+each number does and doesn't cover — notably, trigger pulse width/voltage still has to come
+from the scope directly; the event log can't tell you that.
+
 ## What to measure, every time
 
 For a fixed-duration run (e.g. 5 minutes at a fixed base frequency) on **both** apps, capture
@@ -90,6 +105,19 @@ and compare:
 Target: xpman's jitter/drop-rate and RT-recording accuracy should be at least as good as the
 legacy app's — PsychoPy's published timing benchmarks suggest this is likely, but it must be
 measured on the lab's actual hardware, not assumed.
+
+**Item 2 has a real fix behind it already (2026-07-02).** Building the analyzer above and
+running it against a real (not synthetic) event log surfaced an actual bug: `hardware/clock.py`
+wrapped a freshly-constructed `psychopy.core.Clock()`, which starts its own timeline at
+*construction* time -- not the same timeline `Window.flip()`'s return value uses (PsychoPy's
+global monotonic clock, started at `psychopy.core` import time). Comparing `trigger_sent`
+against `flip` timestamps silently produced ~9.5 *seconds* of bogus "latency" instead of the
+real sub-millisecond figure. Fixed by making `Clock.get_time()` read PsychoPy's global clock
+directly by default (see that file's module docstring for the full story) -- confirmed fixed
+by re-running the same real event log through the analyzer and seeing a plausible ~0.04ms
+instead. This was never visible in unit tests (they mock `Window.flip()`, so the epoch mismatch
+never manifested) -- another point for actually running the manual-hardware scripts rather than
+trusting `pytest` alone.
 
 ## When to run this
 

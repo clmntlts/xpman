@@ -6,10 +6,22 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
 
 ## Hardware verification (blocking real EEG use)
 
+- [x] Analysis tooling for the lab visit — `tests/manual_hardware/analyze_verification_run.py`
+      + `core/verification_report.py` turn a Run's `events.csv` into the inter-flip
+      interval/trigger-latency/trigger-code/frequency/RT statistics
+      `docs/verification_protocol.md` calls for, instead of hand-deriving them at the lab.
+      Building this and running it against a *real* event log (not just synthetic unit-test
+      rows) caught a real, previously-invisible bug: `hardware/clock.py` wrapped a freshly
+      constructed `psychopy.core.Clock()`, whose timeline doesn't match `Window.flip()`'s
+      return value (PsychoPy's global monotonic clock) -- comparing them silently produced
+      ~9.5 *seconds* of bogus "trigger-to-flip latency" instead of the real ~0.04ms. Fixed;
+      see that file's module docstring and `docs/verification_protocol.md` for the full story.
+      Unit tests never caught this because they mock `Window.flip()`.
 - [ ] **Run the full verification protocol at the lab** (`docs/verification_protocol.md`):
       inter-flip interval jitter, trigger-to-flip latency, trigger pulse width/codes, RT
       calibration — dummy task first, then FPVS. Nothing here has been measured on real
-      hardware yet; everything is built to a specification, not confirmed against it.
+      hardware yet; everything is built to a specification, not confirmed against it. (The
+      *tooling* to analyze it is now ready — see above — only the physical lab visit remains.)
 - [ ] Close [open_questions.md #2](docs/open_questions.md): confirm whether the *legacy app*
       drops frames at the lab's actual monitor refresh rate, for the side-by-side comparison.
 - [ ] Close [open_questions.md #4](docs/open_questions.md): confirm trigger-fires-after-flip
@@ -39,11 +51,14 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       (swaps `order_index` with the immediate sibling) rather than drag-drop — no new
       schema/drag-drop infrastructure needed since `order_index` was already a plain settable
       field. Disabled (not hidden) at the first/last position.
-- [ ] **"Test condition" dry-run preview** (`TaskModule.test_condition`) — the ABC method
-      exists (`tasks/base.py`) but nothing in the GUI calls it. Needs a live `TaskContext`
-      (real PsychoPy window), architecturally closer to the Launch flow (its own subprocess,
-      like `launch_worker.py`) than a simple dialog — deliberately deferred, not bundled with
-      the GUI-completeness pass below.
+- [ ] **"Test condition" dry-run preview** (`TaskModule.test_condition`) — bigger than it
+      looks: confirmed neither `DummyTask` nor `FPVSTask` overrides it, both only inherit the
+      ABC's no-op default, so wiring GUI plumbing to it today would call a method that does
+      nothing observable. Needs real preview *behavior* written into each task first (e.g. a
+      short, unscored run of `run_trial`'s stimulus/timing/triggers), *then* a live
+      `TaskContext` (real PsychoPy window) to run it against, architecturally closer to the
+      Launch flow (its own subprocess, like `launch_worker.py`) than a simple dialog — a real
+      follow-up feature, not a quick addition.
 - [x] **"Check triggers" conflict checker** (`TaskModule.check_triggers`) — wired into a
       "Check Triggers..." action on Condition nodes; shows returned warnings in a QMessageBox.
 - [x] Edit dialogs for Subject/Program/Experiment/Condition/Block metadata fields (name, etc.)
@@ -83,6 +98,8 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
 - [ ] Task types beyond dummy/FPVS (e.g. "Crowding") — explicitly out of scope until real
       reference behavior exists; the legacy app has a parameter schema for it but zero
       compiled behavior to reverse-engineer from.
-- [ ] CI pipeline (tests currently run locally only; no GitHub Actions workflow yet).
+- [x] ~~CI pipeline~~ — stale: `.github/workflows/ci.yml` already exists (from Phase 0
+      scaffolding) and runs `ruff check` + `pytest` on every push/PR via a `windows-latest`
+      runner.
 - [ ] Multi-monitor / non-Windows support — deliberately out of scope for now, but
       `hardware/display.py`'s interface was written to not preclude it later.
