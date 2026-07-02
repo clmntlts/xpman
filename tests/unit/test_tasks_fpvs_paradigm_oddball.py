@@ -13,8 +13,12 @@ from xpman.hardware.trigger_null import NullTrigger
 from xpman.runtime.logging_sink import EventSink
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
+    OddballParams,
     achieved_frequency_hz,
+    achieved_oddball_frequency_hz,
     frames_per_cycle,
+    oddball_period_stimuli,
+    run_base_oddball_sequence,
     run_base_sequence,
 )
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams, PhotodiodePatch, ToggleStrategy
@@ -303,4 +307,270 @@ def test_result_reflects_rounding_when_frequency_not_exact_divisor(mock_window, 
 def test_params_roundtrip_via_dict():
     params = BaseSequenceParams(base_freq_hz=1.2, trial_duration_seconds=60.0, base_trigger_code=3)
     restored = BaseSequenceParams.model_validate(params.model_dump())
+    assert restored == params
+
+
+# ---------------------------------------------------------------------------
+# oddball_period_stimuli / achieved_oddball_frequency_hz
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "base_freq,oddball_freq,expected_period",
+    [
+        (6.0, 1.2, 5),   # exact divisor
+        (6.0, 2.0, 3),   # exact divisor
+        (6.0, 6.0, 1),   # oddball == base -> every stimulus is an oddball
+        (6.0, 1.0, 6),
+        (6.0, 0.9, 7),   # 6/0.9 = 6.67 -> rounds to 7
+    ],
+)
+def test_oddball_period_stimuli(base_freq, oddball_freq, expected_period):
+    assert oddball_period_stimuli(base_freq, oddball_freq) == expected_period
+
+
+def test_oddball_period_rejects_oddball_exceeding_base():
+    with pytest.raises(ValueError, match="cannot exceed"):
+        oddball_period_stimuli(1.2, 6.0)
+
+
+def test_oddball_period_rejects_non_positive():
+    with pytest.raises(ValueError):
+        oddball_period_stimuli(0.0, 1.0)
+    with pytest.raises(ValueError):
+        oddball_period_stimuli(6.0, 0.0)
+
+
+def test_achieved_oddball_frequency_uses_achieved_base_not_requested():
+    # achieved base freq for 60Hz/7Hz request is 60/9 = 6.667 Hz, not the requested 7.0
+    achieved_base = achieved_frequency_hz(60.0, frames_per_cycle(60.0, 7.0))
+    period = oddball_period_stimuli(7.0, 1.4)  # period computed from the *requested* base freq
+    achieved_oddball = achieved_oddball_frequency_hz(achieved_base, period)
+    assert achieved_oddball == pytest.approx(achieved_base / period)
+    assert achieved_oddball != 1.4
+
+
+def test_oddball_params_roundtrip_via_dict():
+    params = OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=99)
+    restored = OddballParams.model_validate(params.model_dump())
+    assert restored == params
+
+
+# ---------------------------------------------------------------------------
+# run_base_oddball_sequence
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def base_stimuli():
+    return [MagicMock(name=f"base{i}") for i in range(2)]
+
+
+@pytest.fixture()
+def oddball_stimuli():
+    return [MagicMock(name=f"odd{i}") for i in range(2)]
+
+
+def test_empty_base_stimuli_raises(mock_window, oddball_stimuli, event_sink, trigger, clock):
+    with pytest.raises(ValueError, match="base stimulus"):
+        run_base_oddball_sequence(
+            window=mock_window,
+            base_stimuli=[],
+            oddball_stimuli=oddball_stimuli,
+            base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+            oddball_params=OddballParams(oddball_freq_hz=1.2),
+            refresh_rate_hz=60.0,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+        )
+
+
+def test_empty_oddball_stimuli_raises(mock_window, base_stimuli, event_sink, trigger, clock):
+    with pytest.raises(ValueError, match="oddball stimulus"):
+        run_base_oddball_sequence(
+            window=mock_window,
+            base_stimuli=base_stimuli,
+            oddball_stimuli=[],
+            base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+            oddball_params=OddballParams(oddball_freq_hz=1.2),
+            refresh_rate_hz=60.0,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+        )
+
+
+def test_oddball_appears_at_every_kth_position(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
+    # base=6Hz, oddball=1.2Hz -> period=5. 60Hz refresh, 10 frames/stim, 3s trial -> 18 stimuli.
+    result = run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert result.oddball_period_stimuli == 5
+    assert result.n_stimuli_shown == 18
+    # oddballs at positions 5, 10, 15 (1-indexed) -> 3 oddballs
+    assert result.n_oddballs_shown == 3
+    assert result.n_stimuli_shown - result.n_oddballs_shown == 15  # base stimuli shown
+
+
+def test_oddball_pool_used_only_at_oddball_positions(mock_window, event_sink, trigger, clock):
+    base_stim = MagicMock(name="the_base")
+    odd_stim = MagicMock(name="the_odd")
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[base_stim],
+        oddball_stimuli=[odd_stim],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    # 18 stimuli total, 3 oddballs (positions 5,10,15), 15 base -> each drawn once per frame
+    # it's shown for (10 frames/stimulus).
+    assert base_stim.draw.call_count == 15 * 10
+    assert odd_stim.draw.call_count == 3 * 10
+
+
+def test_position_one_is_never_oddball_for_period_greater_than_one(mock_window, event_sink, trigger, clock):
+    base_stim = MagicMock(name="the_base")
+    odd_stim = MagicMock(name="the_odd")
+    # Very short trial -- exactly 1 stimulus shown. With period=5, position 1 must be base.
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[base_stim],
+        oddball_stimuli=[odd_stim],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1 / 60),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert base_stim.draw.called
+    assert not odd_stim.draw.called
+
+
+def test_separate_trigger_codes_for_base_and_oddball(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    # 18 stimuli: 15 base (code 1) + 3 oddball (code 2)
+    assert trigger.codes_sent.count(1) == 15
+    assert trigger.codes_sent.count(2) == 3
+
+
+def test_no_oddball_trigger_when_code_is_none_but_base_trigger_still_sent(
+    mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock
+):
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=None),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert set(trigger.codes_sent) == {1}
+    assert trigger.codes_sent.count(1) == 15
+
+
+def test_photodiode_oddball_onset_only_strategy_toggles_only_at_oddballs(
+    mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock
+):
+    from unittest.mock import patch
+
+    photodiode_params = PhotodiodeParams(toggle_strategy=ToggleStrategy.ODDBALL_ONSET_ONLY)
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        photodiode = PhotodiodePatch(mock_window, photodiode_params)
+
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=photodiode,
+        photodiode_params=photodiode_params,
+    )
+    # 3 oddballs -> toggled 3 times from off: off->on->off->on -> ends "on" (odd count)
+    assert photodiode.is_on is True
+
+
+def test_abort_check_stops_early_and_marks_aborted(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
+    call_count = {"n": 0}
+
+    def abort_after_25_frames():
+        call_count["n"] += 1
+        return call_count["n"] > 25
+
+    result = run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        abort_check=abort_after_25_frames,
+    )
+    assert result.aborted is True
+    assert result.n_frames_presented < 180  # 18 stimuli * 10 frames
+
+
+def test_events_include_oddball_onset_type(mock_window, event_sink, trigger, clock):
+    base_stim = MagicMock(name="the_base")
+    odd_stim = MagicMock(name="the_odd")
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[base_stim],
+        oddball_stimuli=[odd_stim],
+        base_params=BaseSequenceParams(base_freq_hz=30.0, trial_duration_seconds=5 / 30, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=6.0, oddball_trigger_code=2),
+        # 60/30 = 2 frames/stim, period = 30/6 = 5, 5 stimuli requested -> positions 1-4 base, 5 oddball
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    event_sink.close()
+
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    event_types = [r["event_type"] for r in rows]
+    assert "oddball_onset" in event_types
+    assert event_types.count("stimulus_onset") == 4  # positions 1-4
+    assert event_types.count("oddball_onset") == 1  # position 5
+
+
+def test_result_params_roundtrip_via_dict_for_oddball_params():
+    # (kept separate name to avoid clashing with the BaseSequenceParams version above)
+    params = OddballParams()
+    restored = OddballParams.model_validate(params.model_dump())
     assert restored == params
