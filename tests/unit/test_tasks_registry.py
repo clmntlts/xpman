@@ -180,13 +180,16 @@ def test_entry_point_with_bad_module_path_raises_load_error(monkeypatch):
         discover_tasks()
 
 
-def test_real_pyproject_entry_points_are_declared_but_not_required_to_resolve():
-    """Sanity check: the real dummy/fpvs entry points exist in metadata (per pyproject.toml)
-    but this test suite never depends on them successfully importing, since their target
-    modules (xpman.tasks.dummy.task, xpman.tasks.fpvs.task) don't exist yet.
+def test_real_pyproject_entry_points_resolve_to_real_tasks():
+    """The real dummy/fpvs entry points (declared in pyproject.toml back in Phase 0, before
+    either target module existed) now resolve to real, usable TaskModule instances -- both
+    built-in tasks register through the exact same discovery path any third-party plugin
+    would, per registry.py's design.
     """
-    from importlib.metadata import entry_points
+    registry = discover_tasks()
+    assert set(registry.task_ids()) >= {"dummy", "fpvs"}
 
-    real_eps = entry_points(group=GROUP)
-    names = {ep.name for ep in real_eps}
-    assert {"dummy", "fpvs"}.issubset(names)
+    dummy = registry.get("dummy")
+    fpvs = registry.get("fpvs")
+    assert dummy.display_name and fpvs.display_name
+    assert dummy.schema.SCHEMA_VERSION and fpvs.schema.SCHEMA_VERSION

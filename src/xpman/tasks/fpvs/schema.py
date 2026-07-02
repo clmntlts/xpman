@@ -1,0 +1,78 @@
+"""Parameter schema for the FPVS (Fast Periodic Visual Stimulation) task.
+
+Bundles the Condition-level parameters every FPVS building block needs (base/oddball timing,
+stimulus pool selection, fixation, photodiode, response collection) into one Pydantic model,
+satisfying the ``ParameterSchema`` protocol ``tasks/base.py`` defines. Every field has a
+sensible default but nothing is hardcoded -- per the 2026-07-02 product direction, all of this
+is meant to be overridden per Condition, and there is deliberately no default pairing of
+"base = objects, oddball = faces" or similar baked in here: the researcher configures
+``base_selector``/``oddball_selector`` themselves.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+from xpman.tasks.fpvs.fixation import FixationParams
+from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
+from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+from xpman.tasks.fpvs.response import ResponseKeyParams
+
+
+class StimulusSelector(BaseModel):
+    """Filter criteria selecting a subset of the Program's ``resource_main_directory`` as an
+    image pool -- maps onto ``tasks.fpvs.image_set.filter_entries``. Unset (``None``) fields
+    don't filter on that dimension.
+
+    This is a v1 simplification of ``filter_entries``' variant-sentinel semantics: this schema
+    can express "any variant" (``variant=None``) or "exactly this variant"
+    (``variant="negated"``), but not filter_entries' third case of "only images with
+    variant explicitly None (i.e. no fs-variant at all)" -- acceptable since that's a rarer,
+    more advanced case not needed for a first working version.
+    """
+
+    category: str | None = Field(default=None, description='"face", "object", or None for either.')
+    angle_deg: int | None = None
+    eccentricity_deg: float | None = None
+    is_fs: bool | None = None
+    variant: str | None = None
+
+
+class FPVSProgramParams(BaseModel):
+    """No program-level parameters needed yet."""
+
+
+class FPVSExperimentParams(BaseModel):
+    """No experiment-level parameters needed yet."""
+
+
+class FPVSConditionParams(BaseModel):
+    """Everything needed to run one FPVS trial."""
+
+    base: BaseSequenceParams = Field(default_factory=BaseSequenceParams)
+    oddball: OddballParams = Field(default_factory=OddballParams)
+    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    fixation: FixationParams = Field(default_factory=FixationParams)
+    photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
+    response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
+
+
+class FPVSSchema:
+    """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
+
+    SCHEMA_VERSION = "1"
+
+    def program_params_model(self) -> type:
+        return FPVSProgramParams
+
+    def experiment_params_model(self) -> type:
+        return FPVSExperimentParams
+
+    def condition_params_model(self) -> type:
+        return FPVSConditionParams
+
+    def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
+        if old_version == self.SCHEMA_VERSION:
+            return old_version, data
+        raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
