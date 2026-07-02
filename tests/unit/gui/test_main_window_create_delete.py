@@ -151,6 +151,45 @@ def test_menu_for_program_offers_experiment_instance_delete(qtbot, session, regi
     assert "Delete Program" in texts
 
 
+def test_menu_for_instance_offers_launch_when_db_path_known(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    db_path = tmp_path / "xpman.db"
+    window = MainWindow(session, fixture["profile"].id, registry, db_path=db_path, data_dir=tmp_path / "runs")
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "instance", fixture["instance"].id)
+    menu = window._build_context_menu(index)
+    assert "Launch..." in _action_texts(menu)
+
+
+def test_menu_for_instance_omits_launch_when_db_path_unknown(qtbot, session, registry):
+    """No real, shared database file to point a launch subprocess at -- offering "Launch..."
+    would just crash or do something meaningless, so it must not appear at all."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)  # no db_path
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "instance", fixture["instance"].id)
+    menu = window._build_context_menu(index)
+    assert "Launch..." not in _action_texts(menu)
+
+
+def test_launch_instance_opens_launch_dialog_with_correct_args(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    db_path = tmp_path / "xpman.db"
+    data_dir = tmp_path / "runs"
+    window = MainWindow(session, fixture["profile"].id, registry, db_path=db_path, data_dir=data_dir)
+    qtbot.addWidget(window)
+
+    with patch("xpman.gui.main_window.LaunchDialog") as dialog_cls:
+        dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+        window._launch_instance(fixture["instance"].id)
+
+    dialog_cls.assert_called_once_with(
+        session, fixture["instance"].id, fixture["profile"].id, db_path, data_dir, parent=window
+    )
+
+
 def test_menu_for_block_offers_new_trial_and_delete(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)

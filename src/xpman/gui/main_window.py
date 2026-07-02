@@ -16,6 +16,7 @@ between them, not a reimplementation of either.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QPoint, Qt
 from PySide6.QtWidgets import (
@@ -40,6 +41,7 @@ from xpman.gui.dialogs.condition_create_dialog import ConditionCreateDialog
 from xpman.gui.dialogs.confirm import confirm_delete
 from xpman.gui.dialogs.experiment_create_dialog import ExperimentCreateDialog
 from xpman.gui.dialogs.instance_freeze_dialog import InstanceFreezeDialog
+from xpman.gui.dialogs.launch_dialog import LaunchDialog
 from xpman.gui.dialogs.program_create_dialog import ProgramCreateDialog
 from xpman.gui.dialogs.subject_create_dialog import SubjectCreateDialog
 from xpman.gui.dialogs.trial_create_dialog import TrialCreateDialog
@@ -72,12 +74,21 @@ def _resolve_program_params_model(session: Session, registry: TaskRegistry, prog
 
 class MainWindow(QMainWindow):
     def __init__(
-        self, session: Session, profile_id: int, registry: TaskRegistry, parent: QWidget | None = None
+        self,
+        session: Session,
+        profile_id: int,
+        registry: TaskRegistry,
+        parent: QWidget | None = None,
+        *,
+        db_path: Path | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._session = session
         self._profile_id = profile_id
         self._registry = registry
+        self._db_path = db_path
+        self._data_dir = data_dir
         self._current_form: SchemaForm | None = None
         self._current_node: TreeNode | None = None
 
@@ -315,6 +326,12 @@ class MainWindow(QMainWindow):
             if parent_id is not None:
                 menu.addAction("Create Instance...", lambda: self._create_instance(parent_id))
 
+        if node.kind == "instance" and self._db_path is not None:
+            # Only offered when db_path is known (see __init__) -- launching spawns a separate
+            # process that needs to reconnect to a real, shared database file; there's nothing
+            # sensible to launch against an in-memory-only session.
+            menu.addAction("Launch...", lambda: self._launch_instance(node.id))
+
         if node.kind == "experiment":
             menu.addAction("New Condition...", lambda: self._create_condition(node.id))
             menu.addAction("New Block...", lambda: self._create_block(node.id))
@@ -385,6 +402,16 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.refresh()
             self.statusBar().showMessage("Instance created", 3000)
+
+    def _launch_instance(self, instance_id: int) -> None:
+        if self._db_path is None or self._data_dir is None:
+            return
+        dialog = LaunchDialog(
+            self._session, instance_id, self._profile_id, self._db_path, self._data_dir, parent=self
+        )
+        dialog.exec()  # not accept/reject-gated -- the dialog is useful open-ended (progress,
+        # abort, launch again) and only ever closes via its own Close button; nothing here
+        # needs to react to how it was dismissed.
 
     # -- delete actions -----------------------------------------------------------------------
     #
