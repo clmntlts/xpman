@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
+import numpy as np
 from sqlalchemy.orm import Session
 
 from xpman.core.models import Result, Run, RunStatus, Subject
@@ -79,6 +80,16 @@ def _build_trial_sequence(frozen_program: dict, rng: "numpy.random.Generator") -
                         )
                     )
     return sequence
+
+
+def count_trials(frozen_program: dict) -> int:
+    """Total number of trials a Run against this frozen Program tree will execute (respecting
+    each Block's ``repeat_count``). Public wrapper around ``_build_trial_sequence`` for callers
+    that only need the count, e.g. a GUI progress bar's maximum -- shuffle order (which needs a
+    real per-subject rng) doesn't affect the count, so this seeds with a fixed, throwaway rng
+    rather than requiring a caller to have a real Subject/Instance pairing on hand.
+    """
+    return len(_build_trial_sequence(frozen_program, np.random.default_rng(0)))
 
 
 def execute_run(
