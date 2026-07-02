@@ -107,6 +107,7 @@ def test_scan_directory_finds_all_entries(stim_root):
     result = scan_directory(stim_root)
     assert len(result.entries) == 10
     assert result.warnings == []
+    assert all(e.recognized for e in result.entries)
 
 
 def test_scan_directory_angle_eccentricity_entries(stim_root):
@@ -140,43 +141,68 @@ def test_scan_directory_fs_variant_entries(stim_root):
         assert e.eccentricity_deg is None
 
 
-def test_scan_directory_reports_unrecognized_subdirectory(tmp_path):
+def test_scan_directory_unrecognized_subdirectory_images_still_included(tmp_path):
+    """Custom/imported stimuli in a directory that doesn't follow the SepStim naming
+    convention must still show up as usable (if bare) entries -- never silently dropped."""
     root = tmp_path / "SepStim"
     _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "not_a_stimulus_dir" / "readme.txt")
+    _touch(root / "my_own_stimuli" / "photo1.jpg")
+    _touch(root / "my_own_stimuli" / "photo2.png")
 
     result = scan_directory(root)
-    assert len(result.entries) == 1
-    assert any("not_a_stimulus_dir" in w for w in result.warnings)
+    assert len(result.entries) == 3
+    generic = [e for e in result.entries if not e.recognized]
+    assert len(generic) == 2
+    assert {e.path.name for e in generic} == {"photo1.jpg", "photo2.png"}
+    assert all(e.category is None and e.index is None for e in generic)
+    assert any("my_own_stimuli" in w for w in result.warnings)
 
 
-def test_scan_directory_reports_unrecognized_filename(tmp_path):
+def test_scan_directory_skips_non_image_files(tmp_path):
     root = tmp_path / "SepStim"
     _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
     _touch(root / "Face_0 (21.5°)" / "Thumbs.db")
+    _touch(root / "unrecognized_dir" / "readme.txt")
 
     result = scan_directory(root)
-    assert len(result.entries) == 1
+    assert len(result.entries) == 1  # only the one real image; Thumbs.db and readme.txt excluded
     assert any("Thumbs.db" in w for w in result.warnings)
+    assert any("readme.txt" in w for w in result.warnings)
 
 
-def test_scan_directory_reports_category_mismatch(tmp_path):
+def test_scan_directory_unrecognized_filename_in_recognized_dir_included_as_generic(tmp_path):
     root = tmp_path / "SepStim"
-    # Object-prefixed filename inside a Face directory -- a real misfiling scenario.
+    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
+    _touch(root / "Face_0 (21.5°)" / "some_custom_image.bmp")
+
+    result = scan_directory(root)
+    assert len(result.entries) == 2
+    generic = next(e for e in result.entries if e.path.name == "some_custom_image.bmp")
+    assert generic.recognized is False
+    assert generic.category is None
+    assert any("unrecognized filename" in w and "some_custom_image.bmp" in w for w in result.warnings)
+
+
+def test_scan_directory_category_mismatch_included_as_generic(tmp_path):
+    root = tmp_path / "SepStim"
+    # Object-prefixed filename inside a Face directory -- a real misfiling scenario. Still
+    # included (as a bare/generic entry), just flagged, per the "never silently drop" rule.
     _touch(root / "Face_0 (21.5°)" / "Object_001_ori0.bmp")
 
     result = scan_directory(root)
-    assert len(result.entries) == 0
+    assert len(result.entries) == 1
+    assert result.entries[0].recognized is False
     assert any("category mismatch" in w for w in result.warnings)
 
 
-def test_scan_directory_reports_angle_mismatch(tmp_path):
+def test_scan_directory_angle_mismatch_included_as_generic(tmp_path):
     root = tmp_path / "SepStim"
     # Filename says ori90 but it's sitting in the ori0 directory.
     _touch(root / "Face_0 (21.5°)" / "Face_001_ori90.bmp")
 
     result = scan_directory(root)
-    assert len(result.entries) == 0
+    assert len(result.entries) == 1
+    assert result.entries[0].recognized is False
     assert any("angle mismatch" in w for w in result.warnings)
 
 
