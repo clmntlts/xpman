@@ -20,6 +20,7 @@ from xpman.core.models import (
     Experiment,
     Profile,
     Program,
+    Run,
     Subject,
     Trial,
 )
@@ -403,6 +404,29 @@ def delete_trial(session: Session, trial_id: int) -> None:
     trial = _require(session, Trial, trial_id)
     session.delete(trial)
     session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+#
+# Read-only: Run creation/execution is owned by runtime/session.py + runtime/engine.py (a Run
+# is a launch-time record, not a design-time one like the entities above), but list/get
+# helpers belong here for the same reason the rest of this module exists -- so GUI/other code
+# never has to touch SQLAlchemy directly for a simple lookup.
+
+
+def get_run(session: Session, run_id: int) -> Run | None:
+    return session.get(Run, run_id)
+
+
+def list_runs(session: Session, *, instance_id: int | None = None, subject_id: int | None = None) -> list[Run]:
+    stmt = select(Run).order_by(Run.started_at.desc())
+    if instance_id is not None:
+        stmt = stmt.where(Run.instance_id == instance_id)
+    if subject_id is not None:
+        stmt = stmt.where(Run.subject_id == subject_id)
+    return list(session.scalars(stmt))
 
 
 # ---------------------------------------------------------------------------

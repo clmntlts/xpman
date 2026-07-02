@@ -132,3 +132,37 @@ def test_list_programs_scoped_to_profile(session):
 
     assert [p.id for p in repo.list_programs(session, profile_id=p1.id)] == [prog1.id]
     assert len(repo.list_programs(session)) == 2
+
+
+def test_run_get_and_list(session):
+    from datetime import datetime, timezone
+
+    from xpman.core.instance import freeze_program
+    from xpman.core.models import Run, RunStatus
+
+    profile = repo.create_profile(session, name="Dr. Test")
+    subject_a = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    subject_b = repo.create_subject(session, profile_id=profile.id, first_name="Bob", last_name="Smith")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/",
+        task_name="dummy", task_schema_version="1",
+    )
+    session.commit()
+    instance = freeze_program(session, program.id, name="I1")
+    session.commit()
+
+    run_a = Run(instance_id=instance.id, subject_id=subject_a.id, started_at=datetime.now(timezone.utc),
+                xpman_version="0.1.0", status=RunStatus.COMPLETED)
+    run_b = Run(instance_id=instance.id, subject_id=subject_b.id, started_at=datetime.now(timezone.utc),
+                xpman_version="0.1.0", status=RunStatus.ABORTED)
+    session.add_all([run_a, run_b])
+    session.commit()
+
+    assert repo.get_run(session, run_a.id).status == RunStatus.COMPLETED
+    assert repo.get_run(session, 999999) is None
+
+    all_runs = repo.list_runs(session, instance_id=instance.id)
+    assert {r.id for r in all_runs} == {run_a.id, run_b.id}
+
+    subject_a_runs = repo.list_runs(session, subject_id=subject_a.id)
+    assert [r.id for r in subject_a_runs] == [run_a.id]
