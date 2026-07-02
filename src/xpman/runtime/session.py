@@ -46,6 +46,7 @@ def launch_run(
     clock: "Clock",
     data_dir: Path,
     abort_check: Callable[[], bool] = lambda: False,
+    on_run_created: Callable[[Run], None] | None = None,
 ) -> Run:
     """Resolve ``instance_id``/``subject_id``, create a Run, and execute it end to end.
 
@@ -54,6 +55,12 @@ def launch_run(
             ``data_dir/<instance_id>/<subject_id>/<run_id>/events.{csv,parquet}``. Callers
             pass this explicitly (no implicit cwd-relative default) so tests and real launches
             can't accidentally collide or write outside the intended data directory.
+        on_run_created: Optional callback invoked immediately after the ``Run`` row is created
+            and committed (so ``run.id`` is set), *before* any trial executes -- this function
+            otherwise only returns the ``Run`` after the whole sequence finishes, which is too
+            late for a caller that wants to know the run id early (e.g. a GUI launching this in
+            a subprocess and wanting to announce the id right away so the parent process can
+            start polling for progress). Exceptions raised by this callback are not caught.
 
     Raises:
         LookupError: ``instance_id`` or ``subject_id`` doesn't exist.
@@ -86,6 +93,8 @@ def launch_run(
     session.add(run)
     session.commit()  # so run.id exists for the event-log path below, and is durable even if
     # everything after this point fails before execute_run gets a chance to mark CRASHED.
+    if on_run_created is not None:
+        on_run_created(run)
 
     run_dir = data_dir / str(instance.id) / str(subject.id) / str(run.id)
     event_sink = EventSink(csv_path=run_dir / "events.csv", parquet_path=run_dir / "events.parquet")

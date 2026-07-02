@@ -226,3 +226,48 @@ def test_task_exception_marks_run_crashed_and_persists_partial_results(session, 
     results = session.query(Result).filter(Result.run_id == run.id).all()
     assert len(results) == 1
     assert results[0].trial_index == 0
+
+
+def test_on_run_created_fires_early_with_committed_run_id(session, registry, mock_window, tmp_path):
+    """on_run_created must fire right after the Run row is committed -- before any trial runs --
+    so a caller (e.g. a subprocess announcing its run id to a polling parent process) can react
+    before the whole (potentially long) sequence finishes."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    seen_run_ids = []
+
+    def announce(run):
+        seen_run_ids.append(run.id)
+        # The Run row must already be committed/durable at this point, not just constructed.
+        assert session.query(Run).filter(Run.id == run.id).one().id == run.id
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+            on_run_created=announce,
+        )
+
+    assert seen_run_ids == [run.id]
+
+
+def test_on_run_created_is_optional(session, registry, mock_window, tmp_path):
+    """Existing callers that don't pass on_run_created must be completely unaffected."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+    assert run.status == RunStatus.COMPLETED
