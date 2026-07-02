@@ -1,8 +1,10 @@
 """xpman GUI entry point.
 
-Run directly: ``.venv\\Scripts\\python.exe -m xpman.gui.app`` (or via a future packaged exe --
-see docs/architecture.md's packaging section). Opens (creating if missing) the local SQLite
-database, lets the user pick/create a Profile, then opens the main window.
+Run directly: ``.venv\\Scripts\\python.exe -m xpman.gui.app``, via the ``xpman`` console
+script installed by ``pip install .``, or via a packaged PyInstaller build (see
+``scripts/build_windows_exe.ps1`` and docs/architecture.md's packaging section). Opens
+(creating if missing) the local SQLite database, lets the user pick/create a Profile, then
+opens the main window.
 """
 
 from __future__ import annotations
@@ -18,10 +20,28 @@ from xpman.gui.dialogs.profile_select_dialog import ProfileSelectDialog
 from xpman.gui.main_window import MainWindow
 from xpman.tasks.registry import discover_tasks
 
+
+def _default_base_dir() -> Path:
+    """Where ``data/`` should live by default.
+
+    ``__file__`` is unreliable inside a PyInstaller-frozen bundle (it resolves relative to the
+    bundle's internal layout, not a fixed number of parent directories the way the source tree
+    is laid out) -- empirically, resolving a relative frozen ``__file__`` falls back to the
+    current working directory, which is wrong for a packaged app launched via a shortcut with
+    an arbitrary "Start in" folder. ``sys.frozen`` (set by PyInstaller) plus ``sys.executable``
+    is the reliable way to anchor "next to the .exe" regardless of cwd. In a normal (non-frozen)
+    dev checkout, keep the existing convention: the repo root, four levels up from this file
+    (``src/xpman/gui/app.py``).
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
 #: Default local database location. Not configurable via CLI yet -- v1 assumes one researcher,
 #: one machine, one database, matching how the manual hardware-verification scripts already
 #: default their own data_dir under the repo's data/ directory (see docs/architecture.md).
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "xpman.db"
+DEFAULT_DB_PATH = _default_base_dir() / "data" / "xpman.db"
 #: Where per-Run event logs (events.csv/events.parquet) are written -- matches the convention
 #: the manual hardware-verification scripts already use (see docs/architecture.md).
 DEFAULT_DATA_DIR = DEFAULT_DB_PATH.parent / "runs"

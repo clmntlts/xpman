@@ -36,4 +36,4 @@ below are marked accordingly.
   (2026-07-02).
 - Legacy app + HASP dongle still functional for side-by-side comparison: **confirmed working**
   (2026-07-02).
-- License (MIT vs GPL vs other): **undecided**, not blocking Phase 0–3 work.
+- License (MIT vs GPL vs other): **decided (2026-07-02): MIT** — see `LICENSE`.

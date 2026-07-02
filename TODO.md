@@ -35,36 +35,48 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
 
 ## GUI
 
-- [ ] **Drag-drop block/trial reordering.** `order_index` is currently append-only at creation
-      time (see `dialogs/block_create_dialog.py` docstring) — no way to reorder existing
-      blocks/trials from the GUI. Fixing an ordering mistake today means delete-and-recreate.
+- [x] **Block/Trial reordering.** Shipped as "Move Up"/"Move Down" context-menu actions
+      (swaps `order_index` with the immediate sibling) rather than drag-drop — no new
+      schema/drag-drop infrastructure needed since `order_index` was already a plain settable
+      field. Disabled (not hidden) at the first/last position.
 - [ ] **"Test condition" dry-run preview** (`TaskModule.test_condition`) — the ABC method
-      exists (`tasks/base.py`) but nothing in the GUI calls it. Would let a researcher preview
-      a Condition's stimuli/timing without a full subject run.
-- [ ] **"Check triggers" conflict checker** (`TaskModule.check_triggers`) — same story: ABC
-      method exists, unused by the GUI. Would flag duplicate/overlapping trigger codes within
-      a Condition before a researcher runs a subject.
-- [ ] Edit dialogs for Subject/Program/Experiment/Condition/Block/Trial metadata fields (name,
-      etc.) — only the free-form task parameters are editable today via the schema form;
-      renaming a Subject or fixing a typo in a Program name isn't exposed yet.
+      exists (`tasks/base.py`) but nothing in the GUI calls it. Needs a live `TaskContext`
+      (real PsychoPy window), architecturally closer to the Launch flow (its own subprocess,
+      like `launch_worker.py`) than a simple dialog — deliberately deferred, not bundled with
+      the GUI-completeness pass below.
+- [x] **"Check triggers" conflict checker** (`TaskModule.check_triggers`) — wired into a
+      "Check Triggers..." action on Condition nodes; shows returned warnings in a QMessageBox.
+- [x] Edit dialogs for Subject/Program/Experiment/Condition/Block metadata fields (name, etc.)
+      — `*_edit_dialog.py` per entity, wired into the tree's right-click menu next to Delete.
+      (Trial has no separate metadata to edit beyond its Condition assignment and order, both
+      already covered elsewhere.)
 - [ ] A profile-level "switch profile" action without restarting the app (currently only
       offered at launch via `profile_select_dialog.py`).
 
-## Packaging & sharing (Phase 5, not started)
+## Packaging & sharing (Phase 5)
 
-- [ ] `scripts/build_windows_exe.ps1` — PyInstaller one-folder build, tested on a clean
-      machine (planned in `docs/architecture.md`, never written).
-- [ ] `[project.scripts]` console-script entry point (e.g. an `xpman` command) — today the app
-      only launches via `python -m xpman.gui.app`; no entry point in `pyproject.toml`.
-- [ ] License decision (MIT vs GPL vs other) — undecided, tracked in
-      `docs/open_questions.md`'s Logistics section. Blocks adding a `LICENSE` file and any
-      public sharing.
+- [x] `scripts/build_windows_exe.ps1` — PyInstaller one-folder build. Required excluding
+      PsychoPy's unused Builder/Coder IDE and its own dependency tree (`psychopy.app`, `wx`,
+      `gitlab`, `zmq`, `gevent`, `jedi`/`parso`, `tables`, `matplotlib`) — including them via a
+      naive `--collect-all psychopy` both bloated the build and crashed PyInstaller's
+      dependency analysis outright. Also fixed a real bug this surfaced: the default database
+      path (`xpman.gui.app.DEFAULT_DB_PATH`) resolved via `__file__`, which behaves
+      unpredictably in a frozen build and silently fell back to the current working directory
+      instead of anchoring next to the .exe — fixed via a `sys.frozen`-aware
+      `_default_base_dir()`, verified by actually launching the built exe from an unrelated
+      working directory and confirming `data/` lands next to `xpman.exe`.
+- [x] `[project.scripts]` console-script entry point — `xpman` command now available after
+      `pip install -e .`.
+- [x] License decision — **MIT**, see `LICENSE`. `docs/open_questions.md`'s Logistics section
+      updated.
 - [x] README quickstart aimed at a non-technical lab member — `docs/tutorial.md` now covers
       this (screen-by-screen reference, full walkthrough, parameter reference,
-      troubleshooting, FAQ) and is linked from the README.
+      troubleshooting, FAQ) and is linked from the README; README also gained a "Packaged
+      build" section.
 - [ ] Smoke-test the PyInstaller build with `scripts/install_parallel_port_driver.ps1` on a
       machine that isn't this dev box, per the plan's Windows-11 parallel-port driver
-      placement risk.
+      placement risk. (The build itself is verified working; only the parallel-port driver
+      interaction on a genuinely clean machine remains untested.)
 
 ## Nice-to-haves / not yet scoped
 
