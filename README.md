@@ -9,10 +9,10 @@ discontinued proprietary database (db4o). xpman has no licensing dependency, sto
 plain SQLite + Parquet/CSV, and is meant to be freely shared with other labs.
 
 Status: core data model, runtime engine, dummy + FPVS tasks, and the full PySide6 GUI (build
-an experiment, launch a run, view/export results) are working end-to-end. Hardware timing
-verification against a real EEG rig and packaging (standalone installer, license) are still
-open — see [`TODO.md`](TODO.md). See `docs/architecture.md` for the technology choices,
-package layout, data model, and roadmap.
+an experiment, edit/reorder it, launch a run, view/export results) are working end-to-end, and
+xpman now packages into a standalone Windows build (see Setup below). Hardware timing
+verification against a real EEG rig is still open — see [`TODO.md`](TODO.md). See
+`docs/architecture.md` for the technology choices, package layout, data model, and roadmap.
 
 **New to xpman?** [`docs/tutorial.md`](docs/tutorial.md) is the full user-facing walkthrough —
 what every screen does, a step-by-step guide to building and running a real FPVS session, a
@@ -30,6 +30,12 @@ setup/contributing doc; the tutorial is for actually using the app.
 
 ## Setup
 
+**Just want to run xpman, not develop it?** Build (or ask a colleague for) a packaged copy —
+see "Packaged build" below — then just double-click `xpman.exe`. No Python required. That's
+what [`docs/tutorial.md`](docs/tutorial.md) assumes.
+
+**Developing xpman:**
+
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
@@ -37,9 +43,23 @@ pip install -e .[dev]
 pytest
 ```
 
+Once installed, `xpman` is also available as a plain console command (from
+`[project.scripts]` in `pyproject.toml`) as an alternative to `python -m xpman.gui.app`.
+
 If you use a parallel port for EEG triggers, also run
 `scripts\install_parallel_port_driver.ps1` (as Administrator) — see that script and
 `docs/verification_protocol.md` for why this needs to be explicit on Windows 11.
+
+### Packaged build
+
+```powershell
+pip install -e .[build]
+scripts\build_windows_exe.ps1
+```
+
+Produces a one-folder standalone build at `dist\xpman\xpman.exe` — copy the whole `dist\xpman`
+folder to share it; everything it needs (including a Python interpreter) is inside. See the
+script's header comment for what it excludes/why and how to verify a build before trusting it.
 
 ## Project layout
 
@@ -56,4 +76,4 @@ implementation and `src/xpman/tasks/fpvs/` for a real paradigm.
 
 ## License
 
-Not yet decided — see `docs/open_questions.md`.
+MIT — see [`LICENSE`](LICENSE).
