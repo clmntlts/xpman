@@ -13,9 +13,10 @@ Node text formatting choices (the "informative" part of "intuitive and informati
     - Block:    "<name> (x<repeat_count>, <n> trials)"
     - Trial:    "Trial <position> -> <condition name>" (or "-> (no condition)" if unset)
     - Instance: "<name> - <created_at date> [<checksum prefix>]"
+    - Run:      "<started_at date> - <Subject "Last, First" or "(no subject)"> - <status>"
     - Group headers ("Subjects", "Programs", "Experiments", "Instances", "Conditions",
-      "Blocks") show a running count, e.g. "Subjects (2)", so an empty group reads as
-      "Subjects (0)" rather than a bare unlabeled folder.
+      "Blocks", "Runs") show a running count, e.g. "Subjects (2)", so an empty group reads
+      as "Subjects (0)" rather than a bare unlabeled folder.
 
 Empty-group policy: group headers are ALWAYS shown (never omitted), even when their
 underlying list is empty. An empty group gets a single synthetic placeholder child (kind
@@ -37,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
-from xpman.core.models import Block, Condition, Experiment, Instance, Profile, Program, Subject, Trial
+from xpman.core.models import Block, Condition, Experiment, Instance, Profile, Program, Run, Subject, Trial
 
 __all__ = ["TreeNode", "ExperimentTreeModel"]
 
@@ -125,6 +126,14 @@ def _instance_label(instance: Instance) -> str:
     date_str = created.strftime("%Y-%m-%d %H:%M") if isinstance(created, datetime) else str(created)
     checksum_prefix = (instance.checksum or "")[:8]
     return f"{instance.name} - {date_str} [{checksum_prefix}]"
+
+
+def _run_label(session: Session, run: Run) -> str:
+    started = run.started_at
+    date_str = started.strftime("%Y-%m-%d %H:%M") if isinstance(started, datetime) else str(started)
+    subject = repo.get_subject(session, run.subject_id) if run.subject_id is not None else None
+    subject_str = _subject_label(subject) if subject is not None else "(no subject)"
+    return f"{date_str} - {subject_str} - {run.status}"
 
 
 def _s(n: int) -> str:
@@ -222,6 +231,18 @@ class ExperimentTreeModel(QAbstractItemModel):
             return
         for instance in instances:
             node = TreeNode(kind="instance", id=instance.id, name=_instance_label(instance))
+            instance_item = _Item(node=node, parent=group)
+            group.children.append(instance_item)
+            self._build_runs_group(instance_item, instance.id)
+
+    def _build_runs_group(self, instance_item: _Item, instance_id: int) -> None:
+        runs = repo.list_runs(self._session, instance_id=instance_id)
+        group = _add_group(instance_item, kind="runs_group", label="Runs", count=len(runs))
+        if not runs:
+            _placeholder(group)
+            return
+        for run in runs:
+            node = TreeNode(kind="run", id=run.id, name=_run_label(self._session, run))
             group.children.append(_Item(node=node, parent=group))
 
     def _build_conditions_group(self, experiment_item: _Item, experiment_id: int) -> None:

@@ -3,11 +3,13 @@
 Fixture shape (built via core.repository, matching tests/unit/test_core_instance.py's
 ``_build_full_program_tree`` pattern): a Profile with 2 Subjects, 1 Program containing 1
 Experiment with 2 Conditions and 1 Block (repeat_count=2) containing 2 Trials (each
-referencing a different Condition), and 1 Instance.
+referencing a different Condition), and 1 Instance with 2 Runs (one completed against
+subject_a, one aborted against subject_b).
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,7 @@ import pytest
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import freeze_program
-from xpman.core.models import Base
+from xpman.core.models import Base, Run, RunStatus
 from xpman.gui.tree_view.model import ExperimentTreeModel, TreeNode
 from xpman.gui.tree_view.view import ExperimentTreeView
 
@@ -76,6 +78,25 @@ def _build_full_fixture(session) -> dict:
     instance = freeze_program(session, program.id, name="Instance 1")
     session.commit()
 
+    run_a = Run(
+        instance_id=instance.id,
+        subject_id=subject_a.id,
+        started_at=datetime(2026, 7, 2, 15, 30, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 7, 2, 15, 45, tzinfo=timezone.utc),
+        xpman_version="0.1.0",
+        status=RunStatus.COMPLETED,
+    )
+    run_b = Run(
+        instance_id=instance.id,
+        subject_id=subject_b.id,
+        started_at=datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc),
+        ended_at=None,
+        xpman_version="0.1.0",
+        status=RunStatus.ABORTED,
+    )
+    session.add_all([run_a, run_b])
+    session.commit()
+
     return {
         "profile_id": profile.id,
         "subject_a_id": subject_a.id,
@@ -88,6 +109,8 @@ def _build_full_fixture(session) -> dict:
         "trial_a_id": trial_a.id,
         "trial_b_id": trial_b.id,
         "instance_id": instance.id,
+        "run_a_id": run_a.id,
+        "run_b_id": run_b.id,
     }
 
 
@@ -170,6 +193,152 @@ def test_program_has_experiments_and_instances_groups(session):
     assert instance_node.kind == "instance"
     assert instance_node.id == ids["instance_id"]
     assert instance_node.name.startswith("Instance 1 - ")
+
+
+def _instance_index(model, ids):
+    profile_index = model.index(0, 0)
+    programs_group = model.index(1, 0, profile_index)
+    program_index = model.index(0, 0, programs_group)
+    instances_group = model.index(1, 0, program_index)
+    return model.index(0, 0, instances_group)
+
+
+def test_instance_has_runs_group_with_two_runs(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    instance_index = _instance_index(model, ids)
+
+    assert model.rowCount(instance_index) == 1
+    runs_group = model.index(0, 0, instance_index)
+    assert model.node_at(runs_group).kind == "runs_group"
+    assert model.node_at(runs_group).name == "Runs (2)"
+
+    assert model.rowCount(runs_group) == 2
+    first = model.node_at(model.index(0, 0, runs_group))
+    second = model.node_at(model.index(1, 0, runs_group))
+    assert {first.id, second.id} == {ids["run_a_id"], ids["run_b_id"]}
+    assert all(node.kind == "run" for node in (first, second))
+
+    # list_runs orders by started_at descending -- run_a (2026-07-02) is more recent than
+    # run_b (2026-07-01), so it should come first.
+    assert first.id == ids["run_a_id"]
+    assert first.name == "2026-07-02 15:30 - Lovelace, Ada - completed"
+    assert second.id == ids["run_b_id"]
+    assert second.name == "2026-07-01 10:00 - Turing, Alan - aborted"
+
+
+def test_instance_with_zero_runs_shows_placeholder(session):
+    ids = _build_full_fixture(session)
+
+    # Add a second, run-less Instance under the same Program.
+    second_instance = freeze_program(session, ids["program_id"], name="Instance 2")
+    session.commit()
+
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    profile_index = model.index(0, 0)
+    programs_group = model.index(1, 0, profile_index)
+    program_index = model.index(0, 0, programs_group)
+    instances_group = model.index(1, 0, program_index)
+
+    assert model.rowCount(instances_group) == 2
+    second_instance_index = model.index(1, 0, instances_group)
+    assert model.node_at(second_instance_index).id == second_instance.id
+
+    assert model.rowCount(second_instance_index) == 1
+    runs_group = model.index(0, 0, second_instance_index)
+    assert model.node_at(runs_group).kind == "runs_group"
+    assert model.node_at(runs_group).name == "Runs (0)"
+
+    assert model.rowCount(runs_group) == 1
+    placeholder = model.node_at(model.index(0, 0, runs_group))
+    assert placeholder.kind == "placeholder"
+    assert placeholder.id is None
+    assert placeholder.name == "(none yet)"
+
+
+def test_run_with_no_subject_label_does_not_crash(session):
+    ids = _build_full_fixture(session)
+
+    orphan_run = Run(
+        instance_id=ids["instance_id"],
+        subject_id=None,
+        started_at=datetime(2026, 7, 3, 9, 0, tzinfo=timezone.utc),
+        ended_at=None,
+        xpman_version="0.1.0",
+        status=RunStatus.CRASHED,
+    )
+    session.add(orphan_run)
+    session.commit()
+
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    instance_index = _instance_index(model, ids)
+    runs_group = model.index(0, 0, instance_index)
+
+    assert model.rowCount(runs_group) == 3
+    nodes = [model.node_at(model.index(row, 0, runs_group)) for row in range(3)]
+    orphan_node = next(node for node in nodes if node.id == orphan_run.id)
+    assert orphan_node.kind == "run"
+    assert orphan_node.name == "2026-07-03 09:00 - (no subject) - crashed"
+
+
+def test_run_with_deleted_subject_label_does_not_crash(session):
+    ids = _build_full_fixture(session)
+
+    stale_run = Run(
+        instance_id=ids["instance_id"],
+        subject_id=ids["subject_a_id"],
+        started_at=datetime(2026, 7, 4, 9, 0, tzinfo=timezone.utc),
+        ended_at=None,
+        xpman_version="0.1.0",
+        status=RunStatus.COMPLETED,
+    )
+    session.add(stale_run)
+    session.commit()
+
+    # Simulate a Subject deleted after the Run: SET NULL means subject_id would normally be
+    # nulled by the DB's FK constraint, but to exercise the "get_subject returns None for a
+    # non-null id" branch explicitly, delete the Subject row directly and leave subject_id
+    # pointing at a now-nonexistent row (sqlite in-memory session does not enforce the FK here).
+    session.delete(repo.get_subject(session, ids["subject_a_id"]))
+    session.commit()
+
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    instance_index = _instance_index(model, ids)
+    runs_group = model.index(0, 0, instance_index)
+
+    nodes = [model.node_at(model.index(row, 0, runs_group)) for row in range(model.rowCount(runs_group))]
+    stale_node = next(node for node in nodes if node.id == stale_run.id)
+    assert stale_node.kind == "run"
+    assert "(no subject)" in stale_node.name
+
+
+def test_refresh_picks_up_new_run(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    instance_index = _instance_index(model, ids)
+    runs_group = model.index(0, 0, instance_index)
+    assert model.rowCount(runs_group) == 2
+
+    new_run = Run(
+        instance_id=ids["instance_id"],
+        subject_id=ids["subject_a_id"],
+        started_at=datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc),
+        ended_at=None,
+        xpman_version="0.1.0",
+        status=RunStatus.COMPLETED,
+    )
+    session.add(new_run)
+    session.commit()
+
+    model.refresh()
+
+    instance_index = _instance_index(model, ids)
+    runs_group = model.index(0, 0, instance_index)
+    assert model.rowCount(runs_group) == 3
+    ids_seen = {
+        model.node_at(model.index(row, 0, runs_group)).id for row in range(3)
+    }
+    assert new_run.id in ids_seen
 
 
 def test_experiment_has_conditions_and_blocks_groups(session):
