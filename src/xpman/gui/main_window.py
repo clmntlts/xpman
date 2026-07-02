@@ -42,13 +42,18 @@ from xpman.core import repository as repo
 from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet, get_run_results_rows
 from xpman.core.instance import get_instance
 from xpman.gui.dialogs.block_create_dialog import BlockCreateDialog
+from xpman.gui.dialogs.block_edit_dialog import BlockEditDialog
 from xpman.gui.dialogs.condition_create_dialog import ConditionCreateDialog
+from xpman.gui.dialogs.condition_edit_dialog import ConditionEditDialog
 from xpman.gui.dialogs.confirm import confirm_delete
 from xpman.gui.dialogs.experiment_create_dialog import ExperimentCreateDialog
+from xpman.gui.dialogs.experiment_edit_dialog import ExperimentEditDialog
 from xpman.gui.dialogs.instance_freeze_dialog import InstanceFreezeDialog
 from xpman.gui.dialogs.launch_dialog import LaunchDialog
 from xpman.gui.dialogs.program_create_dialog import ProgramCreateDialog
+from xpman.gui.dialogs.program_edit_dialog import ProgramEditDialog
 from xpman.gui.dialogs.subject_create_dialog import SubjectCreateDialog
+from xpman.gui.dialogs.subject_edit_dialog import SubjectEditDialog
 from xpman.gui.dialogs.trial_create_dialog import TrialCreateDialog
 from xpman.gui.forms.schema_form import SchemaForm
 from xpman.gui.tree_view import ExperimentTreeView, TreeNode
@@ -393,11 +398,15 @@ class MainWindow(QMainWindow):
         if node.kind in ("profile", "programs_group"):
             menu.addAction("New Program...", self._create_program)
         if node.kind == "subject":
+            menu.addAction("Edit Subject...", lambda: self._edit_subject(node))
+            menu.addSeparator()
             menu.addAction("Delete Subject", lambda: self._delete_subject(node))
 
         if node.kind == "program":
             menu.addAction("New Experiment...", lambda: self._create_experiment(node.id))
             menu.addAction("Create Instance...", lambda: self._create_instance(node.id))
+            menu.addSeparator()
+            menu.addAction("Edit Program...", lambda: self._edit_program(node))
             menu.addSeparator()
             menu.addAction("Delete Program", lambda: self._delete_program(node))
         elif node.kind == "experiments_group":
@@ -419,6 +428,8 @@ class MainWindow(QMainWindow):
             menu.addAction("New Condition...", lambda: self._create_condition(node.id))
             menu.addAction("New Block...", lambda: self._create_block(node.id))
             menu.addSeparator()
+            menu.addAction("Edit Experiment...", lambda: self._edit_experiment(node))
+            menu.addSeparator()
             menu.addAction("Delete Experiment", lambda: self._delete_experiment(node))
         elif node.kind == "conditions_group":
             parent_id = self._parent_node_id(index)
@@ -430,17 +441,40 @@ class MainWindow(QMainWindow):
                 menu.addAction("New Block...", lambda: self._create_block(parent_id))
 
         if node.kind == "condition":
+            menu.addAction("Edit Condition...", lambda: self._edit_condition(node))
+            menu.addAction("Check Triggers...", lambda: self._check_triggers(node))
+            menu.addSeparator()
             menu.addAction("Delete Condition", lambda: self._delete_condition(node))
 
         if node.kind == "block":
             menu.addAction("New Trial...", lambda: self._create_trial(node.id))
             menu.addSeparator()
+            menu.addAction("Edit Block...", lambda: self._edit_block(node))
+            block = repo.get_block(self._session, node.id)
+            siblings = repo.list_blocks(self._session, experiment_id=block.experiment_id)
+            self._add_reorder_actions(menu, node, siblings, self._move_block)
+            menu.addSeparator()
             menu.addAction("Delete Block", lambda: self._delete_block(node))
 
         if node.kind == "trial":
+            trial = repo.get_trial(self._session, node.id)
+            siblings = repo.list_trials(self._session, block_id=trial.block_id)
+            self._add_reorder_actions(menu, node, siblings, self._move_trial)
+            menu.addSeparator()
             menu.addAction("Delete Trial", lambda: self._delete_trial(node))
 
         return menu
+
+    def _add_reorder_actions(self, menu: QMenu, node: TreeNode, siblings: list, mover) -> None:
+        """Add enabled/disabled "Move Up"/"Move Down" actions for ``node`` within ``siblings``
+        (already ordered by ``(order_index, id)`` -- see ``repo.list_blocks``/``list_trials``).
+        Disabled rather than omitted at the first/last position so the menu shape doesn't jump
+        around depending on position -- more predictable for a user right-clicking repeatedly."""
+        idx = next(i for i, sibling in enumerate(siblings) if sibling.id == node.id)
+        up_action = menu.addAction("Move Up", lambda: mover(node, -1))
+        up_action.setEnabled(idx > 0)
+        down_action = menu.addAction("Move Down", lambda: mover(node, 1))
+        down_action.setEnabled(idx < len(siblings) - 1)
 
     # -- create actions -----------------------------------------------------------------------
 
@@ -495,6 +529,86 @@ class MainWindow(QMainWindow):
         dialog.exec()  # not accept/reject-gated -- the dialog is useful open-ended (progress,
         # abort, launch again) and only ever closes via its own Close button; nothing here
         # needs to react to how it was dismissed.
+
+    # -- edit actions ---------------------------------------------------------------------------
+    #
+    # Edits the metadata fields the create dialogs collected (name, resource dir, etc.) -- NOT
+    # task parameters, which are already editable via the SchemaForm + Save flow once the node
+    # is selected. See the *_edit_dialog.py docstrings for why each dialog deliberately omits
+    # certain fields (e.g. Program's task type, Block's order_index).
+
+    def _edit_subject(self, node: TreeNode) -> None:
+        dialog = SubjectEditDialog(self._session, node.id, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.statusBar().showMessage("Subject updated", 3000)
+
+    def _edit_program(self, node: TreeNode) -> None:
+        dialog = ProgramEditDialog(self._session, node.id, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.statusBar().showMessage("Program updated", 3000)
+
+    def _edit_experiment(self, node: TreeNode) -> None:
+        dialog = ExperimentEditDialog(self._session, node.id, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.statusBar().showMessage("Experiment updated", 3000)
+
+    def _edit_condition(self, node: TreeNode) -> None:
+        dialog = ConditionEditDialog(self._session, node.id, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.statusBar().showMessage("Condition updated", 3000)
+
+    def _edit_block(self, node: TreeNode) -> None:
+        dialog = BlockEditDialog(self._session, node.id, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.statusBar().showMessage("Block updated", 3000)
+
+    def _check_triggers(self, node: TreeNode) -> None:
+        condition = repo.get_condition(self._session, node.id)
+        experiment = repo.get_experiment(self._session, condition.experiment_id)
+        program = repo.get_program(self._session, experiment.program_id)
+        task = self._registry.get(program.task_name)
+        warnings = task.check_triggers(condition.parameters_json)
+        if warnings:
+            message = "Potential trigger conflicts:\n\n" + "\n".join(f"- {w}" for w in warnings)
+            QMessageBox.warning(self, "Check Triggers", message)
+        else:
+            QMessageBox.information(self, "Check Triggers", "No trigger conflicts found.")
+
+    # -- reorder actions --------------------------------------------------------------------------
+    #
+    # Swaps order_index between a node and its immediate sibling -- simplest correct reordering
+    # without new schema/drag-drop infrastructure, since order_index is already a plain settable
+    # field on both Block and Trial (see repo.update_block/update_trial).
+
+    def _move_block(self, node: TreeNode, direction: int) -> None:
+        block = repo.get_block(self._session, node.id)
+        siblings = repo.list_blocks(self._session, experiment_id=block.experiment_id)
+        self._swap_order_index(siblings, node.id, direction, repo.update_block)
+
+    def _move_trial(self, node: TreeNode, direction: int) -> None:
+        trial = repo.get_trial(self._session, node.id)
+        siblings = repo.list_trials(self._session, block_id=trial.block_id)
+        self._swap_order_index(siblings, node.id, direction, repo.update_trial)
+
+    def _swap_order_index(self, siblings: list, node_id: int, direction: int, updater) -> None:
+        idx = next(i for i, sibling in enumerate(siblings) if sibling.id == node_id)
+        swap_idx = idx + direction
+        if not (0 <= swap_idx < len(siblings)):
+            return
+        current, other = siblings[idx], siblings[swap_idx]
+        # Capture both original values before the first update -- current/other are live,
+        # session-attached ORM objects, so mutating current.order_index in place would corrupt
+        # the read of it on the very next line otherwise.
+        current_order_index, other_order_index = current.order_index, other.order_index
+        updater(self._session, current.id, order_index=other_order_index)
+        updater(self._session, other.id, order_index=current_order_index)
+        self._session.commit()
+        self.refresh()
 
     # -- delete actions -----------------------------------------------------------------------
     #
