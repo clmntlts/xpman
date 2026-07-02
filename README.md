@@ -8,8 +8,16 @@ Experiment Manager") that required a paid hardware dongle to run and stored all 
 discontinued proprietary database (db4o). xpman has no licensing dependency, stores data in
 plain SQLite + Parquet/CSV, and is meant to be freely shared with other labs.
 
-Status: early scaffolding. See `docs/architecture.md` for the technology choices, package
-layout, data model, and roadmap.
+Status: core data model, runtime engine, dummy + FPVS tasks, and the full PySide6 GUI (build
+an experiment, launch a run, view/export results) are working end-to-end. Hardware timing
+verification against a real EEG rig and packaging (standalone installer, license) are still
+open — see [`TODO.md`](TODO.md). See `docs/architecture.md` for the technology choices,
+package layout, data model, and roadmap.
+
+**New to xpman?** [`docs/tutorial.md`](docs/tutorial.md) is the full user-facing walkthrough —
+what every screen does, a step-by-step guide to building and running a real FPVS session, a
+complete parameter reference, and troubleshooting. This README is the developer-facing
+setup/contributing doc; the tutorial is for actually using the app.
 
 ## Requirements
 
