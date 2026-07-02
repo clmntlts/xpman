@@ -16,7 +16,7 @@ import pytest
 
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
-from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet
+from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet, get_run_results_rows
 from xpman.core.instance import freeze_program
 from xpman.core.models import Base, Result, Run, RunStatus
 
@@ -294,3 +294,32 @@ def test_export_handles_deleted_subject_and_condition(session, tmp_path):
         rows = list(csv.DictReader(f))
     assert rows[0]["subject_name"] == ""
     assert rows[0]["condition_name"] == ""
+
+
+def test_get_run_results_rows_matches_what_gets_exported(session, tmp_path):
+    """get_run_results_rows (the display-only, no-file-written accessor a GUI table would use)
+    must return exactly the same rows the file exporters write -- it's meant to share, not
+    duplicate, their row-building/normalization logic."""
+    fixture = _build_fixture(session)
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    session.add(
+        Result(
+            run_id=run.id, trial_index=0, condition_id=fixture["condition"].id,
+            outcome_summary_json={"flips_completed": 5}, events_file_path="C:/x.parquet",
+        )
+    )
+    session.commit()
+
+    rows = get_run_results_rows(session, run.id)
+    assert len(rows) == 1
+    assert rows[0]["trial_index"] == 0
+    assert rows[0]["subject_name"] == "Lovelace, Ada"
+    assert rows[0]["flips_completed"] == 5
+
+    # No file should have been written by this call.
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_get_run_results_rows_raises_lookup_error_for_missing_run(session):
+    with pytest.raises(LookupError):
+        get_run_results_rows(session, 999999)

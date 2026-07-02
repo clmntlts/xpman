@@ -21,13 +21,17 @@ from pathlib import Path
 from PySide6.QtCore import QModelIndex, QPoint, Qt
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +39,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet, get_run_results_rows
 from xpman.core.instance import get_instance
 from xpman.gui.dialogs.block_create_dialog import BlockCreateDialog
 from xpman.gui.dialogs.condition_create_dialog import ConditionCreateDialog
@@ -152,6 +157,8 @@ class MainWindow(QMainWindow):
             self._show_block_info(node.id)
         elif node.kind == "trial" and node.id is not None:
             self._show_trial_info(node.id)
+        elif node.kind == "run" and node.id is not None:
+            self._show_run_info(node.id)
         else:
             self._show_placeholder(f'"{node.name}" has no editable details.')
 
@@ -217,6 +224,82 @@ class MainWindow(QMainWindow):
         condition_name = trial.condition.name if trial.condition is not None else "(no condition assigned)"
         lines = [f"Condition: {condition_name}", f"Order index: {trial.order_index}"]
         self._show_info_panel("Trial", lines)
+
+    #: Row columns already shown once in the Run's own info text above the table -- omitted
+    #: from the table itself so it isn't dozens of identical values repeated down every row.
+    #: (Not core.export._CONTEXT_COLUMNS directly -- that's a private detail of that module;
+    #: this list is this view's own choice of what counts as "redundant here".)
+    _RUN_TABLE_REDUNDANT_COLUMNS = frozenset(
+        {"run_id", "instance_id", "instance_name", "subject_id", "subject_name", "run_status", "run_started_at", "run_ended_at"}
+    )
+
+    def _show_run_info(self, run_id: int) -> None:
+        run = repo.get_run(self._session, run_id)
+        subject = repo.get_subject(self._session, run.subject_id) if run.subject_id is not None else None
+        instance = get_instance(self._session, run.instance_id)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        subject_str = f"{subject.last_name}, {subject.first_name}" if subject is not None else "(no subject)"
+        info = QLabel(
+            f"Status: {run.status.value}\n"
+            f"Subject: {subject_str}\n"
+            f"Instance: {instance.name if instance is not None else '(deleted)'}\n"
+            f"Started: {_fmt_dt(run.started_at)}\n"
+            f"Ended: {_fmt_dt(run.ended_at)}"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        rows = get_run_results_rows(self._session, run_id)
+        table_columns = [c for c in (rows[0].keys() if rows else []) if c not in self._RUN_TABLE_REDUNDANT_COLUMNS]
+
+        table = QTableWidget(len(rows), len(table_columns))
+        table.setHorizontalHeaderLabels(table_columns)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for row_index, row in enumerate(rows):
+            for col_index, column in enumerate(table_columns):
+                table.setItem(row_index, col_index, QTableWidgetItem(str(row.get(column, ""))))
+        layout.addWidget(table, stretch=1)
+
+        if not rows:
+            layout.addWidget(QLabel("No trial results recorded for this Run yet."))
+
+        export_row = QHBoxLayout()
+        export_csv_button = QPushButton("Export CSV...")
+        export_csv_button.clicked.connect(lambda: self._on_export_run(run_id, "csv"))
+        export_row.addWidget(export_csv_button)
+        export_parquet_button = QPushButton("Export Parquet...")
+        export_parquet_button.clicked.connect(lambda: self._on_export_run(run_id, "parquet"))
+        export_row.addWidget(export_parquet_button)
+        export_row.addStretch(1)
+        layout.addLayout(export_row)
+
+        self._set_detail_widget(container)
+        self._current_form = None
+        self._detail_title.setText(f"Run -- {subject_str} ({run.status.value})")
+        self._save_button.setEnabled(False)
+
+    def _on_export_run(self, run_id: int, fmt: str) -> None:
+        if fmt == "csv":
+            file_filter, default_name, export_fn = "CSV files (*.csv)", f"run_{run_id}_results.csv", export_run_results_to_csv
+        else:
+            file_filter, default_name, export_fn = (
+                "Parquet files (*.parquet)", f"run_{run_id}_results.parquet", export_run_results_to_parquet,
+            )
+
+        path_str, _ = QFileDialog.getSaveFileName(self, "Export Results", default_name, file_filter)
+        if not path_str:
+            return
+
+        try:
+            export_fn(self._session, run_id, Path(path_str))
+        except Exception as exc:  # noqa: BLE001 - surface any export failure to the user, not a crash
+            QMessageBox.warning(self, "Export failed", f"Could not export results:\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"Exported to {path_str}", 5000)
 
     def _show_info_panel(self, title: str, lines: list[str]) -> None:
         label = QLabel("\n".join(lines))

@@ -122,6 +122,19 @@ def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: row.get(key) for key in all_keys} for row in rows]
 
 
+def get_run_results_rows(session: Session, run_id: int) -> list[dict[str, Any]]:
+    """Return the same normalized, denormalized-context rows the exporters write, without
+    writing anything to disk -- for callers that want to *display* results (e.g. a GUI table)
+    rather than export them to a file. Reuses the exact same row-building/normalization logic
+    as the file exporters below, so a caller never has to duplicate the heterogeneous-
+    ``outcome_summary_json``-keys handling itself.
+
+    Raises:
+        LookupError: if ``run_id`` doesn't resolve to a real Run.
+    """
+    return _normalize_rows(_build_rows(session, run_id))
+
+
 def export_run_results_to_parquet(session: Session, run_id: int, output_path: str | Path) -> Path:
     """Export one row per ``Result`` for ``run_id`` to Parquet.
 
@@ -134,7 +147,7 @@ def export_run_results_to_parquet(session: Session, run_id: int, output_path: st
         LookupError: if ``run_id`` doesn't resolve to a real Run.
     """
     output_path = Path(output_path)
-    rows = _normalize_rows(_build_rows(session, run_id))
+    rows = get_run_results_rows(session, run_id)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if rows:
@@ -161,7 +174,7 @@ def export_run_results_to_csv(session: Session, run_id: int, output_path: str | 
         LookupError: if ``run_id`` doesn't resolve to a real Run.
     """
     output_path = Path(output_path)
-    rows = _normalize_rows(_build_rows(session, run_id))
+    rows = get_run_results_rows(session, run_id)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     columns = list(rows[0].keys()) if rows else list(_CONTEXT_COLUMNS)
