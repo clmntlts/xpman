@@ -1,0 +1,171 @@
+"""Instance freeze/immutability logic -- the reproducibility core of xpman.
+
+An Instance is a full, deep, resolved snapshot of a Program's live tree (Program ->
+Experiment -> Condition/Block -> Trial) taken once, at creation time, and stored as a
+single JSON document (``Instance.frozen_json``). The runtime engine (Phase 2+) reads only
+``frozen_json`` -- never live ``Program``/``Experiment``/... rows -- so editing a Program
+after an Instance has been created can provably never change that Instance's behavior.
+
+Immutability is enforced at the Python API level: this module deliberately does NOT
+expose an ``update_instance()`` function, and nothing else in ``core`` writes to
+``Instance.frozen_json`` after creation. ``freeze_program`` is the only function that
+constructs an ``Instance`` row.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime
+
+from sqlalchemy.orm import Session, selectinload
+
+from xpman.core.models import Block, Condition, Experiment, Instance, Program, Trial
+
+#: Bump this whenever the shape of the frozen snapshot document changes. Stored on every
+#: Instance so old snapshots remain interpretable even after the shape evolves.
+SCHEMA_VERSION = "1"
+
+
+def _json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _canonical_dumps(payload: dict) -> str:
+    """Serialize ``payload`` deterministically (stable key order, no incidental whitespace).
+
+    Used both for the stored ``frozen_json`` text-equivalent used in checksumming and for
+    the byte-for-byte comparisons the immutability test relies on.
+    """
+    return json.dumps(payload, sort_keys=True, default=_json_default, separators=(",", ":"))
+
+
+def compute_checksum(frozen_json: dict) -> str:
+    """Return a stable SHA-256 hex digest of ``frozen_json``'s canonical serialization."""
+    canonical = _canonical_dumps(frozen_json)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _serialize_trial(trial: Trial) -> dict:
+    return {
+        "id": trial.id,
+        "order_index": trial.order_index,
+        "condition_id": trial.condition_id,
+    }
+
+
+def _serialize_block(block: Block) -> dict:
+    return {
+        "id": block.id,
+        "name": block.name,
+        "repeat_count": block.repeat_count,
+        "randomize_trials": block.randomize_trials,
+        "randomize_per_subject": block.randomize_per_subject,
+        "order_index": block.order_index,
+        "trials": [
+            _serialize_trial(trial)
+            for trial in sorted(block.trials, key=lambda t: (t.order_index, t.id))
+        ],
+    }
+
+
+def _serialize_condition(condition: Condition) -> dict:
+    return {
+        "id": condition.id,
+        "name": condition.name,
+        "parameters_json": condition.parameters_json,
+    }
+
+
+def _serialize_experiment(experiment: Experiment) -> dict:
+    return {
+        "id": experiment.id,
+        "name": experiment.name,
+        "parameters_json": experiment.parameters_json,
+        "conditions": [
+            _serialize_condition(condition)
+            for condition in sorted(experiment.conditions, key=lambda c: c.id)
+        ],
+        "blocks": [
+            _serialize_block(block)
+            for block in sorted(experiment.blocks, key=lambda b: (b.order_index, b.id))
+        ],
+    }
+
+
+def _serialize_program(program: Program) -> dict:
+    return {
+        "id": program.id,
+        "name": program.name,
+        "resource_main_directory": program.resource_main_directory,
+        "task_name": program.task_name,
+        "task_schema_version": program.task_schema_version,
+        "parameters_json": program.parameters_json,
+        "experiments": [
+            _serialize_experiment(experiment)
+            for experiment in sorted(program.experiments, key=lambda e: e.id)
+        ],
+    }
+
+
+def build_snapshot(session: Session, program_id: int) -> dict:
+    """Walk ``program_id``'s full live tree and return a deep, JSON-serializable dict.
+
+    Eager-loads the whole tree in one go (rather than relying on lazy loads while
+    serializing) so the snapshot reflects one consistent read of the data.
+    """
+    program = session.get(
+        Program,
+        program_id,
+        options=[
+            selectinload(Program.experiments).selectinload(Experiment.conditions),
+            selectinload(Program.experiments)
+            .selectinload(Experiment.blocks)
+            .selectinload(Block.trials),
+        ],
+    )
+    if program is None:
+        raise LookupError(f"Program with id={program_id!r} not found")
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "program": _serialize_program(program),
+    }
+
+
+def freeze_program(session: Session, program_id: int, *, name: str) -> Instance:
+    """Create and persist a new immutable Instance snapshotting ``program_id``'s live tree.
+
+    This is the only function in xpman that constructs an ``Instance`` row. There is
+    intentionally no corresponding ``update_instance``/``unfreeze`` function anywhere in
+    ``core`` -- once created, an Instance's ``frozen_json`` must never be mutated again.
+    """
+    frozen_json = build_snapshot(session, program_id)
+    checksum = compute_checksum(frozen_json)
+
+    instance = Instance(
+        program_id=program_id,
+        name=name,
+        frozen_json=frozen_json,
+        schema_version=SCHEMA_VERSION,
+        checksum=checksum,
+    )
+    session.add(instance)
+    session.flush()
+    return instance
+
+
+def get_instance(session: Session, instance_id: int) -> Instance | None:
+    """Fetch an Instance by id. Read-only: never mutate the returned row's frozen_json."""
+    return session.get(Instance, instance_id)
+
+
+def verify_instance_integrity(instance: Instance) -> bool:
+    """Return True iff ``instance.frozen_json``'s checksum still matches ``instance.checksum``.
+
+    Callers (e.g. the runtime engine before launching a Run) should treat a False result
+    as a hard failure -- it means the stored snapshot was corrupted or tampered with.
+    """
+    return compute_checksum(instance.frozen_json) == instance.checksum
