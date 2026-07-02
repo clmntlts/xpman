@@ -202,7 +202,7 @@ def test_menu_for_block_offers_new_trial_and_delete(qtbot, session, registry):
     assert "Delete Block" in texts
 
 
-def test_menu_for_trial_offers_only_delete(qtbot, session, registry):
+def test_menu_for_trial_offers_move_and_delete(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)
     qtbot.addWidget(window)
@@ -210,7 +210,14 @@ def test_menu_for_trial_offers_only_delete(qtbot, session, registry):
     index = _find_index(window, "trial", fixture["trial"].id)
     menu = window._build_context_menu(index)
     texts = _action_texts(menu)
-    assert texts == ["Delete Trial"]
+    assert texts == ["Move Up", "Move Down", "Delete Trial"]
+
+    # The fixture's Block has only this one Trial -- both Move actions must be disabled, not
+    # merely absent, so the menu shape stays predictable regardless of position (see
+    # MainWindow._add_reorder_actions).
+    actions = {a.text(): a for a in menu.actions() if not a.isSeparator()}
+    assert not actions["Move Up"].isEnabled()
+    assert not actions["Move Down"].isEnabled()
 
 
 def test_menu_for_experiments_group_resolves_parent_program(qtbot, session, registry):
