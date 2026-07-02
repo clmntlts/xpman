@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Local data — never shared, never committed
+data/*.db
+data/*.db-*
+data/runs/
+
+# Editors
+.vscode/
+.idea/
+
+# PyInstaller
+*.spec.bak

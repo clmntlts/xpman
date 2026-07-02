@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xpman"
+version = "0.1.0"
+description = "Open, dongle-free EEG/vision-science experiment runner (FPVS and other periodic-stimulation paradigms)."
+readme = "README.md"
+requires-python = "==3.11.*"
+# PsychoPy is picky about interpreter version; 3.11 is verified (2026-07-02) to resolve and
+# install cleanly for psychopy==2026.1.3 on Windows. Do not loosen without re-verifying.
+
+dependencies = [
+    "psychopy==2026.1.3",
+    "pyside6>=6.7,<7",
+    "sqlalchemy>=2.0,<3",
+    "alembic>=1.13,<2",
+    "pydantic>=2.6,<3",
+    "pyarrow>=17,<25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.entry-points."xpman.tasks"]
+dummy = "xpman.tasks.dummy.task:DummyTask"
+fpvs = "xpman.tasks.fpvs.task:FPVSTask"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
