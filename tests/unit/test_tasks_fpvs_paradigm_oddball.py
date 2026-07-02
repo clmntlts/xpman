@@ -574,3 +574,68 @@ def test_result_params_roundtrip_via_dict_for_oddball_params():
     params = OddballParams()
     restored = OddballParams.model_validate(params.model_dump())
     assert restored == params
+
+
+# ---------------------------------------------------------------------------
+# onsets tracking (feeds response.score_responses)
+# ---------------------------------------------------------------------------
+
+
+def test_run_base_sequence_result_includes_onset_records(mock_window, stimuli, event_sink, trigger, clock):
+    result = run_base_sequence(
+        window=mock_window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert len(result.onsets) == 6
+    assert all(o.is_oddball is False for o in result.onsets)
+    assert [o.stim_index for o in result.onsets] == [0, 1, 2, 3, 4, 5]
+    # Onset times strictly increasing (later stimuli flip later).
+    times = [o.time for o in result.onsets]
+    assert times == sorted(times)
+    assert len(set(times)) == len(times)
+
+
+def test_run_base_oddball_sequence_result_includes_onset_records(
+    mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock
+):
+    result = run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert len(result.onsets) == 18
+    oddball_positions = [o.stim_index for o in result.onsets if o.is_oddball]
+    assert oddball_positions == [4, 9, 14]  # 0-indexed positions 5, 10, 15
+    assert sum(1 for o in result.onsets if o.is_oddball) == 3
+    assert sum(1 for o in result.onsets if not o.is_oddball) == 15
+
+
+def test_aborted_stimulus_does_not_produce_an_onset_record(mock_window, stimuli, event_sink, trigger, clock):
+    call_count = {"n": 0}
+
+    def abort_immediately():
+        call_count["n"] += 1
+        return call_count["n"] > 1  # abort before the very first frame draws
+
+    result = run_base_sequence(
+        window=mock_window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        abort_check=abort_immediately,
+    )
+    assert result.onsets == []

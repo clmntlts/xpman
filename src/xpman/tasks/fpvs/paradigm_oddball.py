@@ -140,6 +140,18 @@ def achieved_oddball_frequency_hz(achieved_base_freq_hz: float, period_stimuli: 
 
 
 @dataclass(frozen=True)
+class OnsetRecord:
+    """One stimulus onset: when it happened and what it was. Produced by both sequence
+    functions and consumed by ``response.score_responses`` to compute RTs -- this is the only
+    thing ``response.py`` needs to know about ``paradigm_oddball.py``, keeping the dependency
+    one-directional (timing module knows nothing about response scoring)."""
+
+    time: float
+    is_oddball: bool
+    stim_index: int
+
+
+@dataclass(frozen=True)
 class BaseSequenceResult:
     """Summary of one ``run_base_sequence`` call -- goes into ``TrialResult.outcome_summary``."""
 
@@ -149,6 +161,7 @@ class BaseSequenceResult:
     n_stimuli_shown: int
     n_frames_presented: int
     aborted: bool
+    onsets: list[OnsetRecord]
 
 
 @dataclass(frozen=True)
@@ -165,6 +178,7 @@ class BaseOddballSequenceResult:
     n_oddballs_shown: int
     n_frames_presented: int
     aborted: bool
+    onsets: list[OnsetRecord]
 
 
 def _present_stimulus(
@@ -183,13 +197,14 @@ def _present_stimulus(
     is_oddball: bool,
     stim_index: int,
     abort_check: Callable[[], bool],
-) -> tuple[int, bool]:
+) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
-    ``(frames_actually_presented, aborted)``. ``frames_actually_presented == 0`` means
-    ``abort_check()`` fired before the onset frame ever drew -- callers should not count that
-    as a shown stimulus."""
+    ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
+    (and ``onset_time is None``) means ``abort_check()`` fired before the onset frame ever
+    drew -- callers should not count that as a shown stimulus."""
     frames_presented = 0
     aborted = False
+    onset_time: float | None = None
 
     for frame_in_stim in range(n_frames):
         if abort_check():
@@ -216,6 +231,7 @@ def _present_stimulus(
             flip_time = clock.get_time()
 
         if is_onset:
+            onset_time = flip_time
             if trigger_code is not None:
                 trigger.send_trigger(trigger_code)
                 event_sink.log(
@@ -241,7 +257,7 @@ def _present_stimulus(
 
         frames_presented += 1
 
-    return frames_presented, aborted
+    return frames_presented, aborted, onset_time
 
 
 def run_base_sequence(
@@ -300,6 +316,7 @@ def run_base_sequence(
     frames_presented = 0
     stimuli_shown = 0
     aborted = False
+    onsets: list[OnsetRecord] = []
 
     for stim_index in range(n_stimuli_to_show):
         if abort_check():
@@ -307,7 +324,7 @@ def run_base_sequence(
             break
         stim = stimuli[stim_index % len(stimuli)]
 
-        frames_this_stim, stim_aborted = _present_stimulus(
+        frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
             stim=stim,
             n_frames=n_frames_per_stim,
@@ -327,6 +344,7 @@ def run_base_sequence(
         frames_presented += frames_this_stim
         if frames_this_stim > 0:
             stimuli_shown += 1
+            onsets.append(OnsetRecord(time=onset_time, is_oddball=False, stim_index=stim_index))
         if stim_aborted:
             aborted = True
             break
@@ -343,6 +361,7 @@ def run_base_sequence(
         n_stimuli_shown=stimuli_shown,
         n_frames_presented=frames_presented,
         aborted=aborted,
+        onsets=onsets,
     )
 
 
@@ -410,6 +429,7 @@ def run_base_oddball_sequence(
     base_pool_index = 0
     oddball_pool_index = 0
     aborted = False
+    onsets: list[OnsetRecord] = []
 
     for position in range(1, n_stimuli_to_show + 1):
         if abort_check():
@@ -428,7 +448,7 @@ def run_base_oddball_sequence(
             trigger_code = base_params.base_trigger_code
             onset_event_type = "stimulus_onset"
 
-        frames_this_stim, stim_aborted = _present_stimulus(
+        frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
             stim=stim,
             n_frames=n_frames_per_stim,
@@ -450,6 +470,7 @@ def run_base_oddball_sequence(
             stimuli_shown += 1
             if is_oddball:
                 oddballs_shown += 1
+            onsets.append(OnsetRecord(time=onset_time, is_oddball=is_oddball, stim_index=position - 1))
         if stim_aborted:
             aborted = True
             break
@@ -475,4 +496,5 @@ def run_base_oddball_sequence(
         n_oddballs_shown=oddballs_shown,
         n_frames_presented=frames_presented,
         aborted=aborted,
+        onsets=onsets,
     )
