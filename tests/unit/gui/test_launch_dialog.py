@@ -239,6 +239,40 @@ def test_fixing_invalid_address_reenables_launch(qtbot, db_path, tmp_path):
     assert not dialog._port_address_error_label.isVisible()
 
 
+def test_launch_shows_clear_error_for_instance_with_orphaned_trial(qtbot, db_path, tmp_path):
+    """A Trial whose Condition was deleted (SET NULL) before the Program was frozen makes
+    count_trials() raise (see runtime/engine.py's _build_trial_sequence) -- this must surface
+    as a status message, not an uncaught exception out of the _on_launch Qt slot."""
+    engine = get_engine(str(db_path))
+    Session = get_sessionmaker(engine)
+    session = Session()
+    profile = repo.create_profile(session, name="Dr. Test")
+    repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    experiment = repo.create_experiment(session, program_id=program.id, name="Exp 1", parameters_json={})
+    condition = repo.create_condition(session, experiment_id=experiment.id, name="Fast", parameters_json={})
+    block = repo.create_block(session, experiment_id=experiment.id, name="Block 1", order_index=0)
+    repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)
+    session.commit()
+    repo.delete_condition(session, condition.id)  # SET NULLs the trial's condition_id
+    session.commit()
+    instance = freeze_program(session, program.id, name="Orphaned Inst")
+    session.commit()
+
+    dialog = LaunchDialog(session, instance.id, profile.id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+
+    mock_process.start.assert_not_called()
+    assert "Cannot launch" in dialog._status_label.text()
+
+
 def test_launch_disables_controls_and_shows_progress_ui(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
@@ -418,3 +452,68 @@ def test_process_error_shows_message_and_reenables(qtbot, db_path, tmp_path):
 
     assert "Failed to start" in dialog._status_label.text()
     assert dialog._launch_button.isEnabled()
+
+
+# ---------------------------------------------------------------------------
+# Control-dir cleanup (regression: every launch used to leak an
+# xpman_launch_* temp directory permanently, regardless of how it ended)
+# ---------------------------------------------------------------------------
+
+
+def test_control_dir_cleaned_up_on_finished(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+    control_dir = dialog._control_dir
+    assert control_dir is not None and control_dir.is_dir()
+
+    dialog._process.readAllStandardError.return_value = QByteArray(b"")
+    dialog._on_finished(EXIT_COMPLETED, None)
+
+    assert not control_dir.exists()
+    assert dialog._control_dir is None
+
+
+def test_control_dir_cleaned_up_on_process_error(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+    control_dir = dialog._control_dir
+    assert control_dir is not None and control_dir.is_dir()
+
+    dialog._on_process_error(0)
+
+    assert not control_dir.exists()
+
+
+def test_control_dir_cleaned_up_on_dialog_closed_mid_run(qtbot, db_path, tmp_path):
+    """Closing the dialog (Close button / window X) before the run ever finishes must not
+    leak the control directory either -- covers the reject() path, not just finished/error."""
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+    control_dir = dialog._control_dir
+    assert control_dir is not None and control_dir.is_dir()
+
+    dialog.reject()
+
+    assert not control_dir.exists()
+
+
+def test_no_control_dir_cleanup_needed_when_never_launched(qtbot, db_path, tmp_path):
+    """Closing the dialog without ever clicking Launch must not error just because there's
+    nothing to clean up."""
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    dialog.reject()  # must not raise

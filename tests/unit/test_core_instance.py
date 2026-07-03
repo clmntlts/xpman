@@ -198,3 +198,30 @@ def test_freezing_after_mutation_produces_new_instance_with_new_values(session):
     second_condition = second.frozen_json["program"]["experiments"][0]["conditions"][0]
     assert first_condition["parameters_json"] == {"oddball_freq_hz": 1.2}
     assert second_condition["parameters_json"] == {"oddball_freq_hz": 42.0}
+
+
+def test_frozen_json_does_not_share_live_dict_references(session):
+    """Regression test: build_snapshot used to embed the *same* dict objects the live ORM rows
+    hold (SQLAlchemy's JSON column returns the actual stored dict, not a copy) rather than deep
+    copies. repo.update_* always reassigns (already safe, covered above), but an in-place
+    mutation of a live row's parameters_json -- not done by any current caller, but not
+    prevented either -- would silently corrupt an already-frozen Instance's frozen_json within
+    the same process/session, desyncing it from its own checksum without ever touching the DB.
+    """
+    program_id, condition_a_id = _build_full_program_tree(session)
+    inst = freeze_program(session, program_id, name="Instance 1")
+    session.commit()
+    checksum_before = inst.checksum
+
+    live_condition = repo.get_condition(session, condition_a_id)
+    assert live_condition.parameters_json is not inst.frozen_json["program"]["experiments"][0]["conditions"][0][
+        "parameters_json"
+    ], "frozen_json holds the same dict object as the live row -- an in-place mutation would leak through"
+
+    # In-place mutation (not a repo.update_* reassignment) of the live row.
+    live_condition.parameters_json["oddball_freq_hz"] = 999.9
+
+    frozen_condition = inst.frozen_json["program"]["experiments"][0]["conditions"][0]
+    assert frozen_condition["parameters_json"] == {"oddball_freq_hz": 1.2}
+    assert verify_instance_integrity(inst) is True
+    assert inst.checksum == checksum_before

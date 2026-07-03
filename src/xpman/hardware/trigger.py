@@ -96,8 +96,15 @@ class ParallelPortTrigger(TriggerSender):
         self._port = _psychopy_parallel.ParallelPort(address=address)
 
     def send_trigger(self, code: int) -> None:
-        """Set ``code`` on the data pins, hold for ``self.reset_after``, then reset to 0."""
+        """Set ``code`` on the data pins, hold for ``self.reset_after``, then reset to 0.
+
+        The reset-to-0 always runs, even if ``core.wait`` is interrupted (e.g. an abort signal
+        delivered during the hold) -- otherwise the port would stay latched at a stale non-zero
+        code, corrupting the baseline for whatever trigger fires next.
+        """
         self._port.setData(code)
-        if self.reset_after > 0:
-            self._core.wait(self.reset_after)
-        self._port.setData(0)
+        try:
+            if self.reset_after > 0:
+                self._core.wait(self.reset_after)
+        finally:
+            self._port.setData(0)

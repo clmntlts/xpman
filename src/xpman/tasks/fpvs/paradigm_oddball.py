@@ -78,7 +78,13 @@ class OddballParams(BaseModel):
     """Oddball-specific parameters, layered on top of a base stream. All overridable."""
 
     oddball_freq_hz: float = Field(
-        default=1.2, gt=0, description="Target oddball frequency, in Hz. Must not exceed base_freq_hz."
+        default=1.2,
+        gt=0,
+        description=(
+            "Target oddball frequency, in Hz. Must be strictly less than the Condition's "
+            "base_freq_hz (enforced at the Condition level -- see FPVSConditionParams -- not "
+            "on this field alone, since that comparison needs the sibling BaseSequenceParams)."
+        ),
     )
     oddball_trigger_code: int | None = Field(
         default=None,

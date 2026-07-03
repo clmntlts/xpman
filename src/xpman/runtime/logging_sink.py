@@ -26,9 +26,30 @@ import csv
 import json
 import time
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+
+def _json_default(value: Any) -> Any:
+    """``json.dumps``'s ``default=`` hook.
+
+    Converts numpy scalar/array types to native Python values *before* falling back to
+    ``str()`` for anything else. Without this, ``json.dumps(payload, default=str)`` alone
+    silently stringifies numpy types instead of encoding them as real JSON numbers --
+    ``np.int64(42)`` becomes the string ``"42"``, not the number ``42``. This is a live risk
+    here specifically: task code commonly derives values from ``ctx.rng.permutation(...)``
+    (numpy int64 arrays -- see ``core.rng``), and logging one of those indices directly would
+    corrupt downstream numeric analysis (e.g. ``core.verification_report``'s mean/stddev
+    calculations, which assume real numbers, not strings).
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return str(value)
 
 
 class EventSink:
@@ -78,7 +99,7 @@ class EventSink:
         if self._closed:
             raise RuntimeError("cannot log to a closed EventSink")
         ts = float(timestamp) if timestamp is not None else time.perf_counter()
-        payload_json = json.dumps(payload or {}, default=str)
+        payload_json = json.dumps(payload or {}, default=_json_default)
 
         self._csv_writer.writerow([ts, event_type, payload_json])
         self._csv_file.flush()

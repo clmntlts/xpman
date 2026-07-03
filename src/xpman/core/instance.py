@@ -14,6 +14,7 @@ constructs an ``Instance`` row.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from datetime import datetime
@@ -75,7 +76,14 @@ def _serialize_condition(condition: Condition) -> dict:
     return {
         "id": condition.id,
         "name": condition.name,
-        "parameters_json": condition.parameters_json,
+        # deepcopy: SQLAlchemy's JSON column returns the *same* dict object the ORM instance
+        # holds, not a copy. Without this, frozen_json would hold a live reference into that
+        # object -- an in-place mutation of a live Condition's parameters_json (not something
+        # any current repository.py caller does, which all reassign instead, but a real gap in
+        # the immutability guarantee this whole module exists to provide) would silently
+        # desync an already-frozen Instance from its own stored checksum within this process,
+        # without ever touching the database.
+        "parameters_json": copy.deepcopy(condition.parameters_json),
     }
 
 
@@ -83,7 +91,7 @@ def _serialize_experiment(experiment: Experiment) -> dict:
     return {
         "id": experiment.id,
         "name": experiment.name,
-        "parameters_json": experiment.parameters_json,
+        "parameters_json": copy.deepcopy(experiment.parameters_json),
         "conditions": [
             _serialize_condition(condition)
             for condition in sorted(experiment.conditions, key=lambda c: c.id)
@@ -102,7 +110,7 @@ def _serialize_program(program: Program) -> dict:
         "resource_main_directory": program.resource_main_directory,
         "task_name": program.task_name,
         "task_schema_version": program.task_schema_version,
-        "parameters_json": program.parameters_json,
+        "parameters_json": copy.deepcopy(program.parameters_json),
         "experiments": [
             _serialize_experiment(experiment)
             for experiment in sorted(program.experiments, key=lambda e: e.id)

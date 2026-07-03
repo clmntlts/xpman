@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 
+import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
@@ -110,3 +111,61 @@ def test_creates_parent_directories(tmp_path):
     sink.close()
     assert nested_csv.exists()
     assert nested_parquet.exists()
+
+
+# ---------------------------------------------------------------------------
+# numpy payload values (regression: json.dumps(..., default=str) alone silently
+# stringifies numpy scalars -- np.int64(42) became the string "42", not the number 42,
+# corrupting downstream numeric analysis)
+# ---------------------------------------------------------------------------
+
+
+def test_numpy_int_logged_as_real_json_number_not_a_string(tmp_path):
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    sink.log("stim_selected", {"stim_index": np.int64(42)}, timestamp=0.0)
+    sink.close()
+
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    payload = json.loads(rows[1][2])
+    assert payload["stim_index"] == 42
+    assert isinstance(payload["stim_index"], int)
+
+
+def test_numpy_float_and_bool_logged_as_real_json_types(tmp_path):
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    sink.log("x", {"freq": np.float64(6.0), "is_oddball": np.bool_(True)}, timestamp=0.0)
+    sink.close()
+
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    payload = json.loads(rows[1][2])
+    assert payload["freq"] == 6.0 and isinstance(payload["freq"], float)
+    assert payload["is_oddball"] is True
+
+
+def test_numpy_array_logged_as_a_real_json_list(tmp_path):
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    sink.log("permutation", {"order": np.array([2, 0, 1])}, timestamp=0.0)
+    sink.close()
+
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    payload = json.loads(rows[1][2])
+    assert payload["order"] == [2, 0, 1]
+
+
+def test_non_numpy_unserializable_value_still_falls_back_to_str(tmp_path):
+    """Anything that isn't a numpy type keeps the original str() fallback -- e.g. a datetime,
+    which is a real, expected use of the default= hook elsewhere in the app."""
+    from datetime import datetime, timezone
+
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    sink.log("x", {"when": when}, timestamp=0.0)
+    sink.close()
+
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    payload = json.loads(rows[1][2])
+    assert payload["when"] == str(when)

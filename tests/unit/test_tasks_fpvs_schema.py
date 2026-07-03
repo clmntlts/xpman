@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
+from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.schema import FPVSConditionParams, FPVSSchema, StimulusSelector
 
 
@@ -60,3 +62,40 @@ def test_stimulus_selector_all_fields_optional():
     assert selector.eccentricity_deg is None
     assert selector.is_fs is None
     assert selector.variant is None
+
+
+# ---------------------------------------------------------------------------
+# oddball_freq_hz < base_freq_hz cross-field validation
+#
+# Regression: previously only enforced deep inside oddball_period_stimuli()
+# (paradigm_oddball.py), which only runs mid-trial -- a researcher could save a Condition
+# with oddball_freq_hz >= base_freq_hz cleanly in the GUI and only discover the mistake when
+# a real run crashed on its first trial. This must now be rejected at construction/save time.
+# ---------------------------------------------------------------------------
+
+
+def test_default_params_satisfy_the_oddball_frequency_constraint():
+    # Sanity check: defaults (base=6.0, oddball=1.2) must not accidentally violate the rule
+    # added alongside them.
+    FPVSConditionParams()
+
+
+def test_oddball_freq_below_base_freq_is_valid():
+    FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.2))
+
+
+def test_oddball_freq_equal_to_base_freq_is_rejected():
+    with pytest.raises(ValidationError, match="strictly less than"):
+        FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=6.0))
+
+
+def test_oddball_freq_exceeding_base_freq_is_rejected():
+    with pytest.raises(ValidationError, match="strictly less than"):
+        FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=3.0), oddball=OddballParams(oddball_freq_hz=6.0))
+
+
+def test_oddball_frequency_constraint_enforced_via_model_validate():
+    """The GUI's SchemaForm.get_validated_model() calls model_validate(), not the constructor
+    directly -- confirm the cross-field check fires on that path too, not just __init__."""
+    with pytest.raises(ValidationError, match="strictly less than"):
+        FPVSConditionParams.model_validate({"base": {"base_freq_hz": 3.0}, "oddball": {"oddball_freq_hz": 6.0}})

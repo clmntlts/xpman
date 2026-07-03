@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from xpman.runtime.engine import count_trials
 
 
@@ -81,3 +83,13 @@ def test_count_is_deterministic_across_calls():
         [{"conditions": [], "blocks": [_block([_trial(1, 10, 0), _trial(2, 11, 1)], randomize_per_subject=True, repeat_count=5)]}]
     )
     assert count_trials(program) == count_trials(program) == 10
+
+
+def test_trial_with_null_condition_id_raises_clear_error():
+    """A Trial's condition_id is only ever None in a frozen tree because its Condition was
+    deleted (SET NULL) before the Program was frozen -- every ConditionParams field has a
+    default, so silently running with {} would produce wrong data with zero warning instead of
+    failing loudly. Regression test for that exact bug."""
+    program = _program([{"conditions": [], "blocks": [_block([_trial(1, None, 0)])]}])
+    with pytest.raises(ValueError, match="trial 1 has no Condition"):
+        count_trials(program)
