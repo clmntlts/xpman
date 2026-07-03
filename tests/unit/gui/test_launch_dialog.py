@@ -131,6 +131,8 @@ def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     assert str(data_dir) in args_arg
     assert "--fullscreen" in args_arg  # checked by default
     assert "--no-trigger-hardware" not in args_arg  # trigger checkbox checked by default
+    assert "--parallel-port-address" in args_arg
+    assert str(0x0378) in args_arg  # default shown in the field
 
 
 def test_launch_with_trigger_unchecked_passes_no_trigger_hardware(qtbot, db_path, tmp_path):
@@ -145,6 +147,96 @@ def test_launch_with_trigger_unchecked_passes_no_trigger_hardware(qtbot, db_path
 
     args_arg = mock_process.start.call_args[0][1]
     assert "--no-trigger-hardware" in args_arg
+    assert "--parallel-port-address" not in args_arg  # irrelevant when not sending triggers
+
+
+def test_launch_passes_custom_parallel_port_address(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog._port_address_edit.setText("0x0278")
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+
+    args_arg = mock_process.start.call_args[0][1]
+    idx = args_arg.index("--parallel-port-address")
+    assert args_arg[idx + 1] == str(0x0278)
+
+
+def test_launch_accepts_plain_decimal_port_address(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog._port_address_edit.setText("888")  # decimal for 0x0378
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+
+    args_arg = mock_process.start.call_args[0][1]
+    idx = args_arg.index("--parallel-port-address")
+    assert args_arg[idx + 1] == "888"
+
+
+# ---------------------------------------------------------------------------
+# Parallel port address field: validation and enable/disable
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_port_address_disables_launch_and_shows_error(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    # QWidget.isVisible() requires the whole ancestor chain to actually be shown, not just the
+    # label itself -- matches the pattern in test_main_window.py's equivalent error-label check.
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    dialog._port_address_edit.setText("not-a-number")
+
+    assert not dialog._launch_button.isEnabled()
+    assert dialog._port_address_error_label.isVisible()
+
+
+def test_invalid_port_address_does_not_block_launch_when_triggers_unchecked(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    dialog._port_address_edit.setText("garbage")
+    dialog._trigger_check.setChecked(False)
+
+    assert dialog._launch_button.isEnabled()
+    assert not dialog._port_address_error_label.isVisible()
+
+
+def test_port_address_field_disabled_when_triggers_unchecked(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    assert dialog._port_address_edit.isEnabled()
+    dialog._trigger_check.setChecked(False)
+    assert not dialog._port_address_edit.isEnabled()
+    dialog._trigger_check.setChecked(True)
+    assert dialog._port_address_edit.isEnabled()
+
+
+def test_fixing_invalid_address_reenables_launch(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    dialog._port_address_edit.setText("nope")
+    assert not dialog._launch_button.isEnabled()
+
+    dialog._port_address_edit.setText("0x0378")
+    assert dialog._launch_button.isEnabled()
+    assert not dialog._port_address_error_label.isVisible()
 
 
 def test_launch_disables_controls_and_shows_progress_ui(qtbot, db_path, tmp_path):

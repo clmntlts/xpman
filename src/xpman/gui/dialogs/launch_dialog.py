@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -96,15 +97,34 @@ class LaunchDialog(QDialog):
             "Uncheck to run without hardware triggers -- e.g. a dry run with no EEG amplifier "
             "connected. Real sessions should leave this checked."
         )
+        self._trigger_check.toggled.connect(self._on_trigger_toggled)
         layout.addWidget(self._trigger_check)
+
+        layout.addWidget(QLabel("Parallel port address:"))
+        self._port_address_edit = QLineEdit("0x0378")
+        self._port_address_edit.setToolTip(
+            "The parallel port's I/O address the EEG amplifier is wired to -- 0x0378 is the "
+            "common LPT1 default; 0x0278 and 0x03BC are other common ones. If triggers aren't "
+            "reaching the amplifier, check Windows Device Manager for the actual address (a "
+            "PCIe parallel-port card often isn't at the default)."
+        )
+        self._port_address_edit.textChanged.connect(self._update_launch_button_state)
+        layout.addWidget(self._port_address_edit)
+
+        self._port_address_error_label = QLabel("")
+        self._port_address_error_label.setStyleSheet("color: #cc3333;")
+        self._port_address_error_label.setWordWrap(True)
+        self._port_address_error_label.hide()
+        layout.addWidget(self._port_address_error_label)
 
         self._launch_button = QPushButton("Launch")
         self._launch_button.clicked.connect(self._on_launch)
         layout.addWidget(self._launch_button)
 
+        self._has_subjects = bool(subjects)
         if not subjects:
-            self._launch_button.setEnabled(False)
             self._subject_combo.setEnabled(False)
+        self._update_launch_button_state()
 
         self._progress_label = QLabel("")
         self._progress_label.hide()
@@ -156,7 +176,11 @@ class LaunchDialog(QDialog):
         ]
         if self._fullscreen_check.isChecked():
             args.append("--fullscreen")
-        if not self._trigger_check.isChecked():
+        if self._trigger_check.isChecked():
+            address = self._parse_port_address()
+            if address is not None:
+                args += ["--parallel-port-address", str(address)]
+        else:
             args.append("--no-trigger-hardware")
 
         self._process = QProcess(self)
@@ -180,6 +204,32 @@ class LaunchDialog(QDialog):
         self._subject_combo.setEnabled(enabled)
         self._fullscreen_check.setEnabled(enabled)
         self._trigger_check.setEnabled(enabled)
+        self._port_address_edit.setEnabled(enabled and self._trigger_check.isChecked())
+
+    def _on_trigger_toggled(self, checked: bool) -> None:
+        self._port_address_edit.setEnabled(checked)
+        self._update_launch_button_state()
+
+    def _parse_port_address(self) -> int | None:
+        try:
+            return int(self._port_address_edit.text().strip(), 0)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_launch_button_state(self) -> None:
+        """Launch requires a Subject to exist and, only when real triggers are enabled, a
+        parallel port address that actually parses (accepts hex like "0x0378" or plain decimal,
+        matching launch_worker.py's own `int(s, 0)` parsing)."""
+        if not self._has_subjects:
+            self._launch_button.setEnabled(False)
+            return
+        address_ok = not self._trigger_check.isChecked() or self._parse_port_address() is not None
+        self._launch_button.setEnabled(address_ok)
+        if address_ok:
+            self._port_address_error_label.hide()
+        else:
+            self._port_address_error_label.setText("Enter a valid parallel port address, e.g. 0x0378.")
+            self._port_address_error_label.show()
 
     # -- progress + abort ------------------------------------------------------------------------
 

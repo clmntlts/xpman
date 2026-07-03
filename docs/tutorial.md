@@ -279,12 +279,17 @@ Right-click an **Instance** → **Launch...**
    timing precision depends on it. Only uncheck for a quick windowed dry run.
 3. **Send real triggers (parallel port)** (checked by default) — leave checked for any real
    EEG session. Uncheck to dry-run without an amplifier connected (e.g. testing on a laptop).
-4. Click **Launch**. The experiment runs in its own separate process — deliberately, so its
+4. **Parallel port address** — a text field, default `0x0378` (the common LPT1 default).
+   Only relevant (and only enabled) while "Send real triggers" is checked. If triggers aren't
+   reaching the amplifier, this is usually why — check Windows Device Manager for the actual
+   address; a PCIe parallel-port card is often not at the default. Accepts hex (`0x0278`) or
+   plain decimal. Launch is disabled with an inline error until this parses to a valid number.
+5. Click **Launch**. The experiment runs in its own separate process — deliberately, so its
    frame-by-frame timing is never affected by the rest of the xpman GUI running at the same
    time. A progress bar tracks trial-by-trial completion (updated roughly twice a second).
-5. **Abort** — click it any time during the run. xpman finishes the current trial cleanly, then
+6. **Abort** — click it any time during the run. xpman finishes the current trial cleanly, then
    stops (it never cuts off mid-trial).
-6. When it ends, a status message tells you what happened: `Run completed.`, `Run aborted.`, or
+7. When it ends, a status message tells you what happened: `Run completed.`, `Run aborted.`, or
    (if something went wrong) `Run crashed: ...` / `Could not start the run: ...` with the
    underlying error. The dialog stays open afterward — launch another Subject, or close it.
 
