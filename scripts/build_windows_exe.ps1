@@ -24,6 +24,18 @@
     PyQt6 as an optional dependency for its own tooling, so it must be explicitly excluded even
     though xpman itself never imports it.
 
+    PsychoPy's own visual stimulus classes (Rect, Line, TextBox2, the pyglet window backend...)
+    use *lazy* imports internally (psychopy.contrib.lazy_import / psychopy.plugins) that
+    PyInstaller's static analysis can't trace -- these are invisible from simply starting the
+    app (they only fire once an actual experiment Run tries to draw something), which is
+    exactly how this shipped broken twice: v0.1.0's "no task types registered" bug only showed
+    up when creating a Program, and a second bug (this one) only showed up when actually
+    clicking Launch, since window/stimulus creation happens entirely inside the launch_worker
+    subprocess, a code path the main GUI never touches. Rather than whack-a-mole individual
+    ModuleNotFoundErrors as each stimulus type gets used for the first time,
+    --collect-submodules psychopy.visual bundles the whole (bounded, not the whole of
+    psychopy) subpackage up front.
+
 .NOTES
     Run from the repo root (or anywhere -- $PSScriptRoot anchors paths). Requires the `build`
     optional dependency group: `pip install -e .[build]`.
@@ -36,6 +48,12 @@
            there is silent (no crash, just data written to the wrong place).
         3. Test on a machine/profile without the dev .venv active -- a build that only works in
            the dev checkout doesn't satisfy the actual packaging goal.
+        4. **Actually launch an Instance and let a Run execute** (e.g. invoke
+           `dist\xpman\xpman.exe --xpman-launch-worker --db-path ... --instance-id ...
+           --no-trigger-hardware` directly against a real DB, or click through the real GUI) --
+           steps 1-3 alone do NOT exercise launch_worker.py or PsychoPy window/stimulus
+           creation at all, which is exactly the code path that broke twice (LAUNCH_WORKER_FLAG
+           dispatch, then psychopy.visual's lazy imports) without steps 1-3 ever catching it.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -95,6 +113,12 @@ $PyInstallerArgs = @(
     "--onedir",
     "--noconfirm",
     "--collect-data", "psychopy",
+    # See the .DESCRIPTION section above: psychopy.visual's stimulus classes (Rect, Line,
+    # TextBox2, the pyglet window backend, ...) are pulled in via lazy imports PyInstaller's
+    # static analysis can't see, only reachable once launch_worker.py actually draws something
+    # -- bundling the whole subpackage up front avoids finding each one the hard way, one
+    # ModuleNotFoundError per stimulus type at a time.
+    "--collect-submodules", "psychopy.visual",
     # xpman's own task plugins (Dummy/FPVS) are discovered at runtime via
     # importlib.metadata.entry_points(group="xpman.tasks") (registry.py's discover_tasks()),
     # which needs xpman's *own* installed-package metadata (entry_points.txt inside its

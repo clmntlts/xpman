@@ -21,7 +21,13 @@ from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import freeze_program
 from xpman.core.models import Base, Result, Run, RunStatus
 from xpman.gui.dialogs.launch_dialog import LaunchDialog
-from xpman.gui.launch_worker import EXIT_ABORTED, EXIT_COMPLETED, EXIT_CRASHED, EXIT_SETUP_ERROR
+from xpman.gui.launch_worker import (
+    EXIT_ABORTED,
+    EXIT_COMPLETED,
+    EXIT_CRASHED,
+    EXIT_SETUP_ERROR,
+    LAUNCH_WORKER_FLAG,
+)
 
 
 @pytest.fixture()
@@ -133,6 +139,32 @@ def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     assert "--no-trigger-hardware" not in args_arg  # trigger checkbox checked by default
     assert "--parallel-port-address" in args_arg
     assert str(0x0378) in args_arg  # default shown in the field
+
+
+def test_launch_uses_sentinel_flag_not_dash_m_when_frozen(qtbot, db_path, tmp_path):
+    """Regression test: a PyInstaller-frozen build has exactly one .exe -- sys.executable IS
+    that .exe, which does not understand "-m xpman.gui.launch_worker" the way a real python.exe
+    does (it just re-runs its own bundled entry point regardless of arguments). Before this
+    fix, clicking Launch on a packaged build silently reopened the Profile Select dialog
+    instead of running anything. When frozen, LaunchDialog must instead pass the
+    LAUNCH_WORKER_FLAG sentinel app.py's entry point dispatches on."""
+    fixture = _build_fixture(db_path)
+    data_dir = tmp_path / "runs"
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, data_dir)
+    qtbot.addWidget(dialog)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process), patch(
+        "xpman.gui.dialogs.launch_dialog.sys.frozen", True, create=True
+    ):
+        dialog._on_launch()
+
+    args_arg = mock_process.start.call_args[0][1]
+    assert args_arg[0] == LAUNCH_WORKER_FLAG
+    assert "-m" not in args_arg
+    assert "xpman.gui.launch_worker" not in args_arg
+    assert "--db-path" in args_arg
+    assert str(db_path) in args_arg
 
 
 def test_launch_with_trigger_unchecked_passes_no_trigger_hardware(qtbot, db_path, tmp_path):

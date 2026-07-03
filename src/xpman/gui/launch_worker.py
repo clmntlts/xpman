@@ -56,6 +56,17 @@ EXIT_ABORTED = 1
 EXIT_CRASHED = 2
 EXIT_SETUP_ERROR = 3
 
+#: Sentinel CLI flag LaunchDialog uses to re-invoke a *frozen* build of xpman as this worker
+#: instead of the main GUI. A dev checkout spawns the worker via
+#: `sys.executable -m xpman.gui.launch_worker ...` (a real python.exe understands -m); a
+#: PyInstaller-frozen build has exactly one .exe with one bundled entry point (gui/app.py), and
+#: sys.executable there IS that .exe, which does not support "-m some_other_module" -- it just
+#: re-runs its own bundled entry point regardless of arguments. See gui/app.py's
+#: `if __name__ == "__main__":` block, which checks for this flag and dispatches to this
+#: module's main() instead of showing the GUI again -- without it, "Launch..." on a packaged
+#: build silently reopens the Profile Select dialog instead of running anything.
+LAUNCH_WORKER_FLAG = "--xpman-launch-worker"
+
 _RUN_STATUS_TO_EXIT_CODE = {
     RunStatus.COMPLETED: EXIT_COMPLETED,
     RunStatus.ABORTED: EXIT_ABORTED,

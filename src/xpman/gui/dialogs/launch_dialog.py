@@ -35,7 +35,13 @@ from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import get_instance
 from xpman.core.models import Result
-from xpman.gui.launch_worker import EXIT_ABORTED, EXIT_COMPLETED, EXIT_CRASHED, EXIT_SETUP_ERROR
+from xpman.gui.launch_worker import (
+    EXIT_ABORTED,
+    EXIT_COMPLETED,
+    EXIT_CRASHED,
+    EXIT_SETUP_ERROR,
+    LAUNCH_WORKER_FLAG,
+)
 from xpman.runtime.engine import count_trials
 
 #: How often to poll the shared DB for progress while a Run is active. Cheap (COUNT(*) with an
@@ -175,14 +181,23 @@ class LaunchDialog(QDialog):
         self._control_dir = Path(tempfile.mkdtemp(prefix="xpman_launch_"))
         self._abort_file = self._control_dir / "abort.flag"
 
-        args = [
-            "-m", "xpman.gui.launch_worker",
+        worker_args = [
             "--db-path", str(self._db_path),
             "--instance-id", str(self._instance_id),
             "--subject-id", str(subject_id),
             "--data-dir", str(self._data_dir),
             "--abort-file", str(self._abort_file),
         ]
+        if getattr(sys, "frozen", False):
+            # A frozen build has exactly one .exe (sys.executable IS xpman.exe -- there's no
+            # separate python.exe to "-m" a different module into). Re-invoke that same exe
+            # with a sentinel flag app.py's entry point recognizes instead -- see
+            # launch_worker.LAUNCH_WORKER_FLAG's docstring for the full story. Without this,
+            # "Launch..." on a packaged build silently reopened the Profile Select dialog
+            # instead of running anything.
+            args = [LAUNCH_WORKER_FLAG] + worker_args
+        else:
+            args = ["-m", "xpman.gui.launch_worker"] + worker_args
         if self._fullscreen_check.isChecked():
             args.append("--fullscreen")
         if self._trigger_check.isChecked():
