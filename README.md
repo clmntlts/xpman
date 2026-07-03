@@ -61,6 +61,24 @@ Produces a one-folder standalone build at `dist\xpman\xpman.exe` — copy the wh
 folder to share it; everything it needs (including a Python interpreter) is inside. See the
 script's header comment for what it excludes/why and how to verify a build before trusting it.
 
+### Build an installer
+
+```powershell
+scripts\build_installer.ps1
+```
+
+Wraps the packaged build above into a single `installer\output\xpman-setup-<version>.exe` —
+what to actually hand a lab member: double-click, click through a normal installer wizard
+(license page, optional desktop shortcut), get a Start Menu entry and a proper uninstall entry
+in "Apps & Features". Installs per-user (no admin rights needed) to
+`%LOCALAPPDATA%\Programs\xpman`; uninstalling never touches the `data\` folder it creates at
+runtime (your collected experiment data), only the application files themselves. Installs
+[Inno Setup](https://jrsoftware.org/isinfo.php) via `winget` automatically if not already
+present — a build-machine-only dependency, the resulting installer needs nothing extra on the
+end user's machine. **Not code-signed** — Windows SmartScreen will show an "unrecognized
+publisher" warning on first run; a paid certificate would be needed to remove that, not set up
+here.
+
 ## Project layout
 
 See `docs/architecture.md` (or the plan file above) for the full package layout and the

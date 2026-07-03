@@ -92,6 +92,19 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       machine that isn't this dev box, per the plan's Windows-11 parallel-port driver
       placement risk. (The build itself is verified working; only the parallel-port driver
       interaction on a genuinely clean machine remains untested.)
+- [x] **Windows installer** — `scripts/build_installer.ps1` + `installer/xpman.iss` (Inno
+      Setup) wrap `dist\xpman\` into a single `xpman-setup-<version>.exe`: license page,
+      optional desktop shortcut, Start Menu entry, "Apps & Features" uninstall entry.
+      Per-user install to `%LOCALAPPDATA%\Programs\xpman` (no admin needed) — caught a real
+      mistake before shipping it: Inno Setup's `{userappdata}` constant is Roaming AppData,
+      not Local, which would have bloated roaming profiles on a domain-joined lab network;
+      fixed to `{localappdata}`. Verified with real silent installs/uninstalls (not just a
+      successful compile): correct install location, Start Menu shortcuts, registry entry,
+      the installed exe launches and resolves its `data\` path correctly, and uninstalling
+      removes the app but deliberately leaves `data\` (the researcher's actual experiment
+      database) untouched. Optional, unchecked-by-default, separately-elevated step to run
+      the parallel-port driver installer. **Not code-signed** — SmartScreen will warn on
+      first run; needs a paid certificate, not set up here.
 
 ## Codebase audit follow-ups (2026-07-03)
 
