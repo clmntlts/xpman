@@ -105,6 +105,20 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       database) untouched. Optional, unchecked-by-default, separately-elevated step to run
       the parallel-port driver installer. **Not code-signed** — SmartScreen will warn on
       first run; needs a paid certificate, not set up here.
+- [x] **Fixed a real bug the v0.1.0 release shipped with, found via user report**: the
+      packaged `.exe` couldn't create a Program at all — the GUI said "No task types are
+      registered." Two stacked PyInstaller gaps, only the second one visible once the first
+      was fixed: (1) `importlib.metadata.entry_points()` (how `registry.discover_tasks()`
+      finds the Dummy/FPVS plugins) needs xpman's own installed-package metadata
+      (`entry_points.txt`), which PyInstaller doesn't bundle by default — fixed with
+      `--copy-metadata xpman`. (2) Once entry points were discoverable, loading them crashed
+      with `ModuleNotFoundError: No module named 'xpman.tasks.dummy'` — PyInstaller's static
+      import analysis never traces into modules only referenced by an entry-points *string*,
+      not a real `import` statement — fixed by adding `xpman.tasks.dummy.task`/
+      `xpman.tasks.fpvs.task` as explicit `--hidden-import`s (their own real imports then get
+      traced normally from there). Verified with the real frozen exe, not simulated: it
+      genuinely crashed with that exact traceback before the fix and runs clean after.
+      Republished as v0.1.1 — **v0.1.0's release asset has this bug**, don't use it.
 
 ## Codebase audit follow-ups (2026-07-03)
 

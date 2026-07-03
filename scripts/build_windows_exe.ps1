@@ -74,7 +74,19 @@ $HiddenImports = @(
     "psychopy.core",
     "psychopy.hardware.keyboard",
     "psychopy.parallel",
-    "psychopy.monitors"
+    "psychopy.monitors",
+    # The task modules entry_points.txt points at (see the --copy-metadata comment below) --
+    # PyInstaller's static analysis starts from src\xpman\gui\app.py and follows real `import`
+    # statements, but nothing in that traced graph ever literally imports
+    # xpman.tasks.dummy.task/xpman.tasks.fpvs.task (only the *string* in entry_points.txt
+    # references them, resolved dynamically at runtime by importlib.metadata). Without this,
+    # the frozen exe correctly *discovers* the task entry points (once --copy-metadata is
+    # right) but then fails to actually import them: "ModuleNotFoundError: No module named
+    # 'xpman.tasks.dummy'". Only the two task.py modules need listing explicitly -- each one's
+    # own real `import` statements (paradigm_oddball, photodiode, image_set, schema, ...) are
+    # then followed normally by PyInstaller's analysis once it starts tracing from here.
+    "xpman.tasks.dummy.task",
+    "xpman.tasks.fpvs.task"
 )
 
 $PyInstallerArgs = @(
@@ -82,7 +94,16 @@ $PyInstallerArgs = @(
     "--name", "xpman",
     "--onedir",
     "--noconfirm",
-    "--collect-data", "psychopy"
+    "--collect-data", "psychopy",
+    # xpman's own task plugins (Dummy/FPVS) are discovered at runtime via
+    # importlib.metadata.entry_points(group="xpman.tasks") (registry.py's discover_tasks()),
+    # which needs xpman's *own* installed-package metadata (entry_points.txt inside its
+    # .dist-info/.egg-info) to be present on disk -- PyInstaller does not bundle a frozen
+    # app's own package metadata by default, only its code. Without this flag the frozen exe
+    # silently discovers zero tasks: no error, no crash, just an empty task registry, which
+    # surfaces confusingly far downstream as ProgramCreateDialog's "No task types are
+    # registered" (blocking Program creation) rather than as an obvious build problem.
+    "--copy-metadata", "xpman"
 )
 foreach ($m in $ExcludeModules) { $PyInstallerArgs += @("--exclude-module", $m) }
 foreach ($m in $HiddenImports) { $PyInstallerArgs += @("--hidden-import", $m) }
