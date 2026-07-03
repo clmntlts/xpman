@@ -190,6 +190,28 @@ def test_launch_instance_opens_launch_dialog_with_correct_args(qtbot, session, r
     )
 
 
+def test_launch_instance_refreshes_and_expires_session_after_dialog_closes(qtbot, session, registry, tmp_path):
+    """Regression test: the launch subprocess writes new Run/Result rows (and updates Run
+    status) through its own independent DB connection, not this session -- without expiring the
+    session's identity map and rebuilding the tree afterward, a newly completed Run either never
+    shows up in the tree at all, or shows stale cached data forever if it was already viewed
+    while still in progress."""
+    fixture = _build_fixture(session)
+    db_path = tmp_path / "xpman.db"
+    data_dir = tmp_path / "runs"
+    window = MainWindow(session, fixture["profile"].id, registry, db_path=db_path, data_dir=data_dir)
+    qtbot.addWidget(window)
+
+    with patch("xpman.gui.main_window.LaunchDialog") as dialog_cls, patch.object(
+        window, "refresh"
+    ) as mock_refresh, patch.object(session, "expire_all") as mock_expire_all:
+        dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+        window._launch_instance(fixture["instance"].id)
+
+    mock_expire_all.assert_called_once()
+    mock_refresh.assert_called_once()
+
+
 def test_menu_for_block_offers_new_trial_and_delete(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)

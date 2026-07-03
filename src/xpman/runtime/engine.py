@@ -71,6 +71,22 @@ def _build_trial_sequence(frozen_program: dict, rng: "numpy.random.Generator") -
                     permutation = rng.permutation(len(ordered))
                     ordered = [ordered[i] for i in permutation]
                 for trial in ordered:
+                    if trial["condition_id"] is None:
+                        # A Trial's condition_id is only ever None here because its Condition
+                        # was deleted (repository.delete_condition SET NULLs the FK) *before*
+                        # this Program was frozen -- a Trial can never be created without one
+                        # (see dialogs/trial_create_dialog.py). Every field on every task's
+                        # ConditionParams model has a default, so silently passing {} through
+                        # would validate cleanly and run with default parameters instead of the
+                        # researcher's actual (now-gone) intent -- wrong data with no warning.
+                        # Fail loud instead, matching how FPVSTask already raises when a
+                        # selector matches zero images rather than guessing.
+                        raise ValueError(
+                            f"trial {trial['id']} has no Condition (its Condition was deleted "
+                            "after this Trial was created, before the Program was frozen) -- "
+                            "cannot run it with unknown parameters. Fix the Program (assign a "
+                            "Condition or delete the Trial) and freeze a new Instance."
+                        )
                     condition = conditions_by_id.get(trial["condition_id"])
                     sequence.append(
                         _TrialSpec(
@@ -155,9 +171,20 @@ def execute_run(
         else:
             run.status = RunStatus.COMPLETED
     except Exception:
+        # The per-trial session.commit() above may itself be what raised (e.g. a transient
+        # "database is locked" from the concurrently-writing GUI process). If so, this
+        # session's transaction is already rolled back by SQLAlchemy, and attempting another
+        # commit without rolling back first raises PendingRollbackError -- masking the real
+        # exception and leaving run.status/ended_at never durably persisted, defeating the
+        # crash-safety guarantee this function promises. Roll back unconditionally first (a
+        # no-op if there was nothing to roll back) so the recovery commit below can succeed.
+        session.rollback()
         run.status = RunStatus.CRASHED
         event_sink.log("run_crashed", {})
-        session.commit()
+        try:
+            session.commit()
+        except Exception as commit_exc:  # noqa: BLE001 - must not mask the original exception
+            event_sink.log("crash_status_commit_failed", {"error": repr(commit_exc)})
         raise
     finally:
         try:
@@ -165,7 +192,11 @@ def execute_run(
         except Exception as cleanup_exc:  # noqa: BLE001 - must not mask the original exception
             event_sink.log("cleanup_failed", {"error": repr(cleanup_exc)})
         run.ended_at = datetime.now(timezone.utc)
-        session.commit()
+        try:
+            session.commit()
+        except Exception as commit_exc:  # noqa: BLE001 - must not mask whatever exception, if
+            # any, is already propagating out of this finally block.
+            event_sink.log("final_commit_failed", {"error": repr(commit_exc)})
         event_sink.close()
 
     return run

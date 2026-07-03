@@ -11,6 +11,7 @@ whole point of the process boundary.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -69,6 +70,7 @@ class LaunchDialog(QDialog):
         self._run_id: int | None = None
         self._total_trials = 0
         self._abort_file: Path | None = None
+        self._control_dir: Path | None = None
 
         instance = get_instance(session, instance_id)
         self.setWindowTitle(f'Launch "{instance.name}"')
@@ -161,10 +163,17 @@ class LaunchDialog(QDialog):
             return
 
         instance = get_instance(self._session, self._instance_id)
-        self._total_trials = count_trials(instance.frozen_json["program"])
+        try:
+            self._total_trials = count_trials(instance.frozen_json["program"])
+        except ValueError as exc:
+            # E.g. a Trial in this frozen Instance has no Condition (deleted after freezing --
+            # see runtime/engine.py's _build_trial_sequence). Surface it clearly instead of
+            # letting the exception propagate out of this Qt slot.
+            self._status_label.setText(f"Cannot launch: {exc}")
+            return
 
-        control_dir = Path(tempfile.mkdtemp(prefix="xpman_launch_"))
-        self._abort_file = control_dir / "abort.flag"
+        self._control_dir = Path(tempfile.mkdtemp(prefix="xpman_launch_"))
+        self._abort_file = self._control_dir / "abort.flag"
 
         args = [
             "-m", "xpman.gui.launch_worker",
@@ -271,10 +280,20 @@ class LaunchDialog(QDialog):
 
     # -- completion --------------------------------------------------------------------------------
 
+    def _cleanup_control_dir(self) -> None:
+        """Remove the temp directory holding this launch's abort-flag file. Every launch
+        creates one (tempfile.mkdtemp in _on_launch); without this, every single "Launch..."
+        action -- regardless of how the run ends -- permanently leaked an ``xpman_launch_*``
+        directory in the OS temp folder."""
+        if self._control_dir is not None:
+            shutil.rmtree(self._control_dir, ignore_errors=True)
+            self._control_dir = None
+
     def _on_finished(self, exit_code: int, exit_status) -> None:  # noqa: ARG002 - Qt signal signature
         self._progress_timer.stop()
         self._abort_button.hide()
         self._set_controls_enabled(True)
+        self._cleanup_control_dir()
 
         stderr = ""
         if self._process is not None:
@@ -293,4 +312,12 @@ class LaunchDialog(QDialog):
         self._progress_timer.stop()
         self._set_controls_enabled(True)
         self._abort_button.hide()
+        self._cleanup_control_dir()
         self._status_label.setText(f"Failed to start the experiment process (Qt error: {error}).")
+
+    def reject(self) -> None:
+        # Covers closing the dialog (Close button / window X) before a launch ever finishes --
+        # without this, closing mid-run would also leak this launch's control directory
+        # permanently, same as the finished/error paths above.
+        self._cleanup_control_dir()
+        super().reject()

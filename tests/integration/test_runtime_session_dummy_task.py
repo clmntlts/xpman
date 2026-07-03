@@ -12,17 +12,21 @@ analyzer/photodiode against the legacy app) is a separate manual step -- see
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
-from xpman.core.instance import freeze_program
+from xpman.core.instance import freeze_program, get_instance
 from xpman.core.models import Base, Result, Run, RunStatus
+from xpman.core.repository import get_subject
 from xpman.hardware.clock import Clock
 from xpman.hardware.trigger_null import NullTrigger
-from xpman.runtime.session import launch_run
+from xpman.runtime.engine import execute_run
+from xpman.runtime.logging_sink import EventSink
+from xpman.runtime.session import XPMAN_VERSION, launch_run
 from xpman.tasks.dummy.task import DummyTask
 from xpman.tasks.registry import TaskRegistry
 
@@ -226,6 +230,77 @@ def test_task_exception_marks_run_crashed_and_persists_partial_results(session, 
     results = session.query(Result).filter(Result.run_id == run.id).all()
     assert len(results) == 1
     assert results[0].trial_index == 0
+
+
+class _CommitOncePoisoned:
+    """Wraps a real Session, reproducing SQLAlchemy's actual failure mode: after commit() raises
+    once, every *subsequent* commit() also raises (a stand-in for the real
+    ``PendingRollbackError`` SQLAlchemy raises once a session's transaction needs an explicit
+    rollback) -- until rollback() is called, which clears the poisoned state. Used to prove
+    ``execute_run``'s except-block recovery commit doesn't itself get masked by exactly this
+    failure mode; a plain one-shot ``side_effect=[Exception, None]`` mock would NOT catch a
+    regression here, since it wouldn't model "stays broken until rollback" at all.
+    """
+
+    def __init__(self, real_session):
+        self._real = real_session
+        self._poisoned = False
+        self._first_call_done = False
+
+    def commit(self):
+        if not self._first_call_done:
+            self._first_call_done = True
+            self._poisoned = True
+            raise RuntimeError("simulated commit failure (e.g. database is locked)")
+        if self._poisoned:
+            raise RuntimeError("simulated PendingRollbackError: session needs rollback() first")
+        return self._real.commit()
+
+    def rollback(self):
+        self._poisoned = False
+        return self._real.rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_commit_failure_during_a_trial_does_not_mask_the_real_error(session, registry, mock_window, tmp_path):
+    """Regression test: execute_run's per-trial session.commit() (runtime/engine.py) used to be
+    followed by a bare recovery commit with no rollback() first. If the ORIGINAL commit is what
+    raised, that recovery commit would itself raise (real SQLAlchemy: PendingRollbackError),
+    replacing the real error and leaving run.status/ended_at never persisted -- exactly what
+    _CommitOncePoisoned reproduces deterministically."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    instance = get_instance(session, instance_id)
+    subject = get_subject(session, subject_id)
+
+    run = Run(
+        instance_id=instance.id, subject_id=subject.id, started_at=datetime.now(timezone.utc),
+        xpman_version=XPMAN_VERSION, status=RunStatus.ABORTED,
+    )
+    session.add(run)
+    session.commit()
+
+    run_dir = tmp_path / "run"
+    event_sink = EventSink(csv_path=run_dir / "events.csv", parquet_path=run_dir / "events.parquet")
+    flaky_session = _CommitOncePoisoned(session)
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        # The *first* trial's Result-commit is the one _CommitOncePoisoned fails -- it must
+        # propagate as the original RuntimeError, not a secondary "poisoned session" error.
+        with pytest.raises(RuntimeError, match="simulated commit failure"):
+            execute_run(
+                flaky_session, run=run, instance=instance, subject=subject,
+                task=registry.get("dummy"), window=mock_window, trigger=NullTrigger(reset_after=0.0),
+                clock=Clock(), event_sink=event_sink,
+            )
+
+    # The recovery commit (after rollback()) succeeded, so this is durably CRASHED, not left
+    # in whatever transient status it had when the exception hit -- and ended_at was still set
+    # by the finally block, proving the crash-safety guarantee held despite the failure.
+    session.refresh(run)
+    assert run.status == RunStatus.CRASHED
+    assert run.ended_at is not None
 
 
 def test_on_run_created_fires_early_with_committed_run_id(session, registry, mock_window, tmp_path):

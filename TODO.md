@@ -93,6 +93,40 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       placement risk. (The build itself is verified working; only the parallel-port driver
       interaction on a genuinely clean machine remains untested.)
 
+## Codebase audit follow-ups (2026-07-03)
+
+A full audit (3 parallel deep-reads of core/runtime, tasks/FPVS, and GUI, each verifying
+claims directly rather than speculating) found and fixed 8 real bugs -- a deleted Condition
+silently running a Trial with default parameters, a crash-recovery path that could mask the
+real error and skip persisting Run.status, session staleness after a launch, a leaked temp
+directory per launch, a numpy-to-JSON serialization footgun, an unprotected trigger-port
+reset, live (non-deep-copied) references inside `Instance.frozen_json`, and unvalidated
+`oddball_freq_hz >= base_freq_hz`. All have tests. Left open, deliberately not auto-fixed:
+
+- [ ] **No `session.rollback()` anywhere in the GUI on commit failure** — the same
+      `repo.write(...); session.commit()` pattern, with no `try/except`/`rollback()`, is
+      repeated across every `*_create_dialog.py`/`*_edit_dialog.py` and every save/delete
+      handler in `main_window.py` (~20 call sites). If any `commit()` ever raises for real (DB
+      contention with the concurrently-writing launch subprocess, disk full, etc.), the
+      session is left poisoned (`PendingRollbackError`) for the rest of that GUI process's
+      life, with no error dialog explaining why. Needs a decision on approach (a shared
+      commit-or-rollback helper?) before touching this many files.
+- [ ] **No frequency-ceiling sanity check** (`tasks/fpvs/paradigm_oddball.py`'s
+      `frames_per_cycle`) — any `base_freq_hz` request above roughly half the monitor's
+      refresh rate silently clamps to the full refresh rate (e.g. a mistyped `60` instead of
+      `6` on a 60Hz monitor "achieves" 60Hz with zero ISI). `achieved_base_freq_hz` is reported
+      back, per the documented "never silently substitute" policy, but nothing compares it
+      against what was requested and warns on a large divergence. Needs a threshold + UX
+      decision (GUI warning? hard error?), not a mechanical fix.
+- [ ] **Unverified: does closing the Launch dialog mid-run orphan the subprocess?** The Close
+      button is never disabled during an active launch. Whether the actual `launch_worker.py`
+      OS process (and its fullscreen PsychoPy window) gets terminated or left running when the
+      dialog is closed early was not empirically tested — needs verification before deciding
+      whether a fix (warn before closing, or explicitly terminate) is even needed.
+- [ ] `LaunchDialog._poll_progress` opens+disposes a new SQLAlchemy `Engine` every 500ms poll
+      tick instead of reusing one for the run's duration — correct, just wasteful. Low
+      priority, purely an efficiency nit.
+
 ## Nice-to-haves / not yet scoped
 
 - [ ] Task types beyond dummy/FPVS (e.g. "Crowding") — explicitly out of scope until real

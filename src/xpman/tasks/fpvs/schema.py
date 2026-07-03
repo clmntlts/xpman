@@ -11,7 +11,7 @@ is meant to be overridden per Condition, and there is deliberately no default pa
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from xpman.tasks.fpvs.fixation import FixationParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
@@ -56,6 +56,24 @@ class FPVSConditionParams(BaseModel):
     fixation: FixationParams = Field(default_factory=FixationParams)
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
+
+    @model_validator(mode="after")
+    def _check_oddball_below_base_frequency(self) -> "FPVSConditionParams":
+        # Previously only enforced deep inside oddball_period_stimuli() (paradigm_oddball.py),
+        # which only runs mid-trial, well after the GUI has already saved the Condition and a
+        # researcher has clicked Launch -- a plausible base/oddball value swap crashed the run
+        # instead of being rejected at save time with a clear message. Strict "<", not "<=":
+        # oddball_freq_hz == base_freq_hz makes oddball_period_stimuli return period=1, which
+        # makes *every* stimulus (including the first) an oddball -- degenerate, and
+        # contradicts run_base_oddball_sequence's own documented "position 1 is never an
+        # oddball" behavior.
+        if self.oddball.oddball_freq_hz >= self.base.base_freq_hz:
+            raise ValueError(
+                f"oddball.oddball_freq_hz ({self.oddball.oddball_freq_hz!r}) must be strictly "
+                f"less than base.base_freq_hz ({self.base.base_freq_hz!r}) -- the oddball is a "
+                "less-frequent subset of the base stream, not an equal or faster one."
+            )
+        return self
 
 
 class FPVSSchema:

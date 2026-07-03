@@ -530,6 +530,16 @@ class MainWindow(QMainWindow):
         # abort, launch again) and only ever closes via its own Close button; nothing here
         # needs to react to how it was dismissed.
 
+        # The launch subprocess writes new Run/Result rows (and updates Run.status/ended_at)
+        # through its own independent DB connection, not self._session -- expire_all() so the
+        # next query for any row self._session already had cached (e.g. this Instance's Runs,
+        # if the user peeked at one mid-launch) re-reads current data instead of returning a
+        # stale identity-map hit, then refresh() so the tree actually shows the new Run(s) at
+        # all (it previously didn't, regardless of staleness, since nothing here ever rebuilt
+        # the tree after a launch).
+        self._session.expire_all()
+        self.refresh()
+
     # -- edit actions ---------------------------------------------------------------------------
     #
     # Edits the metadata fields the create dialogs collected (name, resource dir, etc.) -- NOT

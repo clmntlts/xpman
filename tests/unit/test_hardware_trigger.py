@@ -101,3 +101,19 @@ def test_send_trigger_skips_wait_when_reset_after_is_zero():
             ((3,), {}),
             ((0,), {}),
         ]
+
+
+def test_send_trigger_resets_port_even_if_wait_is_interrupted():
+    """Regression test: if core.wait() raises mid-pulse (e.g. an abort signal), the port must
+    still be reset to 0 -- otherwise it stays latched at the stale code, corrupting whatever
+    trigger fires next."""
+    with _MockedParallelPort(reset_after=0.005) as ctx:
+        ctx.mock_wait.side_effect = KeyboardInterrupt("simulated interrupt during the pulse hold")
+
+        with pytest.raises(KeyboardInterrupt):
+            ctx.trigger.send_trigger(9)
+
+        assert ctx.mock_port_instance.setData.call_args_list == [
+            ((9,), {}),
+            ((0,), {}),
+        ]
