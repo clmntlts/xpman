@@ -119,6 +119,30 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       traced normally from there). Verified with the real frozen exe, not simulated: it
       genuinely crashed with that exact traceback before the fix and runs clean after.
       Republished as v0.1.1 — **v0.1.0's release asset has this bug**, don't use it.
+- [x] **Fixed a second, worse bug in the same v0.1.0/v0.1.1 releases, also found via user
+      report**: clicking "Launch..." on a packaged build did nothing except silently reopen
+      the Profile Select dialog — no experiment ever ran. Root cause: `LaunchDialog` spawns
+      `xpman.gui.launch_worker` via `sys.executable -m xpman.gui.launch_worker ...`, but in a
+      frozen build `sys.executable` **is `xpman.exe` itself** — there's no separate
+      `python.exe`, and PyInstaller's bootloader doesn't understand `-m modulename`; it just
+      re-runs its own single bundled entry point (`app.py`) regardless of arguments, which
+      ignores `sys.argv` entirely and just shows the GUI again. Fixed by having `LaunchDialog`
+      re-invoke the same exe with a sentinel flag (`LAUNCH_WORKER_FLAG`) that `app.py`'s entry
+      point now checks *before* constructing a `QApplication`, dispatching to
+      `launch_worker.main()` instead. Verified by invoking the real frozen exe directly with
+      that exact command line against a real database — this in turn surfaced a **third**
+      bug, invisible until the first two were fixed: PsychoPy's own stimulus classes (window
+      backend, `Rect`, `Line`, `TextBox2`, ...) use internal lazy imports PyInstaller's static
+      analysis can't trace, so window/stimulus creation crashed with a `ModuleNotFoundError`
+      chain the moment a Run actually tried to draw something — a code path *only* reachable
+      inside the launch_worker subprocess, never touched by starting the app or clicking
+      around the GUI. Fixed with `--collect-submodules psychopy.visual` rather than whacking
+      each one individually. Verified with a full real Run through the rebuilt frozen exe: a
+      real PsychoPy window, real flips/triggers logged, `Run.status == completed`, a real
+      `Result` row persisted — not just an exit code. Republished as **v0.1.2** —
+      **v0.1.0 and v0.1.1 both have this bug**, don't use them. `build_windows_exe.ps1`'s own
+      header comment now says explicitly: starting the app and clicking around does NOT
+      exercise this code path at all; verifying a build means actually launching a Run.
 
 ## Codebase audit follow-ups (2026-07-03)
 

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
-from xpman.gui.app import _default_base_dir
+from xpman.gui.app import _default_base_dir, run_from_argv
+from xpman.gui.launch_worker import LAUNCH_WORKER_FLAG
 
 
 def test_default_base_dir_uses_source_tree_root_when_not_frozen(monkeypatch):
@@ -37,3 +39,32 @@ def test_default_base_dir_uses_executable_directory_when_frozen(monkeypatch, tmp
     base_dir = _default_base_dir()
 
     assert base_dir == fake_exe.parent
+
+
+# ---------------------------------------------------------------------------
+# run_from_argv -- the frozen-build "which entry point" dispatch
+#
+# Regression coverage: a PyInstaller-frozen build has exactly one .exe, so LaunchDialog
+# re-invokes it with LAUNCH_WORKER_FLAG rather than "-m xpman.gui.launch_worker" (only a real
+# python.exe understands -m). Before this dispatch existed, that just silently reopened the
+# Profile Select dialog instead of running an experiment.
+# ---------------------------------------------------------------------------
+
+
+def test_run_from_argv_without_flag_calls_main():
+    with patch("xpman.gui.app.main", return_value=42) as mock_main:
+        result = run_from_argv(["xpman.exe"])
+
+    mock_main.assert_called_once_with()
+    assert result == 42
+
+
+def test_run_from_argv_with_flag_dispatches_to_launch_worker_not_main():
+    with patch("xpman.gui.app.main") as mock_main, patch(
+        "xpman.gui.launch_worker.main", return_value=7
+    ) as mock_worker_main:
+        result = run_from_argv(["xpman.exe", LAUNCH_WORKER_FLAG, "--db-path", "x.db", "--instance-id", "1"])
+
+    mock_main.assert_not_called()
+    mock_worker_main.assert_called_once_with(["--db-path", "x.db", "--instance-id", "1"])
+    assert result == 7

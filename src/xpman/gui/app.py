@@ -68,5 +68,27 @@ def main(db_path: Path = DEFAULT_DB_PATH, data_dir: Path = DEFAULT_DATA_DIR) -> 
     return app.exec()
 
 
+def run_from_argv(argv: list[str]) -> int:
+    """Dispatch on ``argv`` (normally ``sys.argv``): either show the GUI (``main()``) or, if
+    ``launch_worker.LAUNCH_WORKER_FLAG`` is present, run an experiment instead.
+
+    See that flag's docstring for the full story: a PyInstaller-frozen build has exactly one
+    .exe (one bundled entry point), so ``LaunchDialog`` re-invokes *this same executable* with
+    that sentinel flag rather than ``-m xpman.gui.launch_worker`` (which only a real
+    ``python.exe`` understands) -- without this dispatch, "Launch..." on a packaged build
+    silently reopened the Profile Select dialog instead of running anything. The check happens
+    before any ``QApplication`` is constructed -- the worker never needs one, it drives a
+    ``psychopy.visual.Window``, not Qt widgets.
+    """
+    from xpman.gui.launch_worker import LAUNCH_WORKER_FLAG
+
+    if LAUNCH_WORKER_FLAG in argv:
+        from xpman.gui.launch_worker import main as launch_worker_main
+
+        worker_argv = [a for a in argv[1:] if a != LAUNCH_WORKER_FLAG]
+        return launch_worker_main(worker_argv)
+    return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_from_argv(sys.argv))
