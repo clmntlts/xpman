@@ -4,7 +4,7 @@ An open, dongle-free experiment runner for EEG / vision-science studies, startin
 Fast Periodic Visual Stimulation (FPVS) paradigms.
 
 This is a from-scratch Python replacement for a legacy closed-source Java tool ("XP Man /
-Experiment Manager") that required a paid hardware dongle to run and stored all data in a
+Experiment Manager") that required a hardware dongle to run and stored all data in a
 discontinued proprietary database (db4o). xpman has no licensing dependency, stores data in
 plain SQLite + Parquet/CSV, and is meant to be freely shared with other labs.
 
