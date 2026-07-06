@@ -49,7 +49,20 @@ def registry():
 @pytest.fixture()
 def mock_window():
     window = MagicMock(name="Window")
-    window.flip.side_effect = (i / 60 for i in range(10_000))
+    # callOnFlip records pending callbacks; flip() invokes them (so the dummy task's
+    # trigger.set_code/clear_code actually run, the way a real PsychoPy window fires callOnFlip at
+    # the buffer swap) then returns the next increasing flip timestamp.
+    _pending: list = []
+    _timestamps = (i / 60 for i in range(10_000))
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        return next(_timestamps)
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
     return window
 
 

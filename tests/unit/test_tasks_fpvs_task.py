@@ -42,7 +42,20 @@ def stim_root(tmp_path):
 @pytest.fixture()
 def mock_window():
     window = MagicMock(name="Window")
-    window.flip.side_effect = (i / 60.0 for i in range(100_000))
+    # callOnFlip records pending callbacks; flip() invokes them (so trigger.set_code/clear_code
+    # actually run, the way a real PsychoPy window fires callOnFlip at the buffer swap) then
+    # returns the next flip timestamp, preserving the i/60 per-frame sequence.
+    _pending: list = []
+    _timestamps = (i / 60.0 for i in range(100_000))
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        return next(_timestamps)
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
     window.size = (800, 600)
     window.getActualFrameRate.return_value = 60.0
     return window
