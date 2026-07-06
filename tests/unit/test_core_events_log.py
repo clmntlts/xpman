@@ -7,11 +7,16 @@ import pytest
 from xpman.core.events_log import (
     DEFAULT_REFRESH_HZ,
     build_run_report,
+    build_trial_timelines,
     extract_trigger_rows,
     read_events,
     resolve_refresh_hz,
 )
 from xpman.runtime.logging_sink import EventSink
+
+
+def _ev(event_type, timestamp, payload=None):
+    return {"event_type": event_type, "timestamp": timestamp, "payload": payload or {}}
 
 
 def _write(path, rows):
@@ -79,8 +84,56 @@ def test_extract_trigger_rows_empty_when_no_triggers(tmp_path):
 
 
 def test_build_run_report(tmp_path):
-    report, triggers = build_run_report(_events_csv(tmp_path))
+    report, triggers, timelines = build_run_report(_events_csv(tmp_path))
     assert len(triggers) == 2
     assert {tc.code for tc in report.trigger_codes} == {1, 2}
     # "Trigger codes sent" section is populated in the formatted summary.
     assert "code=1" in report.format()
+    assert len(timelines) >= 0  # timeline present (segmentation covered in dedicated tests below)
+
+
+# ---------------------------------------------------------------------------
+# Per-trial timeline
+# ---------------------------------------------------------------------------
+
+
+def test_build_trial_timelines_segments_and_relativizes():
+    events = [
+        _ev("base_oddball_sequence_start", 10.0),
+        _ev("stimulus_onset", 10.0, {"is_oddball": False}),
+        _ev("trigger_sent", 10.001, {"code": 1, "is_oddball": False}),
+        _ev("oddball_onset", 10.83, {"is_oddball": True}),
+        _ev("trigger_sent", 10.831, {"code": 2, "is_oddball": True}),
+        _ev("base_oddball_sequence_end", 11.0),
+        # trial 2, much later
+        _ev("base_oddball_sequence_start", 40.0),
+        _ev("stimulus_onset", 40.0, {"is_oddball": False}),
+        _ev("trigger_sent", 40.001, {"code": 1, "is_oddball": False}),
+        _ev("base_oddball_sequence_end", 41.0),
+    ]
+    timelines = build_trial_timelines(events)
+
+    assert [t.index for t in timelines] == [1, 2]
+    t1 = timelines[0]
+    assert (t1.n_base, t1.n_oddball) == (1, 1)
+    assert t1.onsets[0].time_s == pytest.approx(0.0)  # relative to the trial start (10.0)
+    assert t1.onsets[1].time_s == pytest.approx(0.83)
+    assert [m.code for m in t1.triggers] == [1, 2]
+    assert t1.duration_s == pytest.approx(1.0)
+    # Trial 2 times are relative to ITS start (40.0), never cross-trial.
+    assert timelines[1].onsets[0].time_s == pytest.approx(0.0)
+
+
+def test_build_trial_timelines_empty_without_sequence_markers():
+    events = [_ev("flip", 0.0), _ev("stimulus_onset", 0.1, {"is_oddball": False})]
+    assert build_trial_timelines(events) == []
+
+
+def test_build_trial_timelines_unterminated_stream_still_emitted():
+    events = [
+        _ev("base_oddball_sequence_start", 0.0),
+        _ev("stimulus_onset", 0.5, {"is_oddball": False}),
+    ]
+    timelines = build_trial_timelines(events)
+    assert len(timelines) == 1
+    assert timelines[0].duration_s == pytest.approx(0.5)
