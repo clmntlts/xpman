@@ -149,6 +149,28 @@ trusting `pytest` alone.
   `hardware/trigger.py`, or a PsychoPy version bump. This is a manual smoke test, not CI (CI
   has no access to the physical rig).
 
+## New features to verify at the lab (2026-07, built to spec, not yet measured)
+
+Three features landed in software with green unit tests but are **unverified on hardware** — fold
+these into the same photodiode + logic-analyzer session:
+
+1. **Tightened trigger timing (callOnFlip).** Triggers now fire via `window.callOnFlip` at the
+   buffer swap instead of after `flip()` returns. Re-measure trigger-to-onset latency **and jitter**
+   against the photodiode and compare to the pre-change numbers — expect equal or tighter, lower
+   jitter. (Applies to both the parallel and serial backends.)
+2. **BioSemi USB serial trigger backend (SKU NS7830).** Select "Serial (USB)" in the Launch dialog
+   (or `--trigger-backend serial --serial-port COMx`). **Required setup: set the FTDI latency timer
+   to 1 ms** — Device Manager → Ports (COM & LPT) → the port → Properties → Port Settings → Advanced
+   → Latency Timer = 1 (the 16 ms default is the classic ±10 ms jitter cause). Then verify: the code
+   byte lands correctly on BioSemi's Status channel; the pulse is the device's fixed ~8 ms; and
+   latency/jitter are within spec **compared to the parallel port** on the same rig. The raw-byte
+   protocol is assumed — confirm against the BioSemi Trigger-Interface manual. Codes are 8-bit
+   (1–255); >255 (16-bit) is not supported yet.
+3. **Position jitter.** With a Condition using `position_jitter.enabled = true`, visually confirm the
+   image lands at varying positions within the configured region while the **fixation marker stays
+   centered** and the photodiode patch (screen corner) is unaffected. Each onset logs its `pos`, and
+   positions are reproducible for the same (Instance, Subject).
+
 ## Everything else stays in normal CI
 
 Image-set parsing, DB freeze/immutability, schema validation, and engine orchestration (using
