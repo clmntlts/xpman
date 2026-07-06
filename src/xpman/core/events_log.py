@@ -44,11 +44,18 @@ _ONSET_EVENTS = frozenset({"stimulus_onset", "oddball_onset"})
 
 @dataclass(frozen=True)
 class TimelineMark:
-    """One event on a trial's timeline, at ``time_s`` seconds *relative to the trial start*."""
+    """One event on a trial's timeline.
+
+    ``index`` is the stimulus position within the trial (0-based). It -- not ``time_s`` -- is what
+    the timeline view uses for x, so the k-th stimulus lands at the same x in *every* trial and
+    trials can be compared column-for-column (measured ``time_s`` jitters by a frame or two). Kept
+    for tooltips / any time-based use.
+    """
 
     time_s: float
     is_oddball: bool | None
     code: int | None  # trigger code (trigger marks only); None for stimulus onsets
+    index: int | None = None  # stimulus position within the trial
 
 
 @dataclass(frozen=True)
@@ -110,11 +117,15 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
         elif start_ts is not None:
             payload = e.get("payload") or {}
             if event_type in _ONSET_EVENTS:
-                onsets.append(TimelineMark(ts - start_ts, payload.get("is_oddball"), None))
+                idx = payload.get("stim_index")
+                index = idx if idx is not None else len(onsets)  # ordinal fallback for old logs
+                onsets.append(TimelineMark(ts - start_ts, payload.get("is_oddball"), None, index))
                 last_ts = ts
             elif event_type == "trigger_sent":
+                idx = payload.get("stim_index")
+                index = idx if idx is not None else len(triggers)
                 triggers.append(
-                    TimelineMark(ts - start_ts, payload.get("is_oddball"), payload.get("code"))
+                    TimelineMark(ts - start_ts, payload.get("is_oddball"), payload.get("code"), index)
                 )
                 last_ts = ts
     _flush(None)

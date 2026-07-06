@@ -1,11 +1,13 @@
-"""A per-trial timeline of a Run: each trial as a horizontal strip showing when stimuli were
-presented (base vs oddball onsets) and when triggers fired, on a shared time axis.
+"""A per-trial timeline of a Run: each trial as a horizontal strip showing where stimuli were
+presented (base vs oddball onsets) and where triggers fired.
 
 Read-only visualisation over :func:`xpman.core.events_log.build_trial_timelines` -- no hardware,
-no DB. Onsets are ticks (oddballs taller + accented); triggers are small marks on the row just
-below, so vertical alignment makes "every onset fired a trigger" obvious at a glance (and a missing
-trigger equally obvious). Rendered with ``QGraphicsScene`` so it's cheap for thousands of marks and
-its items are inspectable in tests.
+no DB. The x-axis is **stimulus position within the trial**, not measured time, so the k-th
+stimulus lands at the same x in every trial: trials stack into an aligned raster you can compare
+column-for-column (the periodic oddballs form clean vertical lines; a deviating trial jumps out).
+Onsets are ticks (oddballs taller + accented); triggers are marks on the row just below, so
+vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious. Rendered
+with ``QGraphicsScene`` so it's cheap for thousands of marks and its items are inspectable in tests.
 """
 
 from __future__ import annotations
@@ -50,13 +52,20 @@ class TimelineView(QGraphicsView):
             scene.addText("No stimulation events to plot for this run.").setDefaultTextColor(_TEXT)
             return
 
-        max_duration = max((t.duration_s for t in timelines), default=0.0) or 1.0
+        # x is the *stimulus position*, not measured time, so the k-th stimulus is at the same x in
+        # every trial -- trials line up column-for-column for direct visual comparison (measured
+        # time jitters by a frame or two). All trials share one grid = the widest trial's index.
+        max_index = max(
+            (m.index for t in timelines for m in (*t.onsets, *t.triggers) if m.index is not None),
+            default=0,
+        )
+        denom = max_index or 1
 
-        def x_at(time_s: float) -> float:
-            return _LABEL_W + (time_s / max_duration) * _PLOT_W
+        def x_at(index: int | None) -> float:
+            return _LABEL_W + ((index or 0) / denom) * _PLOT_W
 
         self._draw_legend(scene)
-        self._draw_time_axis(scene, max_duration, x_at, n_rows=len(timelines))
+        self._draw_position_axis(scene, max_index, x_at, n_rows=len(timelines))
 
         for row, trial in enumerate(timelines):
             y = _TOP + row * _ROW_H + _ROW_H / 2
@@ -68,19 +77,20 @@ class TimelineView(QGraphicsView):
             baseline.setZValue(-1)
 
             for onset in trial.onsets:
-                x = x_at(onset.time_s)
+                x = x_at(onset.index)
                 oddball = onset.is_oddball is True
                 height = _ONSET_ODDBALL_H if oddball else _ONSET_BASE_H
                 pen = QPen(_ODDBALL if oddball else _BASE)
                 pen.setWidth(2 if oddball else 1)
-                scene.addLine(x, y - height, x, y, pen)
+                tick = scene.addLine(x, y - height, x, y, pen)
+                tick.setToolTip(f"stimulus #{onset.index} @ {onset.time_s:.3f}s")
 
             trig_y = y + _TRIGGER_GAP
             for trig in trial.triggers:
-                x = x_at(trig.time_s)
+                x = x_at(trig.index)
                 color = _TRIGGER_ODDBALL if trig.is_oddball is True else _TRIGGER
                 dot = scene.addEllipse(x - 1.5, trig_y - 1.5, 3, 3, QPen(color), QBrush(color))
-                dot.setToolTip(f"trigger code {trig.code} @ {trig.time_s:.3f}s")
+                dot.setToolTip(f"trigger code {trig.code} · stimulus #{trig.index} @ {trig.time_s:.3f}s")
 
         scene.setSceneRect(scene.itemsBoundingRect().adjusted(-8, -8, 8, 8))
 
@@ -95,13 +105,16 @@ class TimelineView(QGraphicsView):
             item.setPos(x + 12, -2)
             x += 130
 
-    def _draw_time_axis(self, scene: QGraphicsScene, max_duration, x_at, *, n_rows: int) -> None:
+    def _draw_position_axis(self, scene: QGraphicsScene, max_index, x_at, *, n_rows: int) -> None:
         y = _TOP + n_rows * _ROW_H + 6
         scene.addLine(_LABEL_W, y, _LABEL_W + _PLOT_W, y, QPen(_AXIS))
+        axis_label = scene.addText("stimulus # within trial (aligned across trials)")
+        axis_label.setDefaultTextColor(_TEXT)
+        axis_label.setPos(_LABEL_W, y + 14)
         for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
-            seconds = max_duration * frac
-            x = x_at(seconds)
+            index = round(max_index * frac)
+            x = x_at(index)
             scene.addLine(x, y, x, y + 4, QPen(_AXIS))
-            tick = scene.addText(f"{seconds:.1f}s")
+            tick = scene.addText(f"#{index}")
             tick.setDefaultTextColor(_TEXT)
-            tick.setPos(x - 12, y + 4)
+            tick.setPos(x - 8, y + 4)
