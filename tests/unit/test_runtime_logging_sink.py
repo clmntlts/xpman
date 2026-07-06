@@ -68,6 +68,24 @@ def test_log_many_writes_all_rows(tmp_path):
     assert table.column("timestamp").to_pylist() == [0.0, 1.0, 1.017, 1.034]
 
 
+def test_time_fn_stamps_events_without_explicit_timestamp(tmp_path):
+    """Events logged without a timestamp use the injected time_fn (the run wires this to the same
+    Clock the flip/onset/trigger events use), so everything lands on one timeline. An explicit
+    timestamp still wins."""
+    ticks = iter([100.0, 200.0])
+    sink = EventSink(
+        tmp_path / "events.csv", tmp_path / "events.parquet", time_fn=lambda: next(ticks)
+    )
+    sink.log("no_ts")  # -> 100.0 (from time_fn)
+    sink.log("explicit_ts", timestamp=5.0)  # -> 5.0 (explicit wins)
+    sink.log_many([("batch_no_ts", {}, None)])  # -> 200.0 (from time_fn)
+    sink.close()
+
+    table = pq.read_table(tmp_path / "events.parquet")
+    by_type = dict(zip(table.column("event_type").to_pylist(), table.column("timestamp").to_pylist()))
+    assert by_type == {"no_ts": 100.0, "explicit_ts": 5.0, "batch_no_ts": 200.0}
+
+
 def test_log_many_empty_is_noop(tmp_path):
     sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
     sink.log_many([])  # must not crash
