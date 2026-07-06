@@ -132,7 +132,15 @@ def launch_run(
         on_run_created(run)
 
     run_dir = data_dir / str(instance.id) / str(subject.id) / str(run.id)
-    event_sink = EventSink(csv_path=run_dir / "events.csv", parquet_path=run_dir / "events.parquet")
+    # time_fn=clock.get_time so events logged without an explicit timestamp (sequence/interval
+    # markers, etc.) land on the SAME timeline as the flip/onset/trigger events that pass
+    # clock.get_time() explicitly -- otherwise they sit on time.perf_counter()'s different epoch
+    # and per-trial segmentation / the timeline view can't correlate them (see EventSink.time_fn).
+    event_sink = EventSink(
+        csv_path=run_dir / "events.csv",
+        parquet_path=run_dir / "events.parquet",
+        time_fn=clock.get_time,
+    )
 
     return engine.execute_run(
         session,

@@ -26,7 +26,7 @@ import csv
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pyarrow as pa
@@ -61,11 +61,24 @@ class EventSink:
             been called -- see module docstring).
         flush_every: How many buffered rows to accumulate before writing a Parquet row group.
             Does not affect the CSV, which is written and flushed on every call regardless.
+        time_fn: Clock used to stamp events logged *without* an explicit ``timestamp``. Must be
+            the **same** timeline the task stamps its explicit timestamps with (flip/onset/trigger
+            events pass ``clock.get_time()``); otherwise events end up on two epochs and any
+            analysis that correlates them by time (per-trial segmentation, the trial timeline)
+            silently breaks. Defaults to ``time.perf_counter`` so standalone/test use still works;
+            the real run wires this to the Run's ``Clock.get_time`` (see ``runtime.session``).
     """
 
     _COLUMNS = ("timestamp", "event_type", "payload_json")
 
-    def __init__(self, csv_path: Path, parquet_path: Path, *, flush_every: int = 50) -> None:
+    def __init__(
+        self,
+        csv_path: Path,
+        parquet_path: Path,
+        *,
+        flush_every: int = 50,
+        time_fn: Callable[[], float] = time.perf_counter,
+    ) -> None:
         self.csv_path = Path(csv_path)
         self.parquet_path = Path(parquet_path)
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +89,7 @@ class EventSink:
         self._csv_writer.writerow(self._COLUMNS)
         self._csv_file.flush()
 
+        self._time_fn = time_fn
         self._flush_every = flush_every
         self._buffer: list[dict] = []
         self._parquet_writer: pq.ParquetWriter | None = None
@@ -92,13 +106,13 @@ class EventSink:
                 ``parameters_json``.
             timestamp: Seconds, from whatever clock the caller is using (normally
                 ``TaskContext.clock.get_time()`` or a ``psychopy.visual.Window.flip()`` return
-                value). Defaults to ``time.perf_counter()``, which is dimensionally consistent
-                with ``psychopy.core.Clock`` (both are backed by the same monotonic clock on
-                the platforms xpman targets).
+                value). When omitted, defaults to ``time_fn()`` -- which the real run sets to that
+                same ``Clock.get_time`` (see the class ``time_fn`` arg), so timestamped and
+                un-timestamped events share one timeline.
         """
         if self._closed:
             raise RuntimeError("cannot log to a closed EventSink")
-        ts = float(timestamp) if timestamp is not None else time.perf_counter()
+        ts = float(timestamp) if timestamp is not None else self._time_fn()
         payload_json = json.dumps(payload or {}, default=_json_default)
 
         self._csv_writer.writerow([ts, event_type, payload_json])
@@ -123,7 +137,7 @@ class EventSink:
         if self._closed:
             raise RuntimeError("cannot log to a closed EventSink")
         for event_type, payload, timestamp in events:
-            ts = float(timestamp) if timestamp is not None else time.perf_counter()
+            ts = float(timestamp) if timestamp is not None else self._time_fn()
             payload_json = json.dumps(payload or {}, default=_json_default)
             self._csv_writer.writerow([ts, event_type, payload_json])
             self._buffer.append({"timestamp": ts, "event_type": event_type, "payload_json": payload_json})
