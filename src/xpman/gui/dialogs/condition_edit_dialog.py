@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBo
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
 
 
 class ConditionEditDialog(QDialog):
@@ -65,5 +66,6 @@ class ConditionEditDialog(QDialog):
             return
 
         repo.update_condition(self._session, self._condition_id, name=name)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="save the condition"):
+            return
         self.accept()

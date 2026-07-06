@@ -17,15 +17,19 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QTimer
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -91,6 +95,15 @@ class LaunchDialog(QDialog):
             self._subject_combo.addItem(f"{subject.last_name}, {subject.first_name}", subject.id)
         layout.addWidget(self._subject_combo)
 
+        # One experiment per Run (matching the legacy app -- a Program's experiments are
+        # alternative protocols, not sequential phases). Populated from the *frozen* snapshot,
+        # not the live tree, so it reflects exactly what this Instance will run.
+        layout.addWidget(QLabel("Experiment:"))
+        self._experiment_combo = QComboBox()
+        for experiment in instance.frozen_json["program"].get("experiments", []):
+            self._experiment_combo.addItem(experiment["name"], experiment["id"])
+        layout.addWidget(self._experiment_combo)
+
         self._fullscreen_check = QCheckBox("Fullscreen")
         self._fullscreen_check.setChecked(True)
         self._fullscreen_check.setToolTip(
@@ -98,6 +111,40 @@ class LaunchDialog(QDialog):
             "depends on it. Uncheck only for a windowed dry run/debugging."
         )
         layout.addWidget(self._fullscreen_check)
+
+        layout.addWidget(QLabel("Between trials:"))
+        self._trial_advance_combo = QComboBox()
+        self._trial_advance_combo.addItem("Wait for keypress (manual)", "manual")
+        self._trial_advance_combo.addItem("Auto-advance after a delay", "auto")
+        self._trial_advance_combo.setToolTip(
+            "Manual: the experiment pauses before each trial until SPACE is pressed -- "
+            "recommended for real EEG sessions so you can advance when the subject is ready and "
+            "the recording is clean. Auto: start each trial automatically after the delay below."
+        )
+        self._trial_advance_combo.currentIndexChanged.connect(self._on_trial_advance_changed)
+        layout.addWidget(self._trial_advance_combo)
+
+        self._trial_advance_seconds = QDoubleSpinBox()
+        self._trial_advance_seconds.setRange(0.0, 3600.0)
+        self._trial_advance_seconds.setValue(2.0)
+        self._trial_advance_seconds.setSuffix(" s")
+        self._trial_advance_seconds.setToolTip("Delay before each trial when auto-advancing.")
+        self._trial_advance_seconds.setEnabled(False)  # manual is the default
+        layout.addWidget(self._trial_advance_seconds)
+
+        self._show_trial_info_check = QCheckBox("Show trial info text (Trial N of M)")
+        self._show_trial_info_check.setChecked(True)
+        layout.addWidget(self._show_trial_info_check)
+
+        layout.addWidget(QLabel("Monitor (screen index):"))
+        self._screen_spin = QSpinBox()
+        self._screen_spin.setRange(0, 15)
+        self._screen_spin.setValue(0)
+        self._screen_spin.setToolTip(
+            "Which monitor to present on, 0-based (0 = primary). Set this to the screen the "
+            "subject and photodiode are watching in a multi-monitor rig."
+        )
+        layout.addWidget(self._screen_spin)
 
         self._trigger_check = QCheckBox("Send real triggers (parallel port)")
         self._trigger_check.setChecked(True)
@@ -167,10 +214,13 @@ class LaunchDialog(QDialog):
         subject_id = self._subject_combo.currentData()
         if subject_id is None:
             return
+        experiment_id = self._experiment_combo.currentData()
 
         instance = get_instance(self._session, self._instance_id)
         try:
-            self._total_trials = count_trials(instance.frozen_json["program"])
+            self._total_trials = count_trials(
+                instance.frozen_json["program"], experiment_id=experiment_id
+            )
         except ValueError as exc:
             # E.g. a Trial in this frozen Instance has no Condition (deleted after freezing --
             # see runtime/engine.py's _build_trial_sequence). Surface it clearly instead of
@@ -188,6 +238,8 @@ class LaunchDialog(QDialog):
             "--data-dir", str(self._data_dir),
             "--abort-file", str(self._abort_file),
         ]
+        if experiment_id is not None:
+            worker_args += ["--experiment-id", str(experiment_id)]
         if getattr(sys, "frozen", False):
             # A frozen build has exactly one .exe (sys.executable IS xpman.exe -- there's no
             # separate python.exe to "-m" a different module into). Re-invoke that same exe
@@ -200,6 +252,11 @@ class LaunchDialog(QDialog):
             args = ["-m", "xpman.gui.launch_worker"] + worker_args
         if self._fullscreen_check.isChecked():
             args.append("--fullscreen")
+        args += ["--screen", str(self._screen_spin.value())]
+        args += ["--trial-advance", self._trial_advance_combo.currentData()]
+        args += ["--trial-advance-seconds", str(self._trial_advance_seconds.value())]
+        if self._show_trial_info_check.isChecked():
+            args.append("--show-trial-info")
         if self._trigger_check.isChecked():
             address = self._parse_port_address()
             if address is not None:
@@ -223,9 +280,19 @@ class LaunchDialog(QDialog):
         self._abort_button.show()
         self._status_label.setText("")
 
+    def _on_trial_advance_changed(self) -> None:
+        self._trial_advance_seconds.setEnabled(self._trial_advance_combo.currentData() == "auto")
+
     def _set_controls_enabled(self, enabled: bool) -> None:
         self._launch_button.setEnabled(enabled)
         self._subject_combo.setEnabled(enabled)
+        self._experiment_combo.setEnabled(enabled)
+        self._trial_advance_combo.setEnabled(enabled)
+        self._trial_advance_seconds.setEnabled(
+            enabled and self._trial_advance_combo.currentData() == "auto"
+        )
+        self._show_trial_info_check.setEnabled(enabled)
+        self._screen_spin.setEnabled(enabled)
         self._fullscreen_check.setEnabled(enabled)
         self._trigger_check.setEnabled(enabled)
         self._port_address_edit.setEnabled(enabled and self._trigger_check.isChecked())
@@ -330,9 +397,64 @@ class LaunchDialog(QDialog):
         self._cleanup_control_dir()
         self._status_label.setText(f"Failed to start the experiment process (Qt error: {error}).")
 
+    # -- closing (with a guard against orphaning a running worker) --------------------------------
+
+    def _run_is_active(self) -> bool:
+        # Check explicitly for Running/Starting (rather than "!= NotRunning") so a QProcess that
+        # has already finished -- state() == NotRunning -- correctly reads as inactive.
+        if self._process is None:
+            return False
+        return self._process.state() in (
+            QProcess.ProcessState.Running,
+            QProcess.ProcessState.Starting,
+        )
+
+    def _stop_process(self) -> None:
+        """Stop the worker subprocess so its (fullscreen) PsychoPy window closes: ask it to abort
+        cleanly first (a well-behaved worker exits at the next trial boundary), then terminate,
+        then kill if it hasn't exited. The Run stays at its ABORTED placeholder with whatever
+        trials already committed -- an acceptable aborted run."""
+        if self._abort_file is not None:
+            self._abort_file.parent.mkdir(parents=True, exist_ok=True)
+            self._abort_file.touch()
+        if self._process is not None:
+            self._process.terminate()
+            if not self._process.waitForFinished(2000):
+                self._process.kill()
+                self._process.waitForFinished(2000)
+
+    def _confirm_close(self) -> bool:
+        """Return True if the dialog may close now. If a run is active, confirm with the user and,
+        on Yes, stop the worker before allowing the close. Returns False to veto (stay open)."""
+        if not self._run_is_active():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Stop the run?",
+            "A run is in progress. Closing this window will stop it and end the experiment.\n\n"
+            "Stop the run and close?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._stop_process()
+        return True
+
     def reject(self) -> None:
-        # Covers closing the dialog (Close button / window X) before a launch ever finishes --
-        # without this, closing mid-run would also leak this launch's control directory
-        # permanently, same as the finished/error paths above.
+        # The Close button routes here. Guard against orphaning a running worker; the temp
+        # control directory is cleaned up on the way out (same leak fix as before).
+        if not self._confirm_close():
+            return
         self._cleanup_control_dir()
+        super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # The window's X button routes here (QDialog's default would call reject(), but we handle
+        # it fully so the guard prompt can't fire twice). event.ignore() vetoes the close.
+        if not self._confirm_close():
+            event.ignore()
+            return
+        self._cleanup_control_dir()
+        event.accept()
         super().reject()

@@ -104,6 +104,30 @@ def test_round_trip_set_then_get_values_nested_fpvs(qtbot):
     )
 
 
+def test_new_fpvs_modulation_timing_familiarization_fields_render_and_round_trip(qtbot):
+    """The FPVS-breadth fields (contrast modulation, fade/interval timing, familiarization,
+    background gray) are auto-rendered by SchemaForm with no bespoke GUI code -- confirm they
+    build and round-trip through the form."""
+    from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams, Waveform
+
+    form = SchemaForm(FPVSConditionParams)
+    qtbot.addWidget(form)
+
+    values = FPVSConditionParams(
+        modulation=ModulationParams(waveform=Waveform.SQUARE, contrast_min=0.1, contrast_max=0.9),
+        timing=TimingParams(pre_interval_seconds=(1.0, 3.0), fade_in_seconds=2.0, fade_out_seconds=1.0),
+        background_gray=0.4,
+    ).model_dump(mode="python")
+    values["familiarization"]["enabled"] = True
+
+    form.set_values(values)
+    restored = FPVSConditionParams.model_validate(form.get_values())
+    assert restored.modulation.waveform is Waveform.SQUARE
+    assert restored.timing.fade_in_seconds == 2.0
+    assert restored.background_gray == 0.4
+    assert restored.familiarization.enabled is True
+
+
 # -- 3. defaults-only form validates to model_cls() --------------------------------------------
 
 

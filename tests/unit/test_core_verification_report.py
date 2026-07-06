@@ -56,14 +56,28 @@ def test_flip_interval_stats_none_with_zero_flips():
 
 
 # ---------------------------------------------------------------------------
-# Trigger-to-flip latency
+# Trigger-to-onset latency
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_latency_pairs_with_nearest_flip_not_by_payload_key():
-    """Deliberately uses payload keys that don't match between the flip and trigger events
-    (unlike FPVS's shared stim_index) to prove pairing is timestamp-nearest-neighbor, not
-    keyed off any task-specific field."""
+def test_trigger_latency_pairs_to_onset_by_stim_index():
+    """Each trigger is paired to the onset of the SAME stimulus via stim_index, and the latency
+    is the signed trigger_time - onset_time for that stimulus."""
+    events = [
+        _event("stimulus_onset", 1.000, {"stim_index": 0}),
+        _event("trigger_sent", 1.003, {"code": 1, "stim_index": 0}),
+        _event("oddball_onset", 2.000, {"stim_index": 1}),
+        _event("trigger_sent", 2.002, {"code": 2, "stim_index": 1}),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    assert report.trigger_latency.n_triggers == 2
+    assert report.trigger_latency.mean_latency_s == pytest.approx(0.0025)  # (0.003 + 0.002) / 2
+
+
+def test_trigger_latency_falls_back_to_preceding_flip_without_stim_index():
+    """A trigger with no matching onset (e.g. dummy task) pairs to the most recent flip at/before
+    it -- which in practice is its own onset flip."""
     events = [
         _event("flip", 1.000, {"unrelated_key": "a"}),
         _event("trigger_sent", 1.003, {"code": 1}),
@@ -76,6 +90,18 @@ def test_trigger_latency_pairs_with_nearest_flip_not_by_payload_key():
     assert report.trigger_latency.mean_latency_s == pytest.approx(0.0025)
 
 
+def test_trigger_latency_is_negative_when_trigger_precedes_its_onset():
+    """A trigger that fires before its own stimulus onset yields a negative latency -- the whole
+    point of the signed (not abs) metric: it can surface a mistimed trigger."""
+    events = [
+        _event("stimulus_onset", 1.000, {"stim_index": 0}),
+        _event("trigger_sent", 0.990, {"code": 1, "stim_index": 0}),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    assert report.trigger_latency.mean_latency_s == pytest.approx(-0.010)
+
+
 def test_trigger_latency_none_with_no_trigger_events():
     events = [_event("flip", 0.0), _event("flip", 0.1)]
     report = build_verification_report(events, nominal_frame_period_s=0.1)
@@ -84,10 +110,11 @@ def test_trigger_latency_none_with_no_trigger_events():
     assert report.trigger_latency.mean_latency_s is None
 
 
-def test_trigger_latency_none_with_no_flip_events():
+def test_trigger_latency_none_when_no_onset_or_flip_to_pair_against():
     events = [_event("trigger_sent", 0.0, {"code": 1})]
     report = build_verification_report(events, nominal_frame_period_s=0.1)
 
+    assert report.trigger_latency.n_triggers == 1
     assert report.trigger_latency.mean_latency_s is None
 
 
@@ -208,11 +235,11 @@ def test_format_does_not_crash_and_mentions_all_sections_with_full_data():
     ]
     text = build_verification_report(events, nominal_frame_period_s=0.1).format()
 
-    for expected in ("Inter-flip interval", "Trigger-to-flip latency", "Trigger codes sent", "Frequency check", "Response/RT summary"):
+    for expected in ("Inter-flip interval", "Trigger-to-onset latency", "Trigger codes sent", "Frequency check", "Response/RT summary"):
         assert expected in text
 
 
 def test_format_does_not_crash_with_zero_events():
     text = build_verification_report([], nominal_frame_period_s=0.1).format()
-    assert "No trigger_sent events found." in text
+    assert "No trigger_sent events found" in text
     assert "No response_scored events found" in text

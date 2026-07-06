@@ -212,7 +212,7 @@ def test_launch_instance_refreshes_and_expires_session_after_dialog_closes(qtbot
     mock_refresh.assert_called_once()
 
 
-def test_menu_for_block_offers_new_trial_and_delete(qtbot, session, registry):
+def test_menu_for_block_offers_manage_trials_and_delete(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)
     qtbot.addWidget(window)
@@ -220,7 +220,7 @@ def test_menu_for_block_offers_new_trial_and_delete(qtbot, session, registry):
     index = _find_index(window, "block", fixture["block"].id)
     menu = window._build_context_menu(index)
     texts = _action_texts(menu)
-    assert "New Trial..." in texts
+    assert "Manage Trials..." in texts
     assert "Delete Block" in texts
 
 
@@ -324,20 +324,156 @@ def test_create_instance_uses_freeze_dialog(qtbot, session, registry):
         dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
         with patch.object(window, "refresh") as mock_refresh:
             window._create_instance(fixture["program"].id)
-    dialog_cls.assert_called_once_with(session, fixture["program"].id, parent=window)
+    dialog_cls.assert_called_once_with(session, fixture["program"].id, registry, parent=window)
     mock_refresh.assert_called_once()
 
 
-def test_create_trial_uses_block_id(qtbot, session, registry):
+def test_manage_trials_uses_block_id(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)
     qtbot.addWidget(window)
 
-    with patch("xpman.gui.main_window.TrialCreateDialog") as dialog_cls:
+    with patch("xpman.gui.main_window.BlockTrialsDialog") as dialog_cls:
         dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
         with patch.object(window, "refresh"):
-            window._create_trial(fixture["block"].id)
+            window._manage_trials(fixture["block"].id)
     dialog_cls.assert_called_once_with(session, fixture["block"].id, parent=window)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate actions
+# ---------------------------------------------------------------------------
+
+
+def test_menus_offer_duplicate_for_program_experiment_condition_block(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    for kind in ("program", "experiment", "condition", "block"):
+        index = _find_index(window, kind, fixture[kind].id)
+        texts = _action_texts(window._build_context_menu(index))
+        assert "Duplicate" in texts, f"no Duplicate action for {kind}"
+
+
+def test_duplicate_condition_creates_copy_and_selects_it(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "condition", fixture["condition"].id)
+    node = window._tree.model_.node_at(index)
+    window._duplicate_condition(node)
+
+    conditions = repo.list_conditions(session, experiment_id=fixture["experiment"].id)
+    assert len(conditions) == 2
+    copy_row = next(c for c in conditions if c.id != fixture["condition"].id)
+    assert copy_row.name == "Cond A (copy)"
+    assert copy_row.parameters_json == fixture["condition"].parameters_json
+
+    selected = window._tree.selected_node()
+    assert selected is not None
+    assert selected.kind == "condition"
+    assert selected.id == copy_row.id
+
+
+def test_duplicate_block_copies_trials(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "block", fixture["block"].id)
+    node = window._tree.model_.node_at(index)
+    window._duplicate_block(node)
+
+    blocks = repo.list_blocks(session, experiment_id=fixture["experiment"].id)
+    assert len(blocks) == 2
+    copy_row = next(b for b in blocks if b.id != fixture["block"].id)
+    copied_trials = repo.list_trials(session, block_id=copy_row.id)
+    assert len(copied_trials) == 1
+    assert copied_trials[0].condition_id == fixture["condition"].id
+
+
+def test_create_condition_auto_selects_new_node(qtbot, session, registry):
+    """After a create dialog is accepted, the tree must select the newly created entity
+    (real refresh, no mocking) so the user lands directly on it -- not on a collapsed tree."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    new_condition = repo.create_condition(
+        session, experiment_id=fixture["experiment"].id, name="Cond B", parameters_json={}
+    )
+    session.commit()
+
+    with patch("xpman.gui.main_window.ConditionCreateDialog") as dialog_cls:
+        dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+        dialog_cls.return_value.created_condition_id = new_condition.id
+        window._create_condition(fixture["experiment"].id)
+
+    selected = window._tree.selected_node()
+    assert selected is not None
+    assert selected.kind == "condition"
+    assert selected.id == new_condition.id
+
+
+# ---------------------------------------------------------------------------
+# Instance deletion (safe form: refuse when the Instance has Runs)
+# ---------------------------------------------------------------------------
+
+
+def test_menu_offers_delete_instance(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "instance", fixture["instance"].id)
+    texts = _action_texts(window._build_context_menu(index))
+    assert "Delete Instance" in texts
+
+
+def test_delete_instance_with_no_runs_removes_it(qtbot, session, registry):
+    from xpman.core.instance import get_instance
+    from xpman.gui.tree_view import TreeNode
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    node = TreeNode(kind="instance", id=fixture["instance"].id, name="Inst 1")
+    with patch("xpman.gui.main_window.confirm_delete", return_value=True):
+        window._delete_instance(node)
+
+    assert get_instance(session, fixture["instance"].id) is None
+
+
+def test_delete_instance_with_runs_is_refused_and_keeps_data(qtbot, session, registry):
+    from datetime import datetime, timezone
+
+    from xpman.core.instance import get_instance
+    from xpman.core.models import Run, RunStatus
+    from xpman.gui.tree_view import TreeNode
+
+    fixture = _build_fixture(session)
+    run = Run(
+        instance_id=fixture["instance"].id, subject_id=fixture["subject"].id,
+        started_at=datetime.now(timezone.utc), xpman_version="0.1.0", status=RunStatus.COMPLETED,
+    )
+    session.add(run)
+    session.commit()
+
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    node = TreeNode(kind="instance", id=fixture["instance"].id, name="Inst 1")
+
+    with patch("xpman.gui.main_window.QMessageBox.information") as mock_info, patch(
+        "xpman.gui.main_window.confirm_delete"
+    ) as mock_confirm:
+        window._delete_instance(node)
+
+    mock_info.assert_called_once()  # explained why it can't be deleted
+    mock_confirm.assert_not_called()  # never even asked to confirm
+    assert get_instance(session, fixture["instance"].id) is not None  # instance + run preserved
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +493,26 @@ def test_delete_trial_confirmed_removes_row(qtbot, session, registry):
         window._delete_trial(node)
 
     assert repo.get_trial(session, fixture["trial"].id) is None
+
+
+def test_delete_commit_failure_rolls_back_and_does_not_refresh(qtbot, session, registry):
+    """A failed commit in a delete handler must roll back (row survives), show an error, and NOT
+    refresh -- the shared GUI session stays usable rather than poisoned."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    from xpman.gui.tree_view import TreeNode
+
+    node = TreeNode(kind="condition", id=fixture["condition"].id, name="Cond A")
+    with patch("xpman.gui.main_window.confirm_delete", return_value=True), patch.object(
+        session, "commit", side_effect=RuntimeError("database is locked")
+    ), patch("xpman.gui.commit.QMessageBox") as mock_box, patch.object(window, "refresh") as mock_refresh:
+        window._delete_condition(node)
+
+    mock_box.critical.assert_called_once()
+    mock_refresh.assert_not_called()
+    assert repo.get_condition(session, fixture["condition"].id) is not None  # rolled back
 
 
 def test_delete_trial_declined_keeps_row(qtbot, session, registry):

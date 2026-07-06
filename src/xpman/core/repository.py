@@ -18,6 +18,7 @@ from xpman.core.models import (
     Block,
     Condition,
     Experiment,
+    Instance,
     Profile,
     Program,
     Run,
@@ -384,15 +385,21 @@ def list_trials(session: Session, *, block_id: int | None = None) -> list[Trial]
     return list(session.scalars(stmt))
 
 
+#: ``update_trial``'s own default for ``condition_id`` -- distinct from ``None`` so callers can
+#: explicitly clear a Trial's Condition (unassign it, e.g. via ``BlockTrialsDialog``) instead of
+#: ``None`` ambiguously meaning either "clear it" or "leave it unchanged".
+_CONDITION_ID_UNSET = object()
+
+
 def update_trial(
     session: Session,
     trial_id: int,
     *,
-    condition_id: int | None = None,
+    condition_id=_CONDITION_ID_UNSET,
     order_index: int | None = None,
 ) -> Trial:
     trial = _require(session, Trial, trial_id)
-    if condition_id is not None:
+    if condition_id is not _CONDITION_ID_UNSET:
         trial.condition_id = condition_id
     if order_index is not None:
         trial.order_index = order_index
@@ -427,6 +434,25 @@ def list_runs(session: Session, *, instance_id: int | None = None, subject_id: i
     if subject_id is not None:
         stmt = stmt.where(Run.subject_id == subject_id)
     return list(session.scalars(stmt))
+
+
+# ---------------------------------------------------------------------------
+# Instance (delete only -- creation is core/instance.freeze_program's exclusive job)
+# ---------------------------------------------------------------------------
+
+
+def delete_instance(session: Session, instance_id: int) -> None:
+    """Delete an Instance row.
+
+    WARNING: ``Instance.runs`` cascades to Runs and their Results (see ``core.models``), so
+    this destroys any collected data for that Instance. Callers that want to preserve results
+    (the GUI does) must check ``list_runs(session, instance_id=...)`` is empty first and refuse
+    otherwise -- there is no way in the current schema to keep a Run interpretable once its
+    Instance snapshot is gone.
+    """
+    instance = _require(session, Instance, instance_id)
+    session.delete(instance)
+    session.flush()
 
 
 # ---------------------------------------------------------------------------

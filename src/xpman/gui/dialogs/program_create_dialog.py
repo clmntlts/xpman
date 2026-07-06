@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
 from xpman.tasks.registry import TaskRegistry
 
 
@@ -142,6 +143,7 @@ class ProgramCreateDialog(QDialog):
             task_schema_version=task.schema.SCHEMA_VERSION,
             parameters_json={},
         )
-        self._session.commit()
+        if not safe_commit(self._session, self, action="create the program"):
+            return
         self.created_program_id = program.id
         self.accept()

@@ -43,6 +43,40 @@ def test_parquet_readable_after_close(tmp_path):
     assert timestamps == [0.0, 1.0, 2.0, 3.0, 4.0]
 
 
+def test_log_many_writes_all_rows(tmp_path):
+    """Batch logging (used for per-frame flips buffered off the hot path) writes every row, in
+    order, readable from both CSV (already flushed) and Parquet (after close)."""
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    sink.log("prepare", {"ok": True}, timestamp=0.0)
+    sink.log_many(
+        [
+            ("flip", {"frame_index": 0}, 1.0),
+            ("flip", {"frame_index": 1}, 1.017),
+            ("flip", {"frame_index": 2}, 1.034),
+        ]
+    )
+
+    # CSV is readable before close (flushed once at the end of log_many).
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert [r[1] for r in rows[1:]] == ["prepare", "flip", "flip", "flip"]
+    assert json.loads(rows[2][2]) == {"frame_index": 0}
+
+    sink.close()
+    table = pq.read_table(tmp_path / "events.parquet")
+    assert table.num_rows == 4
+    assert table.column("timestamp").to_pylist() == [0.0, 1.0, 1.017, 1.034]
+
+
+def test_log_many_empty_is_noop(tmp_path):
+    sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
+    sink.log_many([])  # must not crash
+    sink.close()
+    with (tmp_path / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert rows == [["timestamp", "event_type", "payload_json"]]  # header only
+
+
 def test_default_timestamp_used_when_not_provided(tmp_path):
     sink = EventSink(tmp_path / "events.csv", tmp_path / "events.parquet")
     sink.log("no_explicit_timestamp")

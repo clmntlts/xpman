@@ -7,10 +7,19 @@ last name"), this requires at least one of the two name fields, not necessarily 
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLineEdit,
+    QPlainTextEdit,
+    QVBoxLayout,
+)
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
+from xpman.gui.dialogs.subject_create_dialog import INFO_NOTES_KEY, notes_to_info_json
 
 
 class SubjectEditDialog(QDialog):
@@ -42,6 +51,13 @@ class SubjectEditDialog(QDialog):
         self._last_name_edit.textChanged.connect(self._update_button_state)
         form.addRow("Last name:", self._last_name_edit)
 
+        self._info_edit = QPlainTextEdit()
+        self._info_edit.setPlaceholderText("Any notes about this subject (optional).")
+        self._info_edit.setFixedHeight(70)
+        existing_notes = (subject.info_json or {}).get(INFO_NOTES_KEY, "") if subject else ""
+        self._info_edit.setPlainText(existing_notes)
+        form.addRow("Information:", self._info_edit)
+
         layout.addLayout(form)
         layout.addStretch(1)
 
@@ -71,6 +87,8 @@ class SubjectEditDialog(QDialog):
             self._subject_id,
             first_name=first_name,
             last_name=last_name,
+            info_json=notes_to_info_json(self._info_edit.toPlainText()),
         )
-        self._session.commit()
+        if not safe_commit(self._session, self, action="save the subject"):
+            return
         self.accept()

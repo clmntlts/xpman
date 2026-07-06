@@ -93,3 +93,50 @@ def test_trial_with_null_condition_id_raises_clear_error():
     program = _program([{"conditions": [], "blocks": [_block([_trial(1, None, 0)])]}])
     with pytest.raises(ValueError, match="trial 1 has no Condition"):
         count_trials(program)
+
+
+# ---------------------------------------------------------------------------
+# experiment_id filtering (one experiment per launch)
+# ---------------------------------------------------------------------------
+
+
+def _experiment(experiment_id, blocks):
+    return {"id": experiment_id, "conditions": [], "blocks": blocks}
+
+
+def test_experiment_id_none_counts_all_experiments():
+    program = _program(
+        [
+            _experiment(1, [_block([_trial(1, 10, 0)])]),
+            _experiment(2, [_block([_trial(2, 11, 0), _trial(3, 12, 1)])]),
+        ]
+    )
+    assert count_trials(program) == 3
+
+
+def test_experiment_id_scopes_count_to_that_experiment():
+    program = _program(
+        [
+            _experiment(1, [_block([_trial(1, 10, 0)])]),
+            _experiment(2, [_block([_trial(2, 11, 0), _trial(3, 12, 1)])]),
+        ]
+    )
+    assert count_trials(program, experiment_id=1) == 1
+    assert count_trials(program, experiment_id=2) == 2
+
+
+def test_experiment_id_not_present_counts_zero():
+    program = _program([_experiment(1, [_block([_trial(1, 10, 0)])])])
+    assert count_trials(program, experiment_id=999) == 0
+
+
+def test_experiment_id_filter_skips_other_experiments_null_condition():
+    """Filtering to experiment 1 must not trip over a bad trial in experiment 2 -- the other
+    experiment's trials are never visited at all."""
+    program = _program(
+        [
+            _experiment(1, [_block([_trial(1, 10, 0)])]),
+            _experiment(2, [_block([_trial(2, None, 0)])]),  # would raise if visited
+        ]
+    )
+    assert count_trials(program, experiment_id=1) == 1

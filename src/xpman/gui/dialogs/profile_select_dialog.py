@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
 
 
 class ProfileSelectDialog(QDialog):
@@ -81,6 +82,7 @@ class ProfileSelectDialog(QDialog):
         if not name:
             return
         profile = repo.create_profile(self._session, name=name)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="create the profile"):
+            return
         self.selected_profile_id = profile.id
         self.accept()

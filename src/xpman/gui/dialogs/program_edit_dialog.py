@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
 
 
 class ProgramEditDialog(QDialog):
@@ -106,5 +107,6 @@ class ProgramEditDialog(QDialog):
             name=name,
             resource_main_directory=self._resource_dir_edit.text().strip(),
         )
-        self._session.commit()
+        if not safe_commit(self._session, self, action="save the program"):
+            return
         self.accept()

@@ -14,11 +14,24 @@ from sqlalchemy import Engine, event, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 
+#: How long (ms) a blocked writer waits for the write lock before giving up with
+#: "database is locked". SQLite's default is 0 (fail immediately) -- fatal for xpman, where the
+#: GUI process and the launch subprocess both write the same file: a benign GUI edit during a
+#: run would instantly collide with the worker's per-trial commit and crash the whole recording.
+#: 5 s comfortably outlasts any single xpman transaction (small inserts/updates), so ordinary
+#: contention just waits its turn instead of erroring.
+_BUSY_TIMEOUT_MS = 5000
+
+
 def _enable_sqlite_pragmas(dbapi_connection, connection_record) -> None:  # noqa: ANN001
-    """Turn on foreign-key enforcement and WAL mode for every new DBAPI connection."""
+    """Per-connection pragmas: foreign-key enforcement, WAL mode, a real busy timeout (so
+    concurrent writers wait rather than instantly erroring), and synchronous=NORMAL (safe and
+    the recommended durability level under WAL)."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 

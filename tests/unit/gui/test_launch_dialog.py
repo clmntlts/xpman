@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, QProcess
+from PySide6.QtWidgets import QMessageBox
 
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
@@ -115,6 +116,28 @@ def test_window_title_includes_instance_name(qtbot, db_path):
 # ---------------------------------------------------------------------------
 
 
+def _build_two_experiment_fixture(db_path):
+    engine = get_engine(str(db_path))
+    session = get_sessionmaker(engine)()
+    profile = repo.create_profile(session, name="Dr. Test")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    exp_ids = {}
+    for name in ("Exp A", "Exp B"):
+        experiment = repo.create_experiment(session, program_id=program.id, name=name, parameters_json={})
+        condition = repo.create_condition(session, experiment_id=experiment.id, name="C", parameters_json={})
+        block = repo.create_block(session, experiment_id=experiment.id, name="Block", order_index=0)
+        repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)
+        exp_ids[name] = experiment.id
+    session.commit()
+    instance = freeze_program(session, program.id, name="Inst")
+    session.commit()
+    return {"session": session, "profile": profile, "subject": subject, "instance": instance, "exp_ids": exp_ids}
+
+
 def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     data_dir = tmp_path / "runs"
@@ -139,6 +162,91 @@ def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     assert "--no-trigger-hardware" not in args_arg  # trigger checkbox checked by default
     assert "--parallel-port-address" in args_arg
     assert str(0x0378) in args_arg  # default shown in the field
+
+
+def test_experiment_combo_lists_frozen_experiments(qtbot, db_path):
+    fixture = _build_two_experiment_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, db_path.parent / "runs")
+    qtbot.addWidget(dialog)
+    names = {dialog._experiment_combo.itemText(i) for i in range(dialog._experiment_combo.count())}
+    assert names == {"Exp A", "Exp B"}
+
+
+def test_launch_passes_selected_experiment_id(qtbot, db_path, tmp_path):
+    fixture = _build_two_experiment_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    # Select Exp B.
+    idx = dialog._experiment_combo.findData(fixture["exp_ids"]["Exp B"])
+    dialog._experiment_combo.setCurrentIndex(idx)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+
+    args_arg = mock_process.start.call_args[0][1]
+    assert "--experiment-id" in args_arg
+    assert str(fixture["exp_ids"]["Exp B"]) in args_arg
+
+
+def test_single_experiment_is_preselected_and_passed(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)  # one experiment
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    assert dialog._experiment_combo.count() == 1
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+    assert "--experiment-id" in args_arg
+
+
+def test_launch_passes_trial_advance_defaults(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+
+    assert "--trial-advance" in args_arg
+    assert "manual" in args_arg  # manual is the default
+    assert "--show-trial-info" in args_arg  # checked by default
+    # Seconds spinbox is disabled by default (manual), but the value is still forwarded.
+    assert "--trial-advance-seconds" in args_arg
+
+
+def test_launch_passes_auto_advance_when_selected(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog._trial_advance_combo.setCurrentIndex(dialog._trial_advance_combo.findData("auto"))
+    dialog._trial_advance_seconds.setValue(3.5)
+    assert dialog._trial_advance_seconds.isEnabled()  # auto enables the delay field
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+    assert "auto" in args_arg
+    assert "3.5" in args_arg
+
+
+def test_launch_passes_screen_index(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog._screen_spin.setValue(1)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+    assert "--screen" in args_arg
+    assert "1" in args_arg
 
 
 def test_launch_uses_sentinel_flag_not_dash_m_when_frozen(qtbot, db_path, tmp_path):
@@ -549,3 +657,68 @@ def test_no_control_dir_cleanup_needed_when_never_launched(qtbot, db_path, tmp_p
     qtbot.addWidget(dialog)
 
     dialog.reject()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Close-mid-run guard (don't orphan the worker subprocess)
+# ---------------------------------------------------------------------------
+
+
+def _dialog_with_running_process(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    proc = MagicMock()
+    proc.state.return_value = QProcess.ProcessState.Running
+    proc.waitForFinished.return_value = True  # exits promptly on terminate
+    recorded = {"abort_existed_at_terminate": None}
+
+    def _terminate():
+        # Record whether the abort file was already in place when we terminated (the graceful
+        # "ask it to stop" step must happen first), and simulate the process actually stopping so
+        # a later close (incl. qtbot teardown) doesn't see it as still running.
+        recorded["abort_existed_at_terminate"] = (
+            dialog._abort_file is not None and dialog._abort_file.exists()
+        )
+        proc.state.return_value = QProcess.ProcessState.NotRunning
+
+    proc.terminate.side_effect = _terminate
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=proc):
+        dialog._on_launch()
+    return dialog, proc, recorded
+
+
+def test_close_with_no_active_run_does_not_prompt(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    with patch.object(QMessageBox, "question") as mock_q:
+        dialog.reject()
+    mock_q.assert_not_called()
+
+
+def test_close_mid_run_declined_keeps_dialog_open_and_does_not_terminate(qtbot, db_path, tmp_path):
+    dialog, proc, _ = _dialog_with_running_process(qtbot, db_path, tmp_path)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+        dialog.reject()
+    # Make teardown safe (process still "running" here) before the assertions.
+    proc.state.return_value = QProcess.ProcessState.NotRunning
+    proc.terminate.assert_not_called()
+    assert dialog.result() != dialog.DialogCode.Accepted  # still open (not rejected/closed)
+
+
+def test_close_mid_run_confirmed_aborts_then_terminates(qtbot, db_path, tmp_path):
+    dialog, proc, recorded = _dialog_with_running_process(qtbot, db_path, tmp_path)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        dialog.reject()
+    proc.terminate.assert_called_once()  # stopped the worker
+    assert recorded["abort_existed_at_terminate"] is True  # asked it to abort cleanly first
+
+
+def test_close_mid_run_confirmed_kills_if_terminate_does_not_finish(qtbot, db_path, tmp_path):
+    dialog, proc, _ = _dialog_with_running_process(qtbot, db_path, tmp_path)
+    proc.waitForFinished.return_value = False  # didn't exit on terminate
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        dialog.reject()
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()

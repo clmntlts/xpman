@@ -30,7 +30,10 @@ def profile(session):
 
 @pytest.fixture()
 def subject(session, profile):
-    s = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    s = repo.create_subject(
+        session, profile_id=profile.id, first_name="Ada", last_name="Lovelace",
+        info_json={"notes": "original note"},
+    )
     session.commit()
     return s
 
@@ -103,3 +106,25 @@ def test_cancel_makes_no_db_change(qtbot, session, subject):
     reloaded = repo.get_subject(session, subject.id)
     assert reloaded.first_name == "Ada"
     assert reloaded.last_name == "Lovelace"
+
+
+def test_information_field_prefilled_and_editable(qtbot, session, subject):
+    dialog = SubjectEditDialog(session, subject.id)
+    qtbot.addWidget(dialog)
+    assert dialog._info_edit.toPlainText() == "original note"
+
+    dialog._info_edit.setPlainText("updated note")
+    dialog._on_save()
+
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.info_json == {"notes": "updated note"}
+
+
+def test_clearing_information_stores_empty_dict(qtbot, session, subject):
+    dialog = SubjectEditDialog(session, subject.id)
+    qtbot.addWidget(dialog)
+    dialog._info_edit.setPlainText("")
+    dialog._on_save()
+
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.info_json == {}

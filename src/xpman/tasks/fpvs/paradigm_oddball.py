@@ -42,9 +42,11 @@ from typing import TYPE_CHECKING, Callable, Protocol
 
 from pydantic import BaseModel, Field
 
+from xpman.tasks.fpvs.modulation import ModulationParams, build_contrast_table, envelope_at_frame
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams, should_toggle
 
 if TYPE_CHECKING:
+    import numpy.random
     import psychopy.visual
 
     from xpman.hardware.clock import Clock
@@ -53,8 +55,43 @@ if TYPE_CHECKING:
     from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 
 
+class _PoolSequencer:
+    """Yields stimulus indices for a pool, cycling through the whole pool before any repeat.
+
+    The first pass preserves the order the pool was given in (``task.py`` already shuffles it once,
+    seeded per Instance+Subject). On each *wraparound* -- when the pool has been exhausted and must
+    repeat -- a fresh random permutation is drawn from ``rng`` (if one was supplied), so the image
+    identities don't recur in the exact same order every cycle. Repeating the same order each
+    wraparound would inject a spurious periodicity into the image stream at the pool-length rate,
+    which can contaminate the FPVS frequency analysis. With ``rng=None`` it degrades to a plain
+    ``0,1,...,n-1,0,1,...`` cycle (the previous behavior), so existing deterministic tests are
+    unchanged.
+    """
+
+    def __init__(self, n: int, rng: "numpy.random.Generator | None" = None) -> None:
+        self._n = n
+        self._rng = rng
+        self._order = list(range(n))  # first pass: as given (caller pre-shuffled it)
+        self._pos = 0
+
+    def next(self) -> int:
+        if self._pos >= self._n:
+            self._pos = 0
+            if self._rng is not None and self._n > 1:
+                self._order = [int(i) for i in self._rng.permutation(self._n)]
+        index = self._order[self._pos]
+        self._pos += 1
+        return index
+
+
 class Drawable(Protocol):
     def draw(self) -> None: ...
+
+    def set_modulation(self, opacity: float) -> None:
+        """Set this stimulus's contrast/opacity for the coming frame, in [0, 1]. Only ever
+        called when contrast modulation is active (a modulation function was supplied); plain
+        drawables that are never modulated don't need a real implementation."""
+        ...
 
 
 class BaseSequenceParams(BaseModel):
@@ -168,6 +205,10 @@ class BaseSequenceResult:
     n_frames_presented: int
     aborted: bool
     onsets: list[OnsetRecord]
+    # Informational: what contrast modulation / fade was applied (None waveform == unmodulated).
+    waveform: str | None = None
+    n_fade_in_frames: int = 0
+    n_fade_out_frames: int = 0
 
 
 @dataclass(frozen=True)
@@ -185,6 +226,10 @@ class BaseOddballSequenceResult:
     n_frames_presented: int
     aborted: bool
     onsets: list[OnsetRecord]
+    # Informational: what contrast modulation / fade was applied (None waveform == unmodulated).
+    waveform: str | None = None
+    n_fade_in_frames: int = 0
+    n_fade_out_frames: int = 0
 
 
 def _present_stimulus(
@@ -203,6 +248,8 @@ def _present_stimulus(
     is_oddball: bool,
     stim_index: int,
     abort_check: Callable[[], bool],
+    modulation_fn: Callable[[int, int], float] | None = None,
+    flip_log: "list[tuple[str, dict, float]] | None" = None,
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
     ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
@@ -213,6 +260,16 @@ def _present_stimulus(
     onset_time: float | None = None
 
     for frame_in_stim in range(n_frames):
+        # Reset any trigger code set on the previous frame's onset. Doing it here -- at the top of
+        # the next frame -- instead of a blocking core.wait right after the onset flip is what
+        # keeps the pulse from stealing time from the frame budget (a ~3 ms inline hold after
+        # flip risks a dropped frame). The code was set after the previous flip, so it has been
+        # held high for one full inter-flip interval by the time we clear it here. Idempotent when
+        # nothing is set (setData(0) on an already-0 port), so it's safe to call every frame; the
+        # sequence's final onset (no following frame) is cleared by the trailing clear_code in the
+        # caller. See TriggerSender.set_code/clear_code.
+        trigger.clear_code()
+
         if abort_check():
             aborted = True
             break
@@ -228,6 +285,11 @@ def _present_stimulus(
         ):
             photodiode.toggle()
 
+        if modulation_fn is not None:
+            # Cheap: a single opacity scalar per frame (texture already GPU-resident), computed
+            # by indexing a precomputed contrast table times the fade envelope -- no per-frame
+            # trig, no pixel work. See modulation.py's module docstring.
+            stim.set_modulation(modulation_fn(frame_in_stim, global_frame_index))
         stim.draw()
         if photodiode is not None:
             photodiode.draw()
@@ -239,18 +301,31 @@ def _present_stimulus(
         if is_onset:
             onset_time = flip_time
             if trigger_code is not None:
-                trigger.send_trigger(trigger_code)
+                # Non-blocking: drive the code onto the pins right after the onset flip (the
+                # rising edge the amplifier timestamps), then return to the loop immediately. The
+                # next frame's top-of-loop clear_code ends the pulse ~one refresh later, so
+                # nothing blocks here. (Old behavior held it inline with core.wait -- the finding.)
+                trigger.set_code(trigger_code)
                 event_sink.log(
                     "trigger_sent",
                     {"code": trigger_code, "stim_index": stim_index, "is_oddball": is_oddball},
                     timestamp=clock.get_time(),
                 )
+            # Log which image this onset showed (stimulus provenance -- reading onsets in order
+            # also recovers the full resolved/shuffled presentation order). ``identity`` is an
+            # optional generic attribute the stimulus wrapper may set; None when unknown. Once per
+            # stimulus (not per frame), so it stays off the timing-critical per-frame path.
             event_sink.log(
                 onset_event_type,
-                {"stim_index": stim_index, "frame_index": global_frame_index, "is_oddball": is_oddball},
+                {
+                    "stim_index": stim_index,
+                    "frame_index": global_frame_index,
+                    "is_oddball": is_oddball,
+                    "image": getattr(stim, "identity", None),
+                },
                 timestamp=flip_time,
             )
-        event_sink.log(
+        flip_record = (
             "flip",
             {
                 "stim_index": stim_index,
@@ -258,12 +333,81 @@ def _present_stimulus(
                 "frame_index": global_frame_index,
                 "is_oddball": is_oddball,
             },
-            timestamp=flip_time,
+            flip_time,
         )
+        if flip_log is not None:
+            # Buffer the per-frame flip record in memory instead of logging it inline: log()
+            # disk-flushes on every call, and doing that once per frame right after flip() can
+            # cost a frame. The caller flushes the whole batch (event_sink.log_many) after the
+            # timed loop. See EventSink.log_many.
+            flip_log.append(flip_record)
+        else:
+            event_sink.log(*flip_record[:2], timestamp=flip_record[2])
 
         frames_presented += 1
 
     return frames_presented, aborted, onset_time
+
+
+def _build_modulation_fn(
+    modulation: ModulationParams | None,
+    *,
+    n_frames_per_cycle: int,
+    starting_frame_index: int,
+    n_fade_in_frames: int,
+    n_plateau_frames: int,
+    n_fade_out_frames: int,
+) -> Callable[[int, int], float] | None:
+    """Compose the per-cycle contrast table with the global fade envelope into the
+    ``(frame_in_cycle, global_frame_index) -> opacity`` function ``_present_stimulus`` applies.
+
+    Returns None when ``modulation`` is None, so unmodulated callers (and every existing test)
+    hit the exact old full-opacity path with no ``set_modulation`` calls at all.
+    """
+    if modulation is None:
+        return None
+    table = build_contrast_table(n_frames_per_cycle, modulation)
+
+    def modulation_fn(frame_in_cycle: int, global_frame_index: int) -> float:
+        envelope = envelope_at_frame(
+            global_frame_index - starting_frame_index,
+            n_fade_in_frames,
+            n_plateau_frames,
+            n_fade_out_frames,
+        )
+        return table[frame_in_cycle] * envelope
+
+    return modulation_fn
+
+
+def present_fixation_only(
+    *,
+    window: "psychopy.visual.Window",
+    fixation_stim: "Drawable | None",
+    n_frames: int,
+    clock: "Clock",
+    event_sink: "EventSink",
+    abort_check: Callable[[], bool] = lambda: False,
+    event_label: str,
+) -> tuple[int, bool]:
+    """Draw only the fixation marker (no stimulation) for up to ``n_frames`` frames -- the
+    fixation-only pre/post-stimulus intervals of an FPVS trial. Returns
+    ``(frames_presented, aborted)``. Logs a light ``{event_label}_start``/``_end`` pair rather
+    than a per-frame event: these are idle fixation periods, not timing-critical stimulation."""
+    event_sink.log(f"{event_label}_start", {"n_frames": n_frames})
+    frames_presented = 0
+    aborted = False
+    for _ in range(n_frames):
+        if abort_check():
+            aborted = True
+            break
+        if fixation_stim is not None:
+            fixation_stim.draw()
+        if window.flip() is None:
+            clock.get_time()
+        frames_presented += 1
+    event_sink.log(f"{event_label}_end", {"frames_presented": frames_presented, "aborted": aborted})
+    return frames_presented, aborted
 
 
 def run_base_sequence(
@@ -279,10 +423,18 @@ def run_base_sequence(
     photodiode_params: PhotodiodeParams | None = None,
     abort_check: Callable[[], bool] = lambda: False,
     starting_frame_index: int = 0,
+    modulation: ModulationParams | None = None,
+    n_fade_in_frames: int = 0,
+    n_fade_out_frames: int = 0,
+    rng: "numpy.random.Generator | None" = None,
 ) -> BaseSequenceResult:
-    """Present ``stimuli`` (cycled through in order, wrapping around if shorter than needed)
-    at ``params.base_freq_hz``, frame-counted against ``refresh_rate_hz``, for
+    """Present ``stimuli`` (cycled through, wrapping around if shorter than needed) at
+    ``params.base_freq_hz``, frame-counted against ``refresh_rate_hz``, for
     ``params.trial_duration_seconds``. No oddballs -- see :func:`run_base_oddball_sequence`.
+
+    ``rng``: when given, the pool is re-permuted on each wraparound (so image identities don't
+    recur in the same order every cycle -- see :class:`_PoolSequencer`); ``None`` cycles in the
+    given order.
 
     Args:
         stimuli: Already-built drawables to cycle through, in the order to present them --
@@ -294,6 +446,12 @@ def run_base_sequence(
         starting_frame_index: The global frame counter to start from -- lets a caller running
             multiple segments back-to-back keep one continuous frame count for photodiode
             ``EVERY_N_FRAMES`` strategies.
+        modulation: Per-cycle contrast modulation to apply (sinusoidal is the FPVS standard).
+            ``None`` presents at full opacity every frame (the old hard on/off behavior).
+        n_fade_in_frames / n_fade_out_frames: length of the contrast fade-in/out ramps at the
+            start/end of the whole stream (only meaningful when ``modulation`` is set). The
+            plateau (full-envelope) span is ``params.trial_duration_seconds``; total stream
+            length is fade-in + plateau + fade-out.
 
     Raises:
         ValueError: ``stimuli`` is empty.
@@ -305,8 +463,17 @@ def run_base_sequence(
     n_frames_per_stim = frames_per_cycle(refresh_rate_hz, params.base_freq_hz)
     achieved_hz = achieved_frequency_hz(refresh_rate_hz, n_frames_per_stim)
 
-    total_frames_requested = round(params.trial_duration_seconds * refresh_rate_hz)
-    n_stimuli_to_show = max(total_frames_requested // n_frames_per_stim, 1)
+    n_plateau_frames = round(params.trial_duration_seconds * refresh_rate_hz)
+    total_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
+    n_stimuli_to_show = max(total_frames // n_frames_per_stim, 1)
+    modulation_fn = _build_modulation_fn(
+        modulation,
+        n_frames_per_cycle=n_frames_per_stim,
+        starting_frame_index=starting_frame_index,
+        n_fade_in_frames=n_fade_in_frames,
+        n_plateau_frames=n_plateau_frames,
+        n_fade_out_frames=n_fade_out_frames,
+    )
 
     event_sink.log(
         "base_sequence_start",
@@ -323,12 +490,14 @@ def run_base_sequence(
     stimuli_shown = 0
     aborted = False
     onsets: list[OnsetRecord] = []
+    flip_log: list[tuple[str, dict, float]] = []
+    pool = _PoolSequencer(len(stimuli), rng)
 
     for stim_index in range(n_stimuli_to_show):
         if abort_check():
             aborted = True
             break
-        stim = stimuli[stim_index % len(stimuli)]
+        stim = stimuli[pool.next()]
 
         frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
@@ -345,6 +514,8 @@ def run_base_sequence(
             is_oddball=False,
             stim_index=stim_index,
             abort_check=abort_check,
+            modulation_fn=modulation_fn,
+            flip_log=flip_log,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim
@@ -354,6 +525,13 @@ def run_base_sequence(
         if stim_aborted:
             aborted = True
             break
+
+    # Reset the port after the final onset (whose per-frame clear never runs -- no following
+    # frame). See the matching note in run_base_oddball_sequence.
+    trigger.clear_code()
+    # Flush the per-frame flip records buffered during the timed loop -- off the hot path now
+    # (see _present_stimulus + EventSink.log_many).
+    event_sink.log_many(flip_log)
 
     event_sink.log(
         "base_sequence_end",
@@ -368,6 +546,9 @@ def run_base_sequence(
         n_frames_presented=frames_presented,
         aborted=aborted,
         onsets=onsets,
+        waveform=modulation.waveform.value if modulation is not None else None,
+        n_fade_in_frames=n_fade_in_frames,
+        n_fade_out_frames=n_fade_out_frames,
     )
 
 
@@ -386,6 +567,10 @@ def run_base_oddball_sequence(
     photodiode_params: PhotodiodeParams | None = None,
     abort_check: Callable[[], bool] = lambda: False,
     starting_frame_index: int = 0,
+    modulation: ModulationParams | None = None,
+    n_fade_in_frames: int = 0,
+    n_fade_out_frames: int = 0,
+    rng: "numpy.random.Generator | None" = None,
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -393,8 +578,9 @@ def run_base_oddball_sequence(
     the 5th, 10th, 15th, ... stimuli are oddballs -- position 1 is never an oddball (for any
     period > 1), giving a brief settling run of base stimuli before the first oddball.
 
-    Each pool is cycled through independently (its own wraparound index), same as
-    :func:`run_base_sequence`.
+    Each pool is cycled through independently. ``rng``: when given, each pool is re-permuted on
+    every wraparound (so image identities don't recur in the same order each cycle -- see
+    :class:`_PoolSequencer`); ``None`` cycles each pool in the order given.
 
     Raises:
         ValueError: either ``base_stimuli`` or ``oddball_stimuli`` is empty, or
@@ -412,8 +598,17 @@ def run_base_oddball_sequence(
     period = oddball_period_stimuli(base_params.base_freq_hz, oddball_params.oddball_freq_hz)
     achieved_oddball_hz = achieved_oddball_frequency_hz(achieved_base_hz, period)
 
-    total_frames_requested = round(base_params.trial_duration_seconds * refresh_rate_hz)
-    n_stimuli_to_show = max(total_frames_requested // n_frames_per_stim, 1)
+    n_plateau_frames = round(base_params.trial_duration_seconds * refresh_rate_hz)
+    total_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
+    n_stimuli_to_show = max(total_frames // n_frames_per_stim, 1)
+    modulation_fn = _build_modulation_fn(
+        modulation,
+        n_frames_per_cycle=n_frames_per_stim,
+        starting_frame_index=starting_frame_index,
+        n_fade_in_frames=n_fade_in_frames,
+        n_plateau_frames=n_plateau_frames,
+        n_fade_out_frames=n_fade_out_frames,
+    )
 
     event_sink.log(
         "base_oddball_sequence_start",
@@ -432,10 +627,11 @@ def run_base_oddball_sequence(
     frames_presented = 0
     stimuli_shown = 0
     oddballs_shown = 0
-    base_pool_index = 0
-    oddball_pool_index = 0
+    base_pool = _PoolSequencer(len(base_stimuli), rng)
+    oddball_pool = _PoolSequencer(len(oddball_stimuli), rng)
     aborted = False
     onsets: list[OnsetRecord] = []
+    flip_log: list[tuple[str, dict, float]] = []
 
     for position in range(1, n_stimuli_to_show + 1):
         if abort_check():
@@ -444,13 +640,11 @@ def run_base_oddball_sequence(
 
         is_oddball = position % period == 0
         if is_oddball:
-            stim = oddball_stimuli[oddball_pool_index % len(oddball_stimuli)]
-            oddball_pool_index += 1
+            stim = oddball_stimuli[oddball_pool.next()]
             trigger_code = oddball_params.oddball_trigger_code
             onset_event_type = "oddball_onset"
         else:
-            stim = base_stimuli[base_pool_index % len(base_stimuli)]
-            base_pool_index += 1
+            stim = base_stimuli[base_pool.next()]
             trigger_code = base_params.base_trigger_code
             onset_event_type = "stimulus_onset"
 
@@ -469,6 +663,8 @@ def run_base_oddball_sequence(
             is_oddball=is_oddball,
             stim_index=position - 1,
             abort_check=abort_check,
+            modulation_fn=modulation_fn,
+            flip_log=flip_log,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim
@@ -480,6 +676,14 @@ def run_base_oddball_sequence(
         if stim_aborted:
             aborted = True
             break
+
+    # The very last onset's code isn't followed by another frame to clear it (the per-frame
+    # clear_code lives inside _present_stimulus), so reset the port once here -- otherwise it
+    # would stay latched at the final code through the post-stimulus interval and beyond.
+    trigger.clear_code()
+    # Flush the per-frame flip records buffered during the timed loop -- off the hot path now
+    # (see _present_stimulus + EventSink.log_many).
+    event_sink.log_many(flip_log)
 
     event_sink.log(
         "base_oddball_sequence_end",
@@ -503,4 +707,7 @@ def run_base_oddball_sequence(
         n_frames_presented=frames_presented,
         aborted=aborted,
         onsets=onsets,
+        waveform=modulation.waveform.value if modulation is not None else None,
+        n_fade_in_frames=n_fade_in_frames,
+        n_fade_out_frames=n_fade_out_frames,
     )

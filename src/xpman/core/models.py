@@ -29,7 +29,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -276,6 +276,14 @@ class Run(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     xpman_version: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), nullable=False, default=RunStatus.ABORTED)
+    # Provenance captured for reproducibility (all nullable + additive, so old Runs stay valid).
+    # Versions are recorded at Run creation; the refresh fields are filled in once the task has
+    # measured the monitor (see runtime.engine + a task's run_metadata()). measured_refresh_hz is
+    # the *achieved* rate the frame math actually used -- not a requested/nominal value.
+    psychopy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    numpy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    measured_refresh_hz: Mapped[float | None] = mapped_column(Float, nullable=True)
+    refresh_measured_successfully: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     instance: Mapped[Instance] = relationship(back_populates="runs")
     subject: Mapped[Subject | None] = relationship(back_populates="runs")

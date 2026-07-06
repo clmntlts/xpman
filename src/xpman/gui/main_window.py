@@ -38,11 +38,14 @@ from PySide6.QtWidgets import (
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from xpman.core import clone
 from xpman.core import repository as repo
 from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet, get_run_results_rows
 from xpman.core.instance import get_instance
+from xpman.gui.commit import safe_commit
 from xpman.gui.dialogs.block_create_dialog import BlockCreateDialog
 from xpman.gui.dialogs.block_edit_dialog import BlockEditDialog
+from xpman.gui.dialogs.block_trials_dialog import BlockTrialsDialog
 from xpman.gui.dialogs.condition_create_dialog import ConditionCreateDialog
 from xpman.gui.dialogs.condition_edit_dialog import ConditionEditDialog
 from xpman.gui.dialogs.confirm import confirm_delete
@@ -54,14 +57,17 @@ from xpman.gui.dialogs.program_create_dialog import ProgramCreateDialog
 from xpman.gui.dialogs.program_edit_dialog import ProgramEditDialog
 from xpman.gui.dialogs.subject_create_dialog import SubjectCreateDialog
 from xpman.gui.dialogs.subject_edit_dialog import SubjectEditDialog
-from xpman.gui.dialogs.trial_create_dialog import TrialCreateDialog
+from xpman.gui.experiment_overview import ExperimentOverviewWidget
 from xpman.gui.forms.schema_form import SchemaForm
 from xpman.gui.tree_view import ExperimentTreeView, TreeNode
 from xpman.tasks.registry import TaskRegistry
 
 #: Node kinds whose parameters_json is edited via a SchemaForm resolved from the owning
-#: Program's task schema. Every other kind gets a read-only info panel or a neutral placeholder.
-_PARAM_EDITABLE_KINDS = {"program", "experiment", "condition"}
+#: Program's task schema. "experiment" is deliberately absent: Experiment nodes get the
+#: build-hub overview (``_show_experiment_overview``), which appends the params form itself
+#: when the task actually defines experiment-level fields. Every other kind gets a read-only
+#: info panel or a neutral placeholder.
+_PARAM_EDITABLE_KINDS = {"program", "condition"}
 
 
 def _resolve_condition_params_model(session: Session, registry: TaskRegistry, condition_id: int) -> type:
@@ -122,6 +128,14 @@ class MainWindow(QMainWindow):
         self._save_button.setEnabled(False)
         self._save_button.clicked.connect(self._on_save)
 
+        self._preview_button = QPushButton("Preview Stimuli")
+        self._preview_button.setToolTip(
+            "Show which stimulus images this condition's selectors match. Uses the values "
+            "currently in the form, including unsaved edits."
+        )
+        self._preview_button.hide()  # only shown while a Condition's form is displayed
+        self._preview_button.clicked.connect(self._on_preview_button)
+
         self._error_label = QLabel("")
         self._error_label.setStyleSheet("color: #cc3333;")
         self._error_label.setWordWrap(True)
@@ -134,6 +148,7 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(self._error_label)
         button_row = QHBoxLayout()
         button_row.addStretch(1)
+        button_row.addWidget(self._preview_button)
         button_row.addWidget(self._save_button)
         detail_layout.addLayout(button_row)
 
@@ -152,7 +167,9 @@ class MainWindow(QMainWindow):
         self._current_node = node
         self._error_label.hide()
 
-        if node.kind in _PARAM_EDITABLE_KINDS and node.id is not None:
+        if node.kind == "experiment" and node.id is not None:
+            self._show_experiment_overview(node)
+        elif node.kind in _PARAM_EDITABLE_KINDS and node.id is not None:
             self._show_param_form(node)
         elif node.kind == "subject" and node.id is not None:
             self._show_subject_info(node.id)
@@ -180,6 +197,57 @@ class MainWindow(QMainWindow):
         self._current_form = form
         self._detail_title.setText(f"{node.name} -- parameters")
         self._save_button.setEnabled(True)
+        self._preview_button.setVisible(node.kind == "condition")
+
+    def _show_experiment_overview(self, node: TreeNode) -> None:
+        """Build hub for an Experiment: Conditions + Blocks tables with action buttons (see
+        ``ExperimentOverviewWidget``). If the task defines experiment-level parameters, the
+        usual SchemaForm is appended below the overview and Save works exactly as for
+        program/condition forms; for tasks without them (FPVS, dummy) no empty form is shown.
+        """
+        overview = ExperimentOverviewWidget(self._session, node.id)
+        overview.createConditionRequested.connect(self._create_condition)
+        overview.createBlockRequested.connect(self._create_block)
+        overview.manageTrialsRequested.connect(self._manage_trials)
+        overview.duplicateConditionRequested.connect(
+            lambda cid: self._duplicate_condition(self._node_for("condition", cid))
+        )
+        overview.deleteConditionRequested.connect(
+            lambda cid: self._delete_condition(self._node_for("condition", cid))
+        )
+        overview.duplicateBlockRequested.connect(
+            lambda bid: self._duplicate_block(self._node_for("block", bid))
+        )
+        overview.deleteBlockRequested.connect(
+            lambda bid: self._delete_block(self._node_for("block", bid))
+        )
+
+        model_cls = _resolve_experiment_params_model(self._session, self._registry, node.id)
+        if model_cls.model_fields:
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.addWidget(overview)
+            heading = QLabel("Parameters")
+            heading.setStyleSheet("font-weight: bold;")
+            container_layout.addWidget(heading)
+            form = SchemaForm(model_cls, initial_values=self._current_parameters_json(node))
+            container_layout.addWidget(form)
+            self._set_detail_widget(container)
+            self._current_form = form
+            self._save_button.setEnabled(True)
+        else:
+            self._set_detail_widget(overview)
+            self._current_form = None
+            self._save_button.setEnabled(False)
+        self._detail_title.setText(f"{node.name} -- overview")
+        self._preview_button.hide()
+
+    def _node_for(self, kind: str, entity_id: int) -> TreeNode:
+        """Build the ``TreeNode`` the duplicate/delete handlers expect, for entities addressed
+        by bare id (e.g. from the experiment overview's signals) rather than a tree selection."""
+        getter = {"condition": repo.get_condition, "block": repo.get_block}[kind]
+        row = getter(self._session, entity_id)
+        return TreeNode(kind=kind, id=entity_id, name=row.name)
 
     def _current_parameters_json(self, node: TreeNode) -> dict:
         getter = {"program": repo.get_program, "experiment": repo.get_experiment, "condition": repo.get_condition}[
@@ -315,12 +383,14 @@ class MainWindow(QMainWindow):
         self._current_form = None
         self._detail_title.setText(title)
         self._save_button.setEnabled(False)
+        self._preview_button.hide()
 
     def _show_placeholder(self, message: str) -> None:
         self._set_detail_widget(self._placeholder_widget(message))
         self._current_form = None
         self._detail_title.setText("Nothing to edit")
         self._save_button.setEnabled(False)
+        self._preview_button.hide()
 
     def _placeholder_widget(self, message: str) -> QWidget:
         label = QLabel(message)
@@ -350,7 +420,8 @@ class MainWindow(QMainWindow):
             self._current_node.kind
         ]
         updater(self._session, self._current_node.id, parameters_json=model.model_dump(mode="json"))
-        self._session.commit()
+        if not safe_commit(self._session, self, action="save the parameters"):
+            return
         self._refresh_status_bar()
         self.statusBar().showMessage(f'Saved "{self._current_node.name}"', 3000)
 
@@ -361,9 +432,15 @@ class MainWindow(QMainWindow):
         n_programs = len(repo.list_programs(self._session, profile_id=self._profile_id))
         self.statusBar().showMessage(f"{n_subjects} subject(s), {n_programs} program(s)")
 
-    def refresh(self) -> None:
-        """Re-query the DB and rebuild the tree (e.g. after a create/delete dialog)."""
-        self._tree.refresh()
+    def refresh(self, *, select_node: tuple[str, int] | None = None) -> None:
+        """Re-query the DB and rebuild the tree (e.g. after a create/delete dialog).
+
+        Expansion and selection survive the rebuild (see ``ExperimentTreeView.refresh``).
+        ``select_node``: optional ``(kind, id)`` to select instead of restoring the previous
+        selection -- create/duplicate handlers pass their new entity so it's immediately
+        selected and shown in the detail panel.
+        """
+        self._tree.refresh(select=select_node)
         self._refresh_status_bar()
 
     # -- tree context menu: create / delete -------------------------------------------------
@@ -407,6 +484,7 @@ class MainWindow(QMainWindow):
             menu.addAction("Create Instance...", lambda: self._create_instance(node.id))
             menu.addSeparator()
             menu.addAction("Edit Program...", lambda: self._edit_program(node))
+            menu.addAction("Duplicate", lambda: self._duplicate_program(node))
             menu.addSeparator()
             menu.addAction("Delete Program", lambda: self._delete_program(node))
         elif node.kind == "experiments_group":
@@ -418,17 +496,21 @@ class MainWindow(QMainWindow):
             if parent_id is not None:
                 menu.addAction("Create Instance...", lambda: self._create_instance(parent_id))
 
-        if node.kind == "instance" and self._db_path is not None:
-            # Only offered when db_path is known (see __init__) -- launching spawns a separate
-            # process that needs to reconnect to a real, shared database file; there's nothing
-            # sensible to launch against an in-memory-only session.
-            menu.addAction("Launch...", lambda: self._launch_instance(node.id))
+        if node.kind == "instance":
+            if self._db_path is not None:
+                # Only offered when db_path is known (see __init__) -- launching spawns a
+                # separate process that needs to reconnect to a real, shared database file;
+                # there's nothing sensible to launch against an in-memory-only session.
+                menu.addAction("Launch...", lambda: self._launch_instance(node.id))
+                menu.addSeparator()
+            menu.addAction("Delete Instance", lambda: self._delete_instance(node))
 
         if node.kind == "experiment":
             menu.addAction("New Condition...", lambda: self._create_condition(node.id))
             menu.addAction("New Block...", lambda: self._create_block(node.id))
             menu.addSeparator()
             menu.addAction("Edit Experiment...", lambda: self._edit_experiment(node))
+            menu.addAction("Duplicate", lambda: self._duplicate_experiment(node))
             menu.addSeparator()
             menu.addAction("Delete Experiment", lambda: self._delete_experiment(node))
         elif node.kind == "conditions_group":
@@ -443,13 +525,16 @@ class MainWindow(QMainWindow):
         if node.kind == "condition":
             menu.addAction("Edit Condition...", lambda: self._edit_condition(node))
             menu.addAction("Check Triggers...", lambda: self._check_triggers(node))
+            menu.addAction("Preview Stimuli...", lambda: self._preview_stimuli(node))
+            menu.addAction("Duplicate", lambda: self._duplicate_condition(node))
             menu.addSeparator()
             menu.addAction("Delete Condition", lambda: self._delete_condition(node))
 
         if node.kind == "block":
-            menu.addAction("New Trial...", lambda: self._create_trial(node.id))
+            menu.addAction("Manage Trials...", lambda: self._manage_trials(node.id))
             menu.addSeparator()
             menu.addAction("Edit Block...", lambda: self._edit_block(node))
+            menu.addAction("Duplicate", lambda: self._duplicate_block(node))
             block = repo.get_block(self._session, node.id)
             siblings = repo.list_blocks(self._session, experiment_id=block.experiment_id)
             self._add_reorder_actions(menu, node, siblings, self._move_block)
@@ -481,44 +566,78 @@ class MainWindow(QMainWindow):
     def _create_subject(self) -> None:
         dialog = SubjectCreateDialog(self._session, self._profile_id, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("subject", dialog.created_subject_id))
             self.statusBar().showMessage("Subject created", 3000)
 
     def _create_program(self) -> None:
         dialog = ProgramCreateDialog(self._session, self._profile_id, self._registry, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("program", dialog.created_program_id))
             self.statusBar().showMessage("Program created", 3000)
 
     def _create_experiment(self, program_id: int) -> None:
         dialog = ExperimentCreateDialog(self._session, program_id, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("experiment", dialog.created_experiment_id))
             self.statusBar().showMessage("Experiment created", 3000)
 
     def _create_condition(self, experiment_id: int) -> None:
         dialog = ConditionCreateDialog(self._session, experiment_id, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("condition", dialog.created_condition_id))
             self.statusBar().showMessage("Condition created", 3000)
 
     def _create_block(self, experiment_id: int) -> None:
         dialog = BlockCreateDialog(self._session, experiment_id, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("block", dialog.created_block_id))
             self.statusBar().showMessage("Block created", 3000)
 
-    def _create_trial(self, block_id: int) -> None:
-        dialog = TrialCreateDialog(self._session, block_id, parent=self)
+    def _manage_trials(self, block_id: int) -> None:
+        dialog = BlockTrialsDialog(self._session, block_id, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.refresh()
-            self.statusBar().showMessage("Trial created", 3000)
+            self.statusBar().showMessage("Trials updated", 3000)
 
     def _create_instance(self, program_id: int) -> None:
-        dialog = InstanceFreezeDialog(self._session, program_id, parent=self)
+        dialog = InstanceFreezeDialog(self._session, program_id, self._registry, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            self.refresh(select_node=("instance", dialog.created_instance_id))
             self.statusBar().showMessage("Instance created", 3000)
+
+    # -- duplicate actions --------------------------------------------------------------------
+    #
+    # No dialog: duplication is non-destructive and instant, and the clone is immediately
+    # selected in the tree, so renaming it is one "Edit ..." away if the default
+    # "<name> (copy)" isn't wanted.
+
+    def _duplicate_condition(self, node: TreeNode) -> None:
+        new = clone.clone_condition(self._session, node.id)
+        if not safe_commit(self._session, self, action="duplicate the condition"):
+            return
+        self.refresh(select_node=("condition", new.id))
+        self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
+
+    def _duplicate_block(self, node: TreeNode) -> None:
+        new = clone.clone_block(self._session, node.id)
+        if not safe_commit(self._session, self, action="duplicate the block"):
+            return
+        self.refresh(select_node=("block", new.id))
+        self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
+
+    def _duplicate_experiment(self, node: TreeNode) -> None:
+        new = clone.clone_experiment(self._session, node.id)
+        if not safe_commit(self._session, self, action="duplicate the experiment"):
+            return
+        self.refresh(select_node=("experiment", new.id))
+        self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
+
+    def _duplicate_program(self, node: TreeNode) -> None:
+        new = clone.clone_program(self._session, node.id)
+        if not safe_commit(self._session, self, action="duplicate the program"):
+            return
+        self.refresh(select_node=("program", new.id))
+        self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
 
     def _launch_instance(self, instance_id: int) -> None:
         if self._db_path is None or self._data_dir is None:
@@ -589,6 +708,36 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Check Triggers", "No trigger conflicts found.")
 
+    def _on_preview_button(self) -> None:
+        if self._current_node is not None and self._current_node.kind == "condition":
+            self._preview_stimuli(self._current_node)
+
+    def _preview_stimuli(self, node: TreeNode) -> None:
+        """Show what this Condition's stimulus selectors match, *before* anything is run.
+
+        Uses the live form values when this Condition's form is currently open (so a
+        researcher can tweak a filename pattern and preview without saving first);
+        otherwise falls back to the saved DB values.
+        """
+        condition = repo.get_condition(self._session, node.id)
+        experiment = repo.get_experiment(self._session, condition.experiment_id)
+        program = repo.get_program(self._session, experiment.program_id)
+        task = self._registry.get(program.task_name)
+
+        if (
+            self._current_form is not None
+            and self._current_node is not None
+            and self._current_node.kind == "condition"
+            and self._current_node.id == node.id
+        ):
+            params = self._current_form.get_values()
+        else:
+            params = condition.parameters_json or {}
+
+        lines = task.describe_condition_resources(params, program.resource_main_directory)
+        message = "\n".join(lines) if lines else "This task does not provide a resource preview."
+        QMessageBox.information(self, "Stimulus Preview", message)
+
     # -- reorder actions --------------------------------------------------------------------------
     #
     # Swaps order_index between a node and its immediate sibling -- simplest correct reordering
@@ -617,7 +766,8 @@ class MainWindow(QMainWindow):
         current_order_index, other_order_index = current.order_index, other.order_index
         updater(self._session, current.id, order_index=other_order_index)
         updater(self._session, other.id, order_index=current_order_index)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="reorder"):
+            return
         self.refresh()
 
     # -- delete actions -----------------------------------------------------------------------
@@ -634,7 +784,8 @@ class MainWindow(QMainWindow):
         ):
             return
         repo.delete_subject(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the subject"):
+            return
         self.refresh()
 
     def _delete_program(self, node: TreeNode) -> None:
@@ -649,7 +800,32 @@ class MainWindow(QMainWindow):
         if not confirm_delete(self, "Program", node.name, extra_warning=warning):
             return
         repo.delete_program(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the program"):
+            return
+        self.refresh()
+
+    def _delete_instance(self, node: TreeNode) -> None:
+        # Instance.runs cascades to Runs and their Results (core/models.py), so deleting an
+        # Instance that has Runs would destroy collected data -- the opposite of the legacy
+        # app's "delete instance, keep results." Since an xpman Result is only interpretable
+        # via its Instance's frozen snapshot, we can't keep the results if the Instance goes;
+        # so we simply refuse to delete an Instance that has any Runs, and explain why.
+        runs = repo.list_runs(self._session, instance_id=node.id)
+        if runs:
+            QMessageBox.information(
+                self,
+                "Can't delete this Instance",
+                f'"{node.name}" has {len(runs)} run(s) with collected results. Deleting the '
+                "Instance would permanently destroy those results (a result can only be read "
+                "through the Instance's frozen snapshot), so it can't be deleted while runs "
+                "exist. You can still create new Instances and leave this one as-is.",
+            )
+            return
+        if not confirm_delete(self, "Instance", node.name):
+            return
+        repo.delete_instance(self._session, node.id)
+        if not safe_commit(self._session, self, action="delete the instance"):
+            return
         self.refresh()
 
     def _delete_experiment(self, node: TreeNode) -> None:
@@ -664,7 +840,8 @@ class MainWindow(QMainWindow):
         if not confirm_delete(self, "Experiment", node.name, extra_warning=warning):
             return
         repo.delete_experiment(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the experiment"):
+            return
         self.refresh()
 
     def _delete_condition(self, node: TreeNode) -> None:
@@ -675,7 +852,8 @@ class MainWindow(QMainWindow):
         ):
             return
         repo.delete_condition(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the condition"):
+            return
         self.refresh()
 
     def _delete_block(self, node: TreeNode) -> None:
@@ -684,14 +862,16 @@ class MainWindow(QMainWindow):
         if not confirm_delete(self, "Block", node.name, extra_warning=warning):
             return
         repo.delete_block(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the block"):
+            return
         self.refresh()
 
     def _delete_trial(self, node: TreeNode) -> None:
         if not confirm_delete(self, "Trial", node.name):
             return
         repo.delete_trial(self._session, node.id)
-        self._session.commit()
+        if not safe_commit(self._session, self, action="delete the trial"):
+            return
         self.refresh()
 
 

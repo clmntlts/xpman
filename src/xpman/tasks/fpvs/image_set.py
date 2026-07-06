@@ -26,6 +26,7 @@ This module only reads the filesystem/filenames -- it never opens/decodes image 
 from __future__ import annotations
 
 import enum
+import fnmatch
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,6 +234,7 @@ def filter_entries(
     eccentricity_deg: float | None = None,
     is_fs: bool | None = None,
     variant: str | None = "__unset__",
+    filename_pattern: str | None = None,
 ) -> list[ImageEntry]:
     """Filter a list of entries by any combination of fields. Unset filters are ignored.
 
@@ -241,6 +243,13 @@ def filter_entries(
     "don't filter on variant at all". Filtering by any typed field naturally excludes
     ``recognized=False`` (generic/imported) entries, since their typed fields are all ``None``
     -- to include those too, filter on ``recognized`` directly or don't filter at all.
+
+    ``filename_pattern`` is a glob pattern (``fnmatch`` syntax, e.g. ``"*happy*.png"``) matched
+    against each entry's bare filename (``entry.path.name``) -- unlike every other filter here,
+    this works identically for recognized and unrecognized entries, since ``path`` is the one
+    ``ImageEntry`` field always populated regardless of whether the SepStim naming convention
+    was recognized. This is the main way to select a meaningful subset from a stimulus set that
+    doesn't follow that convention, where the other filters have nothing to match against.
     """
     result = entries
     if category is not None:
@@ -253,4 +262,6 @@ def filter_entries(
         result = [e for e in result if e.is_fs == is_fs]
     if variant != "__unset__":
         result = [e for e in result if e.variant == variant]
+    if filename_pattern is not None:
+        result = [e for e in result if fnmatch.fnmatch(e.path.name, filename_pattern)]
     return result

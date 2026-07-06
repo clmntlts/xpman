@@ -70,6 +70,27 @@ def test_create_with_valid_name_persists_and_accepts(qtbot, session, experiment_
     assert condition.parameters_json == {}
 
 
+def test_commit_failure_rolls_back_and_keeps_dialog_open(qtbot, session, experiment_id):
+    """If the commit fails, safe_commit rolls back, the dialog does NOT accept (stays open for
+    retry), no Condition row survives, and the shared session is left usable, not poisoned."""
+    from unittest.mock import patch
+
+    dialog = ConditionCreateDialog(session, experiment_id)
+    qtbot.addWidget(dialog)
+    dialog._name_edit.setText("Oddball")
+
+    with patch.object(session, "commit", side_effect=RuntimeError("database is locked")), patch(
+        "xpman.gui.commit.QMessageBox"
+    ) as mock_box:
+        dialog._on_create()
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.created_condition_id is None
+    mock_box.critical.assert_called_once()
+    # Rollback left the session usable: a normal read still works and shows no leaked row.
+    assert repo.list_conditions(session, experiment_id=experiment_id) == []
+
+
 def test_return_pressed_creates_condition(qtbot, session, experiment_id):
     dialog = ConditionCreateDialog(session, experiment_id)
     qtbot.addWidget(dialog)

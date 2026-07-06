@@ -11,13 +11,16 @@ import pytest
 from xpman.hardware.clock import Clock
 from xpman.hardware.trigger_null import NullTrigger
 from xpman.runtime.logging_sink import EventSink
+from xpman.tasks.fpvs.modulation import ModulationParams, Waveform
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
     OddballParams,
+    _PoolSequencer,
     achieved_frequency_hz,
     achieved_oddball_frequency_hz,
     frames_per_cycle,
     oddball_period_stimuli,
+    present_fixation_only,
     run_base_oddball_sequence,
     run_base_sequence,
 )
@@ -42,6 +45,30 @@ from xpman.tasks.fpvs.photodiode import PhotodiodeParams, PhotodiodePatch, Toggl
 )
 def test_frames_per_cycle(refresh_rate, target_freq, expected_frames):
     assert frames_per_cycle(refresh_rate, target_freq) == expected_frames
+
+
+def test_pool_sequencer_cycles_in_order_without_rng():
+    seq = _PoolSequencer(3, None)
+    assert [seq.next() for _ in range(7)] == [0, 1, 2, 0, 1, 2, 0]
+
+
+def test_pool_sequencer_first_pass_in_order_then_repermutes_with_rng():
+    import numpy as np
+
+    seq = _PoolSequencer(4, np.random.default_rng(0))
+    first = [seq.next() for _ in range(4)]
+    assert first == [0, 1, 2, 3]  # first pass preserves the given (already-shuffled) order
+    passes = [tuple(seq.next() for _ in range(4)) for _ in range(5)]
+    for p in passes:
+        assert sorted(p) == [0, 1, 2, 3]  # each wraparound is a full permutation (no repeats/drops)
+    assert any(p != (0, 1, 2, 3) for p in passes)  # and it genuinely re-permutes, not re-cycles
+
+
+def test_pool_sequencer_single_element_never_reshuffles():
+    import numpy as np
+
+    seq = _PoolSequencer(1, np.random.default_rng(0))
+    assert [seq.next() for _ in range(5)] == [0, 0, 0, 0, 0]
 
 
 def test_frames_per_cycle_rejects_non_positive():
@@ -164,6 +191,41 @@ def test_trigger_sent_once_per_stimulus_onset_with_correct_code(mock_window, sti
         event_sink=event_sink,
     )
     assert trigger.codes_sent == [42] * 6  # 6 stimuli shown, one trigger per onset
+
+
+class _RecordingTrigger(NullTrigger):
+    """NullTrigger that also records clear_code calls, so a test can check the non-blocking pulse
+    (set on onset, cleared on a later frame) never leaves the port latched."""
+
+    def __init__(self):
+        super().__init__(reset_after=0.0)
+        self.ops: list[tuple[str, int | None]] = []
+
+    def set_code(self, code: int) -> None:
+        super().set_code(code)
+        self.ops.append(("set", code))
+
+    def clear_code(self) -> None:
+        self.ops.append(("clear", None))
+
+
+def test_nonblocking_pulse_is_cleared_and_never_left_latched(mock_window, stimuli, event_sink, clock):
+    rec = _RecordingTrigger()
+    run_base_sequence(
+        window=mock_window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0, base_trigger_code=42),
+        refresh_rate_hz=60.0,
+        trigger=rec,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    # Every set is followed by a clear before the next set (pulse ~one frame, never overlapping),
+    # and the final op is a clear -- so the port is left at 0, not latched at the last code.
+    assert ("set", 42) in rec.ops
+    assert rec.ops[-1] == ("clear", None)
+    last_set = max(i for i, op in enumerate(rec.ops) if op[0] == "set")
+    assert any(op[0] == "clear" for op in rec.ops[last_set + 1 :])
 
 
 def test_no_trigger_sent_when_code_is_none(mock_window, stimuli, event_sink, trigger, clock):
@@ -639,3 +701,178 @@ def test_aborted_stimulus_does_not_produce_an_onset_record(mock_window, stimuli,
         abort_check=abort_immediately,
     )
     assert result.onsets == []
+
+
+# ---------------------------------------------------------------------------
+# Contrast modulation + fade envelope
+# ---------------------------------------------------------------------------
+
+
+class _SpyStim:
+    """Records every set_modulation opacity so tests can check the per-frame contrast curve."""
+
+    def __init__(self) -> None:
+        self.modulations: list[float] = []
+        self.draw_count = 0
+
+    def set_modulation(self, opacity: float) -> None:
+        self.modulations.append(opacity)
+
+    def draw(self) -> None:
+        self.draw_count += 1
+
+
+def test_no_modulation_never_calls_set_modulation(mock_window, event_sink, trigger, clock):
+    spy = _SpyStim()
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        modulation=None,
+    )
+    assert spy.modulations == []  # unmodulated path untouched
+    assert spy.draw_count == 60
+
+
+def test_sinusoidal_modulation_follows_raised_cosine_per_cycle(mock_window, event_sink, trigger, clock):
+    import math
+
+    spy = _SpyStim()
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),  # 10 frames/cycle
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        modulation=ModulationParams(waveform=Waveform.SINUSOIDAL, contrast_min=0.0, contrast_max=1.0),
+    )
+    # No fades -> envelope is 1.0 throughout, so opacity == the raised cosine each cycle.
+    assert len(spy.modulations) == 60
+    n = 10
+    for i in range(n):  # first cycle
+        expected = (1.0 - math.cos(2.0 * math.pi * i / n)) / 2.0
+        assert spy.modulations[i] == pytest.approx(expected)
+    assert spy.modulations[0] == pytest.approx(0.0)  # onset frame invisible
+    assert spy.modulations[5] == pytest.approx(1.0)  # mid-cycle full
+
+
+def test_none_waveform_modulation_is_full_opacity(mock_window, event_sink, trigger, clock):
+    spy = _SpyStim()
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        modulation=ModulationParams(waveform=Waveform.NONE),
+    )
+    assert all(m == pytest.approx(1.0) for m in spy.modulations)
+
+
+def test_fade_in_ramps_the_cycle_peaks_upward(mock_window, event_sink, trigger, clock):
+    spy = _SpyStim()
+    # 10 frames/cycle; 2 cycles fade-in (20 frames), plateau 1s (60 frames), no fade-out.
+    result = run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        modulation=ModulationParams(waveform=Waveform.SINUSOIDAL, contrast_min=0.0, contrast_max=1.0),
+        n_fade_in_frames=20,
+    )
+    # total = 20 + 60 = 80 frames -> 8 stimuli.
+    assert result.n_frames_presented == 80
+    assert result.waveform == "sinusoidal"
+    assert result.n_fade_in_frames == 20
+    # The mid-cycle peak (frame 5 of each cycle) should rise across the fade-in cycles then hit 1.
+    peak_cycle0 = spy.modulations[5]   # global frame 5, envelope (5+1)/20 = 0.30
+    peak_cycle1 = spy.modulations[15]  # global frame 15, envelope 16/20 = 0.80
+    peak_cycle2 = spy.modulations[25]  # global frame 25, plateau -> envelope 1.0
+    assert peak_cycle0 < peak_cycle1 < peak_cycle2
+    assert peak_cycle2 == pytest.approx(1.0)
+
+
+def test_oddball_sequence_modulates_base_and_oddball_streams(mock_window, event_sink, trigger, clock):
+    base = [_SpyStim()]
+    odd = [_SpyStim()]
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base,
+        oddball_stimuli=odd,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=2.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),  # period 5
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        modulation=ModulationParams(waveform=Waveform.SINUSOIDAL),
+    )
+    # Both pools get modulated (each shown at least once); onset frames are invisible (~0).
+    assert base[0].modulations and odd[0].modulations
+    assert base[0].modulations[0] == pytest.approx(0.0)
+    assert odd[0].modulations[0] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# present_fixation_only
+# ---------------------------------------------------------------------------
+
+
+def test_present_fixation_only_draws_fixation_each_frame(mock_window, event_sink, clock):
+    fixation = MagicMock(name="fixation")
+    frames, aborted = present_fixation_only(
+        window=mock_window,
+        fixation_stim=fixation,
+        n_frames=30,
+        clock=clock,
+        event_sink=event_sink,
+        event_label="pre_stimulus_interval",
+    )
+    assert frames == 30
+    assert aborted is False
+    assert fixation.draw.call_count == 30
+    assert mock_window.flip.call_count == 30
+
+
+def test_present_fixation_only_none_fixation_still_flips(mock_window, event_sink, clock):
+    frames, aborted = present_fixation_only(
+        window=mock_window,
+        fixation_stim=None,
+        n_frames=5,
+        clock=clock,
+        event_sink=event_sink,
+        event_label="post_stimulus_interval",
+    )
+    assert frames == 5
+    assert mock_window.flip.call_count == 5
+
+
+def test_present_fixation_only_aborts_early(mock_window, event_sink, clock):
+    calls = {"n": 0}
+
+    def abort_after_three():
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    frames, aborted = present_fixation_only(
+        window=mock_window,
+        fixation_stim=None,
+        n_frames=100,
+        clock=clock,
+        event_sink=event_sink,
+        abort_check=abort_after_three,
+        event_label="pre_stimulus_interval",
+    )
+    assert aborted is True
+    assert frames == 3

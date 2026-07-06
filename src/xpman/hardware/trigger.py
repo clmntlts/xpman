@@ -17,6 +17,7 @@ Windows 11 ``inpoutx64``/``dlportio`` driver placement caveat is handled by
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 
 # A few milliseconds is a conservative, commonly-used TTL pulse width for EEG trigger codes --
@@ -29,35 +30,66 @@ DEFAULT_RESET_AFTER = 0.003  # seconds (3 ms)
 class TriggerSender(ABC):
     """Sends EEG sync trigger codes as TTL pulses.
 
-    Implementations must treat every ``send_trigger`` call as a discrete pulse: set the
-    requested code on the output pins, hold it for ``reset_after`` seconds, then reset the
-    pins to 0. Never leave a non-zero code latched on the line after ``send_trigger`` returns.
+    Two ways to emit a pulse, both ending with the line back at 0 (never latched):
+
+    - ``send_trigger(code)`` -- a self-contained **blocking** one-shot: set the pins, hold for
+      ``reset_after`` seconds, reset to 0. Convenient for callers that are *not* on a
+      frame-locked loop (the dummy task, manual scripts).
+    - ``set_code(code)`` + ``clear_code()`` -- the **non-blocking** primitives. A frame-locked
+      presentation loop calls ``set_code`` right after the onset ``flip()`` and ``clear_code``
+      at the top of the *next* frame, so the pulse spans ~one refresh interval without ever
+      blocking the loop after flip (which risks dropping a frame). See
+      ``tasks/fpvs/paradigm_oddball.py``.
+
+    ``set_code``/``clear_code`` are the abstract primitives; ``send_trigger`` is implemented in
+    terms of them here so every subclass gets the blocking one-shot for free.
     """
 
     def __init__(self, reset_after: float = DEFAULT_RESET_AFTER) -> None:
         """
         Args:
-            reset_after: Seconds to hold the pulse high before resetting to 0. Configurable
-                per instance because the correct value for this lab's amplifier is one of the
-                project's open questions (``docs/open_questions.md`` #4) -- tune it here once
-                measured, without needing an interface change.
+            reset_after: Seconds ``send_trigger`` holds the pulse high before resetting to 0.
+                Configurable per instance because the correct value for this lab's amplifier is
+                one of the project's open questions (``docs/open_questions.md`` #4) -- tune it
+                here once measured, without needing an interface change. (The non-blocking
+                ``set_code``/``clear_code`` path does not use this; there the pulse width is one
+                monitor frame, set by the caller's flip cadence.)
         """
         if reset_after < 0:
             raise ValueError(f"reset_after must be >= 0, got {reset_after!r}")
         self.reset_after = reset_after
 
     @abstractmethod
-    def send_trigger(self, code: int) -> None:
-        """Emit a single TTL pulse encoding ``code`` on the parallel port's data pins.
+    def set_code(self, code: int) -> None:
+        """Set ``code`` on the data pins and return immediately -- no hold, no reset.
 
-        Blocks for approximately ``self.reset_after`` seconds while the pulse is held, then
-        resets the port to 0 before returning.
-
-        Args:
-            code: The trigger code to send. Must fit in one byte (0-255) since standard
-                parallel port data pins (2-9) carry 8 bits.
+        Non-blocking: the caller is responsible for a later ``clear_code`` (typically at the top
+        of the next frame). Must fit in one byte (0-255); standard parallel port data pins (2-9)
+        carry 8 bits.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def clear_code(self) -> None:
+        """Reset the data pins to 0. Safe to call when already 0 (idempotent)."""
+        raise NotImplementedError
+
+    def _hold(self, seconds: float) -> None:
+        """Block for ``seconds`` while a ``send_trigger`` pulse is held high. Overridden by
+        ``ParallelPortTrigger`` to use PsychoPy's higher-precision ``core.wait``."""
+        time.sleep(seconds)
+
+    def send_trigger(self, code: int) -> None:
+        """Emit a single blocking TTL pulse encoding ``code``: set pins, hold ``reset_after``,
+        reset to 0. The reset always runs (``finally``) even if the hold is interrupted, so the
+        port never stays latched at a stale code. Frame-locked loops should prefer
+        ``set_code``/``clear_code`` instead (see the class docstring)."""
+        self.set_code(code)
+        try:
+            if self.reset_after > 0:
+                self._hold(self.reset_after)
+        finally:
+            self.clear_code()
 
 
 class ParallelPortTrigger(TriggerSender):
@@ -95,16 +127,16 @@ class ParallelPortTrigger(TriggerSender):
         self._core = _psychopy_core
         self._port = _psychopy_parallel.ParallelPort(address=address)
 
-    def send_trigger(self, code: int) -> None:
-        """Set ``code`` on the data pins, hold for ``self.reset_after``, then reset to 0.
-
-        The reset-to-0 always runs, even if ``core.wait`` is interrupted (e.g. an abort signal
-        delivered during the hold) -- otherwise the port would stay latched at a stale non-zero
-        code, corrupting the baseline for whatever trigger fires next.
-        """
+    def set_code(self, code: int) -> None:
+        """Drive ``code`` onto the data pins (non-blocking)."""
         self._port.setData(code)
-        try:
-            if self.reset_after > 0:
-                self._core.wait(self.reset_after)
-        finally:
-            self._port.setData(0)
+
+    def clear_code(self) -> None:
+        """Reset the data pins to 0."""
+        self._port.setData(0)
+
+    def _hold(self, seconds: float) -> None:
+        """Hold via PsychoPy's ``core.wait`` (higher precision than ``time.sleep``) for the
+        blocking ``send_trigger`` path. The non-blocking ``set_code``/``clear_code`` path never
+        calls this."""
+        self._core.wait(seconds)

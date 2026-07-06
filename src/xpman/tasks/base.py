@@ -167,3 +167,29 @@ class TaskModule(ABC):
         no warnings.
         """
         return []
+
+    def run_metadata(self) -> dict:
+        """Optional run-level provenance a task can expose *after* ``prepare`` has run, for the
+        engine to persist onto the ``Run`` row. Recognized keys (all optional):
+
+        - ``measured_refresh_hz`` (float): the achieved monitor refresh the frame math used.
+        - ``refresh_measured_successfully`` (bool): whether that rate was really measured (vs a
+          fallback).
+
+        The engine reads only known keys and ignores the rest, so a task may add its own without
+        breaking anything. Default: no metadata.
+        """
+        return {}
+
+    def describe_condition_resources(self, condition_params: dict, resource_dir: str) -> list[str]:
+        """Optional static resource preview for one Condition.
+
+        Returns human-readable lines describing what this task would load from
+        ``resource_dir`` given ``condition_params`` -- counts, sample filenames, problems
+        (e.g. a stimulus selector matching zero images). Must be cheap and side-effect-free:
+        no hardware, no windows, no pixel IO -- the GUI calls this synchronously on its own
+        thread so a researcher can sanity-check a Condition *before* running it. Must never
+        raise for content problems (return them as lines instead). Default: [] ("this task
+        provides no preview").
+        """
+        return []

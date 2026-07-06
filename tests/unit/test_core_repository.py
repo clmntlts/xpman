@@ -166,3 +166,25 @@ def test_run_get_and_list(session):
 
     subject_a_runs = repo.list_runs(session, subject_id=subject_a.id)
     assert [r.id for r in subject_a_runs] == [run_a.id]
+
+
+def test_delete_instance_removes_the_row(session):
+    from xpman.core.instance import freeze_program, get_instance
+
+    profile = repo.create_profile(session, name="Dr. Test")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/",
+        task_name="dummy", task_schema_version="1",
+    )
+    session.commit()
+    instance = freeze_program(session, program.id, name="I1")
+    session.commit()
+
+    repo.delete_instance(session, instance.id)
+    session.commit()
+    assert get_instance(session, instance.id) is None
+
+
+def test_delete_instance_unknown_id_raises(session):
+    with pytest.raises(LookupError):
+        repo.delete_instance(session, 999999)

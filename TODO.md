@@ -4,6 +4,82 @@ Living list of what's left. Grouped by area, roughly priority-ordered within eac
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Senior-EEG-review corrections (2026-07-04)
+
+Ran the reusable [senior-EEG review prompt](docs/eeg_review_prompt.md) as a panel and fixed every
+finding that is correctable in software (dev-mode, additive schema, frame-counted timing intact;
+732 tests green). What remains is genuinely hardware- or research-decision-gated (see the two lists
+below and the Hardware section). None of the timing/rendering claims are hardware-verified yet.
+
+- [x] **DB contention no longer instantly fails a run.** SQLite `busy_timeout=5000` +
+      `synchronous=NORMAL` pragmas (`core/db.py`), so a GUI write colliding with the worker's
+      per-trial commit *waits* instead of raising "database is locked". First real two-writer
+      contention tests (`tests/unit/test_core_db.py`), not mocks.
+- [x] **Unmeasurable refresh rate aborts, not silently fabricates 60 Hz.** `FPVSTask.prepare`
+      raises when `getActualFrameRate()` fails (frame-counted timing would otherwise be silently
+      wrong), with a logged, per-trial-flagged `XPMAN_ALLOW_REFRESH_FALLBACK` escape hatch and a
+      plausibility advisory for implausible readings. Measured refresh + success now recorded.
+- [x] **Advisory warnings for silent misconfigurations.** `check_triggers` now warns when *no*
+      trigger codes are set (EEG would be unmarked/unanalyzable) and when both fades are 0 (abrupt
+      onset transient). Runtime pixel inspection (`tasks/fpvs/stimulus_inspect.py`) flags images
+      whose mean luminance diverges from `background_gray` (breaks the opacity==contrast
+      assumption) and heterogeneous image dimensions — both as event-log advisories + outcome flags.
+- [x] **Run provenance for reproducibility.** New nullable `Run` columns (PsychoPy/NumPy versions,
+      real xpman version from package metadata, measured refresh + success) with an Alembic
+      migration; per-onset image identity logged (recovers the resolved presentation order);
+      `events_file_path` stored relative to `data_dir` (portable).
+- [x] **Non-blocking trigger pulse.** `TriggerSender` gained `set_code`/`clear_code`; the FPVS loop
+      sets the code after the onset flip and clears it at the top of the next frame — removing the
+      inline `core.wait(3ms)` after flip that risked dropping a frame. Pulse width is now ~one
+      refresh interval (verify on the scope).
+- [x] **Verification metric + hot-path + counterbalancing.** Trigger latency is now paired
+      trigger→onset by `stim_index` (signed `trigger−onset`, not nearest-flip-abs); per-frame flip
+      logging is buffered and flushed off the timed loop (`EventSink.log_many`) so the per-row disk
+      flush never lands after `flip()`; image pools re-permute on each wraparound
+      (`_PoolSequencer`) so identity doesn't recur in lockstep and inject spurious periodicity.
+
+**Still hardware-gated (built to spec, unproven):** every timing/trigger/rendering claim above —
+inter-flip jitter, the ~1-frame pulse width, trigger-to-onset latency, that opacity really renders
+as contrast. See the Hardware section; the analysis tooling is ready, only the lab visit remains.
+
+**Genuine research-design decisions (not bugs, for the lab):** the `LUMINANCE_DIVERGENCE_THRESHOLD`
+and plausibility-band constants; whether per-base-onset triggering at 6 Hz is desired vs. a single
+sequence-sync trigger; the deferred paradigm-breadth items below.
+
+## Legacy conformance round (2026-07-04)
+
+Reviewed xpman against the legacy Java "XP Man" app (its manual + `FastPeriodicVisualStimulation.xml`
+parameter file). Fixed two silent correctness bugs and closed the run-flow parity gaps the user
+selected; 647 tests + a 24-check offscreen end-to-end walkthrough pass.
+
+- [x] **`randomize_trials` was a no-op** — the GUI checkbox did nothing (freeze serialized in
+      fixed order, runtime skipped it). Now applied at freeze time: a Block with
+      `randomize_trials` gets a fixed pseudo-random order (deterministic per block, same for
+      every subject), baked into the frozen `order_index`. (`core/instance.py`.)
+- [x] **All experiments ran in one Run** — legacy launched one chosen experiment. Now the
+      Launch dialog has an Experiment picker and the engine filters to it
+      (`_build_trial_sequence`/`count_trials`/`execute_run`/`launch_run` take `experiment_id`).
+- [x] **Manual/auto trial advance + trial-info text** — legacy's default "Trials starting
+      pattern." New `runtime/trial_gate.py` (`make_trial_gate`) + engine `on_before_trial` hook;
+      Launch dialog exposes manual-keypress / auto-delay + "show trial info." Default manual
+      (right for real FPVS EEG sessions). Aborting during the gate stops before the trial runs.
+- [x] **Monitor/screen selection at launch** — Launch dialog screen-index spinbox → `--screen`
+      (the runtime already supported it; the GUI hardcoded 0).
+- [x] **Subject info + Instance delete** — free-text "Information" field on the subject
+      create/edit dialogs (`info_json["notes"]`); `repo.delete_instance` + a Delete Instance
+      action, **refused when the Instance has Runs** (cascade would destroy results — a
+      deliberate, documented divergence from legacy's "delete but keep results," which xpman's
+      Run→Instance result model can't support).
+
+**Deliberate divergences (documented, not bugs):** instance-delete refuses rather than orphaning
+results; `randomize_trials` is deterministic-per-block (no click-to-reshuffle button); profile
+passwords and cross-profile visibility remain inert dead fields (single-machine model) — candidate
+for later removal or wiring.
+
+**Deferred (below / open_questions):** block-order randomization across blocks; persisting
+`Run.experiment_id` (needs a migration story); per-subject aggregate results view; in-GUI events
+viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm breadth (next section).
+
 ## Hardware verification (blocking real EEG use)
 
 - [x] Analysis tooling for the lab visit — `tests/manual_hardware/analyze_verification_run.py`
@@ -36,11 +112,31 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
 
 ## FPVS paradigm coverage
 
-- [ ] Familiarization phase (`tasks/fpvs/familiarization.py` — not started). Plan assumes a
-      reduced-trial variant of the base engine, always-proceed-after-one-pass (no performance
-      gate), per open_questions.md #7.
-- [ ] Distractor / sweep paradigm variants (`paradigm_distractor.py` — not started). Explicitly
-      deferred until the core oddball paradigm is hardware-verified.
+- [x] **Core FPVS realism (2026-07-04).** The defining gap — xpman hard-cut images on/off
+      instead of sinusoidally modulating contrast — is closed. New `tasks/fpvs/modulation.py`
+      (pure: `Waveform`/`ModulationParams`/`TimingParams`, `contrast_at_cycle_frame`,
+      `build_contrast_table`, `envelope_at_frame`); `paradigm_oddball.py` applies a per-frame
+      opacity scalar (precomputed table × fade envelope) and gained `present_fixation_only`;
+      `task.py` runs the full trial timeline (pre-interval → fade-in → plateau → fade-out →
+      post-interval), sets the window to mid-gray so opacity == contrast, and modulates only the
+      image (fixation stays constant). Waveform defaults to sinusoidal; `none` keeps the old
+      hard on/off. Performance matches the legacy app (O(1) opacity scalar, resident textures,
+      precomputed wave table) — see `modulation.py` docstring. Additive schema (defaults), no
+      GUI code (SchemaForm auto-renders).
+- [x] **Familiarization phase (2026-07-04).** `FamiliarizationParams` + a base-only pre-run
+      stream (reuses `run_base_sequence`) framed by start/stop triggers and a post-blank, before
+      the main sequence. Enabled off by default. (Implemented on the core-realism foundation, not
+      the originally sketched separate `familiarization.py`.)
+- [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
+      intra-category oddball; baseline stimulus period; oddball-proportion patterns (BBBBO) +
+      image-ordering options; missing-oddball; double-base; sweep; distractor
+      (`paradigm_distractor.py`); periodic frequency-changing; per-image transforms
+      (scale/rotate/flip/position); luminance equalization; second oddball directory; inter-trial
+      sound/animation. Plus a dedicated familiarization stimulus selector (currently reuses
+      `base_selector`).
+- [ ] **Hardware validation of modulation** (rides on the lab visit below): with the photodiode
+      + `core/verification_report.py`, confirm no dropped frames with modulation on, and that the
+      measured contrast waveform matches the intended sine and fades toward mid-gray, not black.
 - [ ] Chroma-key / brightness compositing (open_questions.md #9) — no implementation yet;
       build as configurable parameters (key color/tolerance/brightness delta), default off,
       only if a real Program actually needs it.
@@ -61,12 +157,59 @@ and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns spe
       follow-up feature, not a quick addition.
 - [x] **"Check triggers" conflict checker** (`TaskModule.check_triggers`) — wired into a
       "Check Triggers..." action on Condition nodes; shows returned warnings in a QMessageBox.
+      2026-07-03: `FPVSTask.check_triggers` now actually implemented (was a no-op default):
+      warns when base and oddball share a trigger code.
 - [x] Edit dialogs for Subject/Program/Experiment/Condition/Block metadata fields (name, etc.)
       — `*_edit_dialog.py` per entity, wired into the tree's right-click menu next to Delete.
       (Trial has no separate metadata to edit beyond its Condition assignment and order, both
       already covered elsewhere.)
 - [ ] A profile-level "switch profile" action without restarting the app (currently only
       offered at launch via `profile_select_dialog.py`).
+- [x] **Trial bulk-editing (`BlockTrialsDialog`).** 2026-07-03 UX feedback: the old
+      "New Trial..." flow only ever created one Trial per open/close cycle -- a Block with 60
+      Trials meant 60 separate dialogs. Replaced with "Manage Trials..." on Block nodes: a
+      table (one row per Trial) with Add/Add Multiple.../Remove Selected/Move Up/Move Down
+      acting on the table only, reconciled against the DB in one pass on Save (Cancel writes
+      nothing). Along the way, `repo.update_trial`'s `condition_id` gained a real "unset"
+      sentinel (`_CONDITION_ID_UNSET`) so the dialog can explicitly clear a Trial's Condition
+      (distinct from "leave it unchanged") -- needed because `Trial.condition_id` is nullable
+      (`SET NULL` when its Condition is deleted) and the old `None`-means-unchanged default
+      couldn't express clearing it. `TrialCreateDialog` (one-at-a-time) was removed, fully
+      superseded. Covered by 36 offscreen Qt tests against a real in-memory DB
+      (`tests/unit/gui/test_block_trials_dialog.py`); **not yet clicked through in a live
+      desktop session** -- no interactive desktop was available in the session that built it
+      (a `computer-use` access request timed out with no one to approve it). Do a real
+      click-through before relying on it for a live experiment build.
+      Deferred, not part of this round: the same bulk-table treatment for Conditions/Blocks at
+      the Experiment level (currently still one-at-a-time create dialogs).
+- [x] **GUI smoothness round (2026-07-03).** Five-part UX improvement pass, all shipped and
+      test-gated (609 tests passing, plus a 17-check end-to-end offscreen walkthrough against
+      the real FPVS task and a real on-disk DB):
+      1. **Tree state preservation** — expansion + selection now survive every `refresh()`
+         (previously a full model reset collapsed the tree after *every* create/edit/delete).
+         `NodeKey` = path of `(kind, id)` pairs, captured before the reset and re-applied
+         after (`tree_view/model.py` `key_for_index`/`index_for_key`/`index_for_node`,
+         `view.py refresh(select=...)`). Create/duplicate actions auto-select the new entity.
+      2. **Duplicate at every level** (`core/clone.py`) — Condition, Block (with Trials),
+         Experiment (deep, with Trial→Condition remapping), Program (deep, never Instances).
+         `parameters_json` always deep-copied; names collide to "X (copy)", "X (copy 2)"...
+         Matches the legacy app's copy-at-every-level workflow (confirmed in its manual).
+      3. **Stimulus preview** — new optional `TaskModule.describe_condition_resources` hook
+         (same pattern as `check_triggers`); FPVS implements it (scan + per-selector match
+         counts + sample filenames + loud "0 MATCHES -- will FAIL at run time"). GUI:
+         "Preview Stimuli..." on Condition nodes + a Preview Stimuli button next to Save that
+         uses the *live form values including unsaved edits*.
+      4. **Pre-freeze validation** (`core/validation.py validate_program_for_freeze`) —
+         empty experiments/blocks, orphaned trials, invalid condition params, trigger
+         conflicts, missing resource dir; shown in `InstanceFreezeDialog` (which now takes
+         the task registry). Warn-only, never blocks; Ok becomes "Create Instance Anyway".
+      5. **Experiment build hub** (`gui/experiment_overview.py`) — selecting an Experiment
+         now shows its Conditions + Blocks tables with New/Duplicate/Manage Trials/Delete
+         buttons instead of an empty params form; signal-only widget, MainWindow owns all
+         writes. Params form still appears below when a task defines experiment-level fields.
+      **Not yet clicked through in a live desktop session** (same situation as the
+      BlockTrialsDialog entry above) — do a real walkthrough via `python -m xpman.gui.app`
+      before relying on it for a live experiment build.
 
 ## Packaging & sharing (Phase 5)
 
@@ -154,26 +297,28 @@ directory per launch, a numpy-to-JSON serialization footgun, an unprotected trig
 reset, live (non-deep-copied) references inside `Instance.frozen_json`, and unvalidated
 `oddball_freq_hz >= base_freq_hz`. All have tests. Left open, deliberately not auto-fixed:
 
-- [ ] **No `session.rollback()` anywhere in the GUI on commit failure** — the same
-      `repo.write(...); session.commit()` pattern, with no `try/except`/`rollback()`, is
-      repeated across every `*_create_dialog.py`/`*_edit_dialog.py` and every save/delete
-      handler in `main_window.py` (~20 call sites). If any `commit()` ever raises for real (DB
-      contention with the concurrently-writing launch subprocess, disk full, etc.), the
-      session is left poisoned (`PendingRollbackError`) for the rest of that GUI process's
-      life, with no error dialog explaining why. Needs a decision on approach (a shared
-      commit-or-rollback helper?) before touching this many files.
-- [ ] **No frequency-ceiling sanity check** (`tasks/fpvs/paradigm_oddball.py`'s
-      `frames_per_cycle`) — any `base_freq_hz` request above roughly half the monitor's
-      refresh rate silently clamps to the full refresh rate (e.g. a mistyped `60` instead of
-      `6` on a 60Hz monitor "achieves" 60Hz with zero ISI). `achieved_base_freq_hz` is reported
-      back, per the documented "never silently substitute" policy, but nothing compares it
-      against what was requested and warns on a large divergence. Needs a threshold + UX
-      decision (GUI warning? hard error?), not a mechanical fix.
-- [ ] **Unverified: does closing the Launch dialog mid-run orphan the subprocess?** The Close
-      button is never disabled during an active launch. Whether the actual `launch_worker.py`
-      OS process (and its fullscreen PsychoPy window) gets terminated or left running when the
-      dialog is closed early was not empirically tested — needs verification before deciding
-      whether a fix (warn before closing, or explicitly terminate) is even needed.
+- [x] **GUI commit-or-rollback (`safe_commit`, 2026-07-04).** New `gui/commit.py::safe_commit`
+      (commit; on failure roll back so the shared session stays usable, show a
+      `QMessageBox.critical`, return False) applied at all ~24 GUI write sites (create/edit
+      dialogs, `block_trials_dialog` bulk reconcile — now atomic, `instance_freeze_dialog`, and
+      every save/duplicate/move/delete handler in `main_window.py`). A failed commit no longer
+      poisons the session; the dialog stays open / the handler doesn't refresh, with an error
+      shown. Mirrors `execute_run`'s rollback-first recovery. Failure-path tests + a walkthrough
+      check.
+- [x] **Frequency-ceiling warnings (2026-07-04).** Runtime: `FPVSTask.run_trial` compares
+      achieved vs requested base frequency and flags `base_freq_precision_warning` (+ a
+      `base_frequency_clamped` event) when the achieved value drifts >5% or drops below 3
+      frames/cycle (catches the "60 instead of 6" typo, which achieves 60 Hz with 1 frame/cycle).
+      Design-time: `FPVSTask.check_triggers` warns (against a nominal 60 Hz monitor) using the
+      same frames-per-cycle threshold, surfaced by "Check Triggers..." and the pre-freeze dialog.
+      Advisory only — high base frequencies are legitimate on fast monitors.
+- [x] **Launch-close no longer orphans the worker (2026-07-04).** `LaunchDialog` now guards
+      closing (Close button + window X, via `reject`/`closeEvent`): if a run is active it
+      confirms ("Stop the run and close?") and, on Yes, touches the abort file then
+      `terminate()`/`waitForFinished`/`kill()`s the subprocess so its fullscreen PsychoPy window
+      closes promptly (the Run stays ABORTED with partial Results durable). On No it stays open.
+      Unit-tested with a mock Running QProcess (real OS-level teardown still to be eyeballed at
+      the lab, per the notes).
 - [ ] `LaunchDialog._poll_progress` opens+disposes a new SQLAlchemy `Engine` every 500ms poll
       tick instead of reusing one for the run's duration — correct, just wasteful. Low
       priority, purely an efficiency nit.

@@ -519,6 +519,118 @@ def test_refresh_after_selection_does_not_crash(qtbot, session):
 
 
 # ---------------------------------------------------------------------------
+# State preservation across refresh
+# ---------------------------------------------------------------------------
+
+
+def _walk(model, *rows):
+    """Descend from the root through ``rows`` child positions, returning the final index."""
+    index = model.index(rows[0], 0)
+    for row in rows[1:]:
+        index = model.index(row, 0, index)
+    return index
+
+
+def test_expansion_state_survives_refresh(qtbot, session):
+    ids = _build_full_fixture(session)
+    view = ExperimentTreeView(session, ids["profile_id"])
+    qtbot.addWidget(view)
+
+    # Expand a deep chain: profile > programs_group > program > experiments_group >
+    # experiment > blocks_group -- but deliberately NOT conditions_group.
+    for rows in [(0,), (0, 1), (0, 1, 0), (0, 1, 0, 0), (0, 1, 0, 0, 0), (0, 1, 0, 0, 0, 1)]:
+        view.expand(_walk(view.model_, *rows))
+
+    view.refresh()
+
+    assert view.isExpanded(_walk(view.model_, 0, 1, 0, 0, 0, 1))  # blocks_group still open
+    assert view.isExpanded(_walk(view.model_, 0, 1, 0))  # program still open
+    assert not view.isExpanded(_walk(view.model_, 0, 1, 0, 0, 0, 0))  # conditions_group closed
+
+
+def test_selection_survives_refresh(qtbot, session):
+    ids = _build_full_fixture(session)
+    view = ExperimentTreeView(session, ids["profile_id"])
+    qtbot.addWidget(view)
+
+    condition_index = _walk(view.model_, 0, 1, 0, 0, 0, 0, 0)
+    assert view.model_.node_at(condition_index).kind == "condition"
+    view.setCurrentIndex(condition_index)
+
+    # A sibling added before the selected node must not confuse key-based restore.
+    repo.create_condition(session, experiment_id=ids["experiment_id"], name="A new sibling")
+    session.commit()
+    view.refresh()
+
+    selected = view.selected_node()
+    assert selected is not None
+    assert selected.kind == "condition"
+    assert selected.id == ids["condition_a_id"]
+
+
+def test_selection_of_deleted_node_degrades_gracefully(qtbot, session):
+    ids = _build_full_fixture(session)
+    view = ExperimentTreeView(session, ids["profile_id"])
+    qtbot.addWidget(view)
+
+    condition_index = _walk(view.model_, 0, 1, 0, 0, 0, 0, 1)
+    assert view.model_.node_at(condition_index).id == ids["condition_b_id"]
+    view.setCurrentIndex(condition_index)
+
+    repo.delete_condition(session, ids["condition_b_id"])
+    session.commit()
+    view.refresh()  # must not raise
+
+    assert view.selected_node() is None
+
+
+def test_refresh_with_select_selects_node_and_expands_ancestors(qtbot, session):
+    ids = _build_full_fixture(session)
+    view = ExperimentTreeView(session, ids["profile_id"])
+    qtbot.addWidget(view)
+    # Nothing beyond the default depth is expanded, and nothing is selected.
+    assert view.selected_node() is None
+
+    view.refresh(select=("block", ids["block_id"]))
+
+    selected = view.selected_node()
+    assert selected is not None
+    assert selected.kind == "block"
+    assert selected.id == ids["block_id"]
+    # Every ancestor up to the profile must now be expanded so the selection is visible.
+    index = view.model_.index_for_node("block", ids["block_id"])
+    parent = index.parent()
+    while parent.isValid():
+        assert view.isExpanded(parent)
+        parent = parent.parent()
+
+
+def test_refresh_with_select_emits_node_selected(qtbot, session):
+    ids = _build_full_fixture(session)
+    view = ExperimentTreeView(session, ids["profile_id"])
+    qtbot.addWidget(view)
+
+    with qtbot.waitSignal(view.nodeSelected, timeout=1000) as blocker:
+        view.refresh(select=("condition", ids["condition_a_id"]))
+
+    assert blocker.args[0].id == ids["condition_a_id"]
+
+
+def test_index_for_key_returns_invalid_for_vanished_path(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    condition_index = _walk(model, 0, 1, 0, 0, 0, 0, 0)
+    key = model.key_for_index(condition_index)
+    assert key is not None
+
+    repo.delete_condition(session, ids["condition_a_id"])
+    session.commit()
+    model.refresh()
+
+    assert not model.index_for_key(key).isValid()
+
+
+# ---------------------------------------------------------------------------
 # Screenshot
 # ---------------------------------------------------------------------------
 

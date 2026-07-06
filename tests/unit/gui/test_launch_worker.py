@@ -69,6 +69,27 @@ def test_parse_args_optional_flags():
     assert args.abort_file == "C:/abort.flag"
 
 
+def test_parse_args_experiment_id_defaults_none_and_parses():
+    base = ["--db-path", "C:/x.db", "--instance-id", "1", "--subject-id", "2", "--data-dir", "C:/d"]
+    assert parse_args(base).experiment_id is None
+    assert parse_args([*base, "--experiment-id", "7"]).experiment_id == 7
+
+
+def test_parse_args_trial_advance_defaults_and_overrides():
+    base = ["--db-path", "C:/x.db", "--instance-id", "1", "--subject-id", "2", "--data-dir", "C:/d"]
+    default = parse_args(base)
+    assert default.trial_advance == "manual"  # legacy default: pause and wait for the key
+    assert default.trial_advance_seconds == 2.0
+    assert default.show_trial_info is False
+
+    overridden = parse_args(
+        [*base, "--trial-advance", "auto", "--trial-advance-seconds", "1.5", "--show-trial-info"]
+    )
+    assert overridden.trial_advance == "auto"
+    assert overridden.trial_advance_seconds == 1.5
+    assert overridden.show_trial_info is True
+
+
 # ---------------------------------------------------------------------------
 # run() -- exercised in-process against a real (file-backed) SQLite DB
 # ---------------------------------------------------------------------------
@@ -123,6 +144,12 @@ def _dummy_registry():
     return TaskRegistry([DummyTask()])
 
 
+def _no_gate(*args, **kwargs):
+    """Inject as ``gate_factory`` so ``run()`` builds no between-trials gate -- the default
+    manual gate would block forever waiting for a keypress with no real display/keyboard."""
+    return None
+
+
 def test_successful_run_returns_completed_and_prints_run_id(db_path, tmp_path, capsys):
     instance_id, subject_id = _build_fixture(db_path)
     args = parse_args(
@@ -131,7 +158,7 @@ def test_successful_run_returns_completed_and_prints_run_id(db_path, tmp_path, c
     )
     window = _mock_window()
     with patch("psychopy.visual.Rect", return_value=MagicMock()):
-        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry())
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
 
     assert exit_code == EXIT_COMPLETED
     out = capsys.readouterr().out
@@ -146,12 +173,126 @@ def test_setup_error_for_unknown_instance_id(db_path, tmp_path, capsys):
          "--data-dir", str(tmp_path / "runs"), "--no-trigger-hardware"]
     )
     window = _mock_window()
-    exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry())
+    exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
 
     assert exit_code == EXIT_SETUP_ERROR
     err = capsys.readouterr().err
     assert "SETUP_ERROR:" in err
     window.close.assert_called_once()
+
+
+def _build_two_experiment_fixture(db_path):
+    """Instance with two experiments: Exp A (1 trial), Exp B (2 trials)."""
+    engine = get_engine(str(db_path))
+    session = get_sessionmaker(engine)()
+    profile = repo.create_profile(session, name="Dr. Test")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    params = {"flip_rate_hz": 20, "duration_seconds": 0.1, "trigger_code": 1}
+    exp_ids = {}
+    for exp_name, n_trials in (("A", 1), ("B", 2)):
+        experiment = repo.create_experiment(session, program_id=program.id, name=exp_name, parameters_json={})
+        condition = repo.create_condition(session, experiment_id=experiment.id, name="C", parameters_json=params)
+        block = repo.create_block(session, experiment_id=experiment.id, name="Block", order_index=0)
+        for i in range(n_trials):
+            repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=i)
+        exp_ids[exp_name] = experiment.id
+    session.commit()
+    instance = freeze_program(session, program.id, name="Inst")
+    session.commit()
+    session.close()
+    return instance.id, subject.id, exp_ids
+
+
+def test_experiment_id_scopes_run_to_that_experiment(db_path, tmp_path):
+    from xpman.core.models import Result
+
+    instance_id, subject_id, exp_ids = _build_two_experiment_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs"), "--no-trigger-hardware",
+         "--experiment-id", str(exp_ids["B"])]
+    )
+    window = _mock_window()
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
+
+    assert exit_code == EXIT_COMPLETED
+    session = get_sessionmaker(get_engine(str(db_path)))()
+    try:
+        n_results = session.query(Result).count()
+    finally:
+        session.close()
+    assert n_results == 2  # only Experiment B's two trials, not Experiment A's
+
+
+def test_gate_factory_receives_args_and_gate_runs_per_trial(db_path, tmp_path):
+    """The worker builds the between-trials gate from the CLI args and the engine calls it
+    once per trial (Exp B has 2 trials -> gate invoked with indices 0 and 1)."""
+    from xpman.runtime.trial_gate import TrialAdvanceMode
+
+    instance_id, subject_id, exp_ids = _build_two_experiment_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs"), "--no-trigger-hardware",
+         "--experiment-id", str(exp_ids["B"]), "--trial-advance", "auto",
+         "--trial-advance-seconds", "0", "--show-trial-info"]
+    )
+    window = _mock_window()
+    seen_kwargs = {}
+    gate_calls = []
+
+    def spy_gate_factory(win, clock, **kwargs):
+        seen_kwargs.update(kwargs)
+        return lambda idx: gate_calls.append(idx)
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(
+            args, make_window_fn=lambda **kw: window, registry=_dummy_registry(),
+            gate_factory=spy_gate_factory,
+        )
+
+    assert exit_code == EXIT_COMPLETED
+    assert seen_kwargs["mode"] is TrialAdvanceMode.AUTO
+    assert seen_kwargs["seconds"] == 0.0
+    assert seen_kwargs["show_info"] is True
+    assert seen_kwargs["n_trials"] == 2  # scoped to Exp B
+    assert gate_calls == [0, 1]  # invoked before each of Exp B's two trials
+
+
+def test_abort_during_gate_stops_before_running_the_trial(db_path, tmp_path):
+    """If abort is requested while the between-trials gate is waiting, the engine must re-check
+    abort right after the gate returns and stop *before* executing that trial -- so no Result
+    for it is ever persisted."""
+    from xpman.core.models import Result
+
+    instance_id, subject_id = _build_fixture(db_path)  # one trial
+    abort_file = tmp_path / "abort.flag"
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs"), "--no-trigger-hardware", "--abort-file", str(abort_file)]
+    )
+    window = _mock_window()
+
+    def gate_factory(win, clock, **kwargs):
+        def gate(idx):
+            abort_file.touch()  # simulate the experimenter hitting Abort during the gate
+        return gate
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(
+            args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=gate_factory
+        )
+
+    assert exit_code == EXIT_ABORTED
+    session = get_sessionmaker(get_engine(str(db_path)))()
+    try:
+        assert session.query(Result).count() == 0  # the trial never ran
+    finally:
+        session.close()
 
 
 def test_crashed_run_returns_crashed_exit_code(db_path, tmp_path, capsys):
@@ -169,7 +310,7 @@ def test_crashed_run_returns_crashed_exit_code(db_path, tmp_path, capsys):
             raise RuntimeError("simulated failure")
 
     with patch("psychopy.visual.Rect", return_value=MagicMock()):
-        exit_code = run(args, make_window_fn=lambda **kw: window, registry=TaskRegistry([ExplodingTask()]))
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=TaskRegistry([ExplodingTask()]), gate_factory=_no_gate)
 
     assert exit_code == EXIT_CRASHED
     err = capsys.readouterr().err
@@ -199,7 +340,7 @@ def test_value_error_during_execution_is_crashed_not_setup_error(db_path, tmp_pa
             raise ValueError("bad value deep in task logic, unrelated to setup")
 
     with patch("psychopy.visual.Rect", return_value=MagicMock()):
-        exit_code = run(args, make_window_fn=lambda **kw: window, registry=TaskRegistry([ValueErrorTask()]))
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=TaskRegistry([ValueErrorTask()]), gate_factory=_no_gate)
 
     assert exit_code == EXIT_CRASHED  # NOT EXIT_SETUP_ERROR
     out = capsys.readouterr()
@@ -218,7 +359,7 @@ def test_abort_file_present_from_start_returns_aborted(db_path, tmp_path):
     )
     window = _mock_window()
     with patch("psychopy.visual.Rect", return_value=MagicMock()):
-        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry())
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
 
     assert exit_code == EXIT_ABORTED
     window.close.assert_called_once()
@@ -236,7 +377,8 @@ def test_trigger_factory_override_is_used_instead_of_no_trigger_hardware_flag(db
     fake_trigger = NullTrigger()
     with patch("psychopy.visual.Rect", return_value=MagicMock()):
         exit_code = run(
-            args, make_window_fn=lambda **kw: window, trigger_factory=lambda: fake_trigger, registry=_dummy_registry()
+            args, make_window_fn=lambda **kw: window, trigger_factory=lambda: fake_trigger,
+            registry=_dummy_registry(), gate_factory=_no_gate,
         )
 
     assert exit_code == EXIT_COMPLETED
@@ -249,5 +391,5 @@ def test_window_closed_even_on_setup_error(db_path, tmp_path):
          "--data-dir", str(tmp_path / "runs")]
     )
     window = _mock_window()
-    run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry())
+    run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
     window.close.assert_called_once()
