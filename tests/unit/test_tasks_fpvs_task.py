@@ -284,6 +284,31 @@ def test_run_trial_no_luminance_warning_when_background_matches(
     assert outcome["background_luminance_warning"] is False
 
 
+def test_image_stims_cached_across_trials(mock_window, real_stim_root, event_sink):
+    """Regression: building an ImageStim uploads a GPU texture, so the whole pool must not be
+    rebuilt every trial (that's what makes each trial slow to start). The ImageStim constructor is
+    called once per unique image, and a second trial builds nothing new."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, real_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams()
+    params.base.trial_duration_seconds = 0.3
+
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")) as mk_stim, patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+        after_trial_1 = mk_stim.call_count
+        task.run_trial(ctx, params.model_dump(), trial_index=1)
+        after_trial_2 = mk_stim.call_count
+
+    assert after_trial_1 == 3  # 3 unique images in real_stim_root, built once
+    assert after_trial_2 == 3  # second trial reused the cache -- no new texture uploads
+
+
 def test_run_metadata_reports_measured_refresh(mock_window, stim_root, event_sink):
     task = FPVSTask()
     mock_window.getActualFrameRate.return_value = 120.0

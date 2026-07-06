@@ -61,6 +61,23 @@ def test_constructs_with_explicit_initial_values(qtbot):
     assert form.get_values() == initial
 
 
+def test_missing_field_loads_pydantic_default_not_widget_minimum(qtbot):
+    """Regression: editing a Condition whose stored params omit ``background_gray`` must show its
+    real default (0.5), not the float spinbox's minimum (0.0). Otherwise saving silently rewrites
+    it to 0.0 -> _gray_to_psychopy_rgb(0.0) -> a black FPVS background instead of mid-gray."""
+    form = SchemaForm(FPVSConditionParams, initial_values={})
+    qtbot.addWidget(form)
+    assert form.get_values()["background_gray"] == 0.5
+
+
+def test_stored_values_preserved_while_missing_fields_get_defaults(qtbot):
+    form = SchemaForm(FPVSConditionParams, initial_values={"background_gray": 0.2})
+    qtbot.addWidget(form)
+    values = form.get_values()
+    assert values["background_gray"] == 0.2  # stored value wins
+    assert values["base"]["base_freq_hz"] == 6.0  # missing nested field -> its pydantic default
+
+
 # -- 2. round trip: set_values then get_values recovers the same dict -------------------------
 
 

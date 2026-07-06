@@ -121,6 +121,21 @@ def _build_image_stim(window: "psychopy.visual.Window", entry: ImageEntry) -> "p
     return visual.ImageStim(window, image=str(entry.path), units="pix")
 
 
+def _get_image_stim(
+    cache: dict, window: "psychopy.visual.Window", entry: ImageEntry
+) -> "psychopy.visual.ImageStim":
+    """Return a cached ImageStim for ``entry``, building (and caching) it on first use. The same
+    images recur every trial, so caching the GPU texture avoids re-decoding + re-uploading it each
+    trial -- the cost that otherwise makes every trial slow to start. Opacity is set per draw, so
+    sharing one instance across a trial's repeated presentations is safe (draws are sequential)."""
+    key = str(entry.path)
+    stim = cache.get(key)
+    if stim is None:
+        stim = _build_image_stim(window, entry)
+        cache[key] = stim
+    return stim
+
+
 def _interval_frames(rng, interval_seconds: tuple[float, float], refresh_rate_hz: float) -> int:
     """Number of frames for a fixation-only interval whose duration is drawn uniformly from
     ``interval_seconds`` (min, max) using the Instance/Subject-seeded ``rng`` (so pre/post
@@ -220,6 +235,10 @@ class FPVSTask(TaskModule):
         self._refresh_measured_successfully: bool = False
         self._pool_mean_luminance: float | None = None
         self._response_collector: ResponseCollector | None = None
+        #: Cache of built ImageStim (GPU texture) keyed by image path, reused across trials --
+        #: building one uploads a texture, so rebuilding the whole pool every trial is what makes
+        #: each trial slow to start. Cleared in prepare() (one window per Run).
+        self._image_stim_cache: dict[str, object] = {}
 
     def prepare(self, ctx: TaskContext) -> None:
         """Scan the resource directory once and measure the monitor's actual refresh rate
@@ -228,6 +247,7 @@ class FPVSTask(TaskModule):
         for warning in scan_result.warnings:
             ctx.event_sink.log("image_scan_warning", {"warning": warning})
         self._image_entries = scan_result.entries
+        self._image_stim_cache = {}  # fresh per Run (new window); reused across this Run's trials
 
         measured = ctx.window.getActualFrameRate()
         self._refresh_measured_successfully = measured is not None
@@ -347,13 +367,15 @@ class FPVSTask(TaskModule):
         fixation_stim = build_fixation_stimulus(ctx.window, params.fixation)
         base_stims = [
             _ImageWithFixation(
-                _build_image_stim(ctx.window, base_entries[i]), fixation_stim, base_entries[i].path.name
+                _get_image_stim(self._image_stim_cache, ctx.window, base_entries[i]),
+                fixation_stim,
+                base_entries[i].path.name,
             )
             for i in base_order
         ]
         oddball_stims = [
             _ImageWithFixation(
-                _build_image_stim(ctx.window, oddball_entries[i]),
+                _get_image_stim(self._image_stim_cache, ctx.window, oddball_entries[i]),
                 fixation_stim,
                 oddball_entries[i].path.name,
             )

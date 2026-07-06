@@ -203,11 +203,24 @@ class SchemaForm(QWidget):
         self.setLayout(outer_layout)
 
         if initial_values is not None:
-            self.set_values(initial_values)
+            self.set_values(self._with_defaults(initial_values))
         else:
             self.set_values(self._default_values())
 
     # -- construction helpers -------------------------------------------------------------
+
+    def _with_defaults(self, values: dict) -> dict:
+        """Overlay ``values`` on the model's real defaults so fields *absent* from a stored
+        params dict show their true pydantic default -- not a widget's built-in fallback. A float
+        spinbox sits at its minimum, so e.g. ``background_gray`` (``ge=0``) would load as 0.0
+        instead of its 0.5 default, silently turning the FPVS background black on the next save.
+        Validate-then-dump fills every missing field (nested models included) while keeping the
+        stored values. If ``values`` don't validate (older/partial schema), fall back to the raw
+        dict so loading stays lenient rather than blanking the form."""
+        try:
+            return self.model_cls.model_validate(values).model_dump(mode="python")
+        except ValidationError:
+            return values
 
     def _default_values(self) -> dict:
         """Best-effort default dict for this model, tolerating models where not every field has
