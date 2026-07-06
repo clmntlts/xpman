@@ -8,10 +8,36 @@ in-memory databases with no monkeypatching required.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 from sqlalchemy import Engine, event, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+
+
+def _json_default(obj: Any) -> Any:
+    """Fallback encoder for values Python's ``json`` can't handle natively.
+
+    The one that bites in practice is **NumPy scalars**: a task's ``outcome_summary`` (and other
+    JSON columns) can pick up a ``numpy.bool_`` / ``numpy.float64`` / ``numpy.int64`` from real
+    hardware or array math -- e.g. ``window.getActualFrameRate()`` returns ``numpy.float64`` on a
+    real monitor (a mock returns a plain ``float``), so a derived warning flag becomes
+    ``numpy.bool_``. Plain ``json.dumps`` then raises "Object of type bool is not JSON
+    serializable" and, via SQLAlchemy's JSON column, crashes the trial's ``INSERT INTO results``.
+    ``numpy.generic.item()`` converts any such scalar to its native Python equivalent.
+    """
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _json_serializer(obj: Any) -> str:
+    """``json_serializer`` for the SQLAlchemy engine, used for every JSON column
+    (``outcome_summary_json``, ``parameters_json``, ``frozen_json``, ``info_json``). Routes
+    through :func:`_json_default` so NumPy scalars never crash a write."""
+    return json.dumps(obj, default=_json_default)
 
 
 #: How long (ms) a blocked writer waits for the write lock before giving up with
@@ -50,7 +76,7 @@ def get_engine(db_path: str | Path, *, echo: bool = False) -> Engine:
     else:
         url = "sqlite:///:memory:"
 
-    engine = create_engine(url, echo=echo)
+    engine = create_engine(url, echo=echo, json_serializer=_json_serializer)
     event.listen(engine, "connect", _enable_sqlite_pragmas)
     return engine
 

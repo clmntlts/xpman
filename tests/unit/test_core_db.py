@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 import time
 
+import numpy as np
 import pytest
 from sqlalchemy import text
 
@@ -30,6 +31,29 @@ def db_path(tmp_path):
 
 def _pragma(session, name: str):
     return session.execute(text(f"PRAGMA {name}")).scalar()
+
+
+def test_json_column_serializes_numpy_scalars(db_path):
+    """Regression: a JSON column holding NumPy scalars (as leaks in from real hardware -- e.g.
+    getActualFrameRate() -> numpy.float64 -> a numpy.bool_ warning flag in outcome_summary) must
+    commit cleanly, not crash the INSERT with 'Object of type bool is not JSON serializable'.
+    Round-trips back as native Python types."""
+    engine = get_engine(str(db_path))
+    try:
+        with get_sessionmaker(engine)() as s:
+            profile = repo.create_profile(s, name="NP")
+            subject = repo.create_subject(s, profile_id=profile.id, first_name="A", last_name="B")
+            subject.info_json = {
+                "flag": np.bool_(True),
+                "measured_hz": np.float64(59.94),
+                "n_frames": np.int64(10),
+            }
+            s.commit()  # must not raise
+            s.refresh(subject)
+            assert subject.info_json == {"flag": True, "measured_hz": 59.94, "n_frames": 10}
+            assert type(subject.info_json["flag"]) is bool  # native, not numpy.bool_
+    finally:
+        engine.dispose()
 
 
 def test_pragmas_are_applied(db_path):

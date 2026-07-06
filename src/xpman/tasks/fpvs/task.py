@@ -255,7 +255,11 @@ class FPVSTask(TaskModule):
                 )
             self._refresh_rate_hz = FALLBACK_REFRESH_RATE_HZ
         else:
-            self._refresh_rate_hz = measured
+            # float(): getActualFrameRate() returns numpy.float64 on real hardware; keeping it
+            # native stops numpy scalars leaking into event payloads / outcome_summary (the DB
+            # JSON serializer also guards this -- see core.db -- but native at the source is
+            # cleaner and keeps all the derived timing values plain Python).
+            self._refresh_rate_hz = float(measured)
             # Cross-check the measured rate for plausibility -- a reading far outside real-monitor
             # range signals a broken measurement (vsync off, frame-doubling) that would wreck FPVS
             # timing. Advisory only; a real 144/240 Hz panel is fine, and the photodiode pass is
