@@ -74,6 +74,26 @@ class TriggerSender(ABC):
         """Reset the data pins to 0. Safe to call when already 0 (idempotent)."""
         raise NotImplementedError
 
+    def describe(self) -> dict:
+        """A small, JSON-friendly summary of this backend for run provenance.
+
+        Concrete (not abstract) so every subclass -- and any minimal test stub that only
+        implements ``set_code``/``clear_code`` -- gets a usable default without having to
+        override it. Backends with meaningful configuration (which physical port/address) should
+        override to add it; see ``ParallelPortTrigger``/``NullTrigger``/``SerialTrigger``. The
+        default keys off the class name so at least the *kind* of backend is always recorded.
+        """
+        return {"backend": type(self).__name__.lower()}
+
+    def close(self) -> None:
+        """Release any hardware resource this backend holds (e.g. an open serial/parallel port).
+
+        Concrete no-op default: most backends hold nothing that needs an explicit teardown (the
+        parallel-port driver and ``NullTrigger`` don't), so they inherit this and callers can
+        always call ``close()`` unconditionally on the way out. Backends that DO own a resource
+        (``SerialTrigger``) override this. Must be idempotent (safe to call more than once).
+        """
+
     def _hold(self, seconds: float) -> None:
         """Block for ``seconds`` while a ``send_trigger`` pulse is held high. Overridden by
         ``ParallelPortTrigger`` to use PsychoPy's higher-precision ``core.wait``."""
@@ -134,6 +154,10 @@ class ParallelPortTrigger(TriggerSender):
     def clear_code(self) -> None:
         """Reset the data pins to 0."""
         self._port.setData(0)
+
+    def describe(self) -> dict:
+        """Provenance summary: the parallel backend and the port address it drove."""
+        return {"backend": "parallel", "address": hex(self.address)}
 
     def _hold(self, seconds: float) -> None:
         """Hold via PsychoPy's ``core.wait`` (higher precision than ``time.sleep``) for the

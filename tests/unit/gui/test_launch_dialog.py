@@ -31,6 +31,18 @@ from xpman.gui.launch_worker import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_qsettings():
+    """The dialog persists the last-chosen trigger backend via QSettings("xpman", "xpman").
+    Clear it before each test so persistence from one test can't bleed into another's default
+    (e.g. leaving 'serial' selected with an empty port, which would block an unrelated launch)."""
+    from PySide6.QtCore import QSettings
+
+    QSettings("xpman", "xpman").clear()
+    yield
+    QSettings("xpman", "xpman").clear()
+
+
 @pytest.fixture()
 def db_path(tmp_path):
     path = tmp_path / "xpman.db"
@@ -138,11 +150,17 @@ def _build_two_experiment_fixture(db_path):
     return {"session": session, "profile": profile, "subject": subject, "instance": instance, "exp_ids": exp_ids}
 
 
+def _select_backend(dialog, backend):
+    """Select a trigger backend on the dialog's dropdown by its data value."""
+    dialog._trigger_backend_combo.setCurrentIndex(dialog._trigger_backend_combo.findData(backend))
+
+
 def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     data_dir = tmp_path / "runs"
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, data_dir)
     qtbot.addWidget(dialog)
+    _select_backend(dialog, "parallel")
 
     mock_process = MagicMock()
     with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
@@ -159,7 +177,9 @@ def test_launch_spawns_worker_with_correct_args(qtbot, db_path, tmp_path):
     assert "--data-dir" in args_arg
     assert str(data_dir) in args_arg
     assert "--fullscreen" in args_arg  # checked by default
-    assert "--no-trigger-hardware" not in args_arg  # trigger checkbox checked by default
+    assert "--no-trigger-hardware" not in args_arg  # parallel backend selected
+    assert "--trigger-backend" in args_arg
+    assert "parallel" in args_arg
     assert "--parallel-port-address" in args_arg
     assert str(0x0378) in args_arg  # default shown in the field
 
@@ -275,18 +295,20 @@ def test_launch_uses_sentinel_flag_not_dash_m_when_frozen(qtbot, db_path, tmp_pa
     assert str(db_path) in args_arg
 
 
-def test_launch_with_trigger_unchecked_passes_no_trigger_hardware(qtbot, db_path, tmp_path):
+def test_launch_with_backend_none_passes_no_trigger_hardware(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
-    dialog._trigger_check.setChecked(False)
+    _select_backend(dialog, "none")
 
     mock_process = MagicMock()
     with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
         dialog._on_launch()
 
     args_arg = mock_process.start.call_args[0][1]
-    assert "--no-trigger-hardware" in args_arg
+    assert "--trigger-backend" in args_arg
+    assert "none" in args_arg
+    assert "--no-trigger-hardware" in args_arg  # backward-compatible alias
     assert "--parallel-port-address" not in args_arg  # irrelevant when not sending triggers
 
 
@@ -294,6 +316,7 @@ def test_launch_passes_custom_parallel_port_address(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
+    _select_backend(dialog, "parallel")
     dialog._port_address_edit.setText("0x0278")
 
     mock_process = MagicMock()
@@ -309,6 +332,7 @@ def test_launch_accepts_plain_decimal_port_address(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
+    _select_backend(dialog, "parallel")
     dialog._port_address_edit.setText("888")  # decimal for 0x0378
 
     mock_process = MagicMock()
@@ -320,15 +344,76 @@ def test_launch_accepts_plain_decimal_port_address(qtbot, db_path, tmp_path):
     assert args_arg[idx + 1] == "888"
 
 
-# ---------------------------------------------------------------------------
-# Parallel port address field: validation and enable/disable
-# ---------------------------------------------------------------------------
-
-
-def test_invalid_port_address_disables_launch_and_shows_error(qtbot, db_path, tmp_path):
+def test_launch_passes_serial_port_and_baud(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("COM4")
+    dialog._serial_baud_spin.setValue(57600)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+
+    args_arg = mock_process.start.call_args[0][1]
+    assert "--trigger-backend" in args_arg
+    assert "serial" in args_arg
+    assert args_arg[args_arg.index("--serial-port") + 1] == "COM4"
+    assert args_arg[args_arg.index("--serial-baud") + 1] == "57600"
+    assert "--parallel-port-address" not in args_arg
+
+
+def test_build_trigger_args_directly_per_backend(qtbot, db_path, tmp_path):
+    """The arg-building method is callable directly (no .exec()), for each backend."""
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    _select_backend(dialog, "none")
+    assert dialog._build_trigger_args() == ["--trigger-backend", "none", "--no-trigger-hardware"]
+
+    _select_backend(dialog, "parallel")
+    dialog._port_address_edit.setText("0x0278")
+    assert dialog._build_trigger_args() == [
+        "--trigger-backend", "parallel", "--parallel-port-address", str(0x0278)
+    ]
+
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("COM7")
+    dialog._serial_baud_spin.setValue(115200)
+    assert dialog._build_trigger_args() == [
+        "--trigger-backend", "serial", "--serial-port", "COM7", "--serial-baud", "115200"
+    ]
+
+
+def test_backend_choice_is_persisted_via_qsettings(qtbot, db_path, tmp_path):
+    """Launching persists the chosen backend so a fresh dialog preselects it."""
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("COM4")
+
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+
+    # A new dialog (same process/QSettings) should come up preselected on serial.
+    dialog2 = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog2)
+    assert dialog2._trigger_backend_combo.currentData() == "serial"
+
+
+# ---------------------------------------------------------------------------
+# Backend config fields: validation and visibility/enable
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_parallel_address_disables_launch_and_shows_error(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    _select_backend(dialog, "parallel")
     # QWidget.isVisible() requires the whole ancestor chain to actually be shown, not just the
     # label itself -- matches the pattern in test_main_window.py's equivalent error-label check.
     dialog.show()
@@ -340,36 +425,65 @@ def test_invalid_port_address_disables_launch_and_shows_error(qtbot, db_path, tm
     assert dialog._port_address_error_label.isVisible()
 
 
-def test_invalid_port_address_does_not_block_launch_when_triggers_unchecked(qtbot, db_path, tmp_path):
+def test_invalid_parallel_address_does_not_block_launch_when_backend_none(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
     dialog.show()
     qtbot.waitExposed(dialog)
 
+    _select_backend(dialog, "parallel")
     dialog._port_address_edit.setText("garbage")
-    dialog._trigger_check.setChecked(False)
+    _select_backend(dialog, "none")
 
     assert dialog._launch_button.isEnabled()
     assert not dialog._port_address_error_label.isVisible()
 
 
-def test_port_address_field_disabled_when_triggers_unchecked(qtbot, db_path, tmp_path):
+def test_empty_serial_port_disables_launch_and_shows_error(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
 
-    assert dialog._port_address_edit.isEnabled()
-    dialog._trigger_check.setChecked(False)
-    assert not dialog._port_address_edit.isEnabled()
-    dialog._trigger_check.setChecked(True)
-    assert dialog._port_address_edit.isEnabled()
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("")  # empty -> invalid
+
+    assert not dialog._launch_button.isEnabled()
+    assert dialog._port_address_error_label.isVisible()
+
+    dialog._serial_port_edit.setText("COM4")
+    assert dialog._launch_button.isEnabled()
+    assert not dialog._port_address_error_label.isVisible()
+
+
+def test_backend_fields_shown_and_enabled_per_selection(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    _select_backend(dialog, "parallel")
+    assert dialog._port_address_edit.isVisible() and dialog._port_address_edit.isEnabled()
+    assert not dialog._serial_port_edit.isVisible()
+
+    _select_backend(dialog, "serial")
+    assert dialog._serial_port_edit.isVisible() and dialog._serial_port_edit.isEnabled()
+    assert dialog._serial_baud_spin.isVisible()
+    assert not dialog._port_address_edit.isVisible()
+
+    _select_backend(dialog, "none")
+    assert not dialog._port_address_edit.isVisible()
+    assert not dialog._serial_port_edit.isVisible()
 
 
 def test_fixing_invalid_address_reenables_launch(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
     qtbot.addWidget(dialog)
+    _select_backend(dialog, "parallel")
 
     dialog._port_address_edit.setText("nope")
     assert not dialog._launch_button.isEnabled()

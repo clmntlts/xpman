@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QTimer
+from PySide6.QtCore import QProcess, QSettings, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -146,16 +146,25 @@ class LaunchDialog(QDialog):
         )
         layout.addWidget(self._screen_spin)
 
-        self._trigger_check = QCheckBox("Send real triggers (parallel port)")
-        self._trigger_check.setChecked(True)
-        self._trigger_check.setToolTip(
-            "Uncheck to run without hardware triggers -- e.g. a dry run with no EEG amplifier "
-            "connected. Real sessions should leave this checked."
+        # Trigger backend: None (dry run) / Parallel port / Serial (USB). The choice reveals the
+        # config relevant to it (parallel address, or serial port + baud) and is persisted across
+        # launches via QSettings so the lab's usual backend is preselected next time.
+        layout.addWidget(QLabel("Trigger backend:"))
+        self._trigger_backend_combo = QComboBox()
+        self._trigger_backend_combo.addItem("None (dry run)", "none")
+        self._trigger_backend_combo.addItem("Parallel port", "parallel")
+        self._trigger_backend_combo.addItem("Serial (USB)", "serial")
+        self._trigger_backend_combo.setToolTip(
+            "None: no hardware triggers (dry run, no amplifier). Parallel port: a real parallel "
+            "port (legacy setup). Serial (USB): a USB virtual-COM trigger box such as the BioSemi "
+            "USB Trigger Interface. Real sessions should pick the backend the amplifier is wired to."
         )
-        self._trigger_check.toggled.connect(self._on_trigger_toggled)
-        layout.addWidget(self._trigger_check)
+        self._trigger_backend_combo.currentIndexChanged.connect(self._on_trigger_backend_changed)
+        layout.addWidget(self._trigger_backend_combo)
 
-        layout.addWidget(QLabel("Parallel port address:"))
+        # -- parallel config --
+        self._port_address_label = QLabel("Parallel port address:")
+        layout.addWidget(self._port_address_label)
         self._port_address_edit = QLineEdit("0x0378")
         self._port_address_edit.setToolTip(
             "The parallel port's I/O address the EEG amplifier is wired to -- 0x0378 is the "
@@ -166,6 +175,31 @@ class LaunchDialog(QDialog):
         self._port_address_edit.textChanged.connect(self._update_launch_button_state)
         layout.addWidget(self._port_address_edit)
 
+        # -- serial config --
+        self._serial_port_label = QLabel("Serial (COM) port:")
+        layout.addWidget(self._serial_port_label)
+        self._serial_port_edit = QLineEdit("")
+        self._serial_port_edit.setPlaceholderText("e.g. COM4")
+        self._serial_port_edit.setToolTip(
+            "The virtual COM port the USB trigger box enumerated as -- see Windows Device Manager "
+            "-> Ports (COM & LPT). Set the FTDI latency timer to 1 ms there too (Advanced tab; the "
+            "16 ms default is a classic cause of trigger-timing jitter)."
+        )
+        self._serial_port_edit.textChanged.connect(self._update_launch_button_state)
+        layout.addWidget(self._serial_port_edit)
+
+        self._serial_baud_label = QLabel("Baud rate:")
+        layout.addWidget(self._serial_baud_label)
+        self._serial_baud_spin = QSpinBox()
+        self._serial_baud_spin.setRange(300, 1_000_000)
+        self._serial_baud_spin.setValue(115200)
+        self._serial_baud_spin.setToolTip(
+            "Serial baud rate. 115200 is a safe default; the BioSemi device times the pulse in "
+            "hardware, so baud only governs how fast the code byte reaches it."
+        )
+        layout.addWidget(self._serial_baud_spin)
+
+        # Shared inline error label for whichever backend field is currently invalid.
         self._port_address_error_label = QLabel("")
         self._port_address_error_label.setStyleSheet("color: #cc3333;")
         self._port_address_error_label.setWordWrap(True)
@@ -179,7 +213,15 @@ class LaunchDialog(QDialog):
         self._has_subjects = bool(subjects)
         if not subjects:
             self._subject_combo.setEnabled(False)
-        self._update_launch_button_state()
+
+        # Restore the last-used trigger backend (persisted below on launch), defaulting to
+        # parallel -- the historical default -- when nothing has been saved yet. Setting the combo
+        # index fires _on_trigger_backend_changed, which shows the right config fields and updates
+        # the launch-button state, so this doubles as the initial-visibility setup.
+        saved_backend = self._settings().value("trigger_backend", "parallel")
+        saved_idx = self._trigger_backend_combo.findData(saved_backend)
+        self._trigger_backend_combo.setCurrentIndex(saved_idx if saved_idx >= 0 else 1)
+        self._on_trigger_backend_changed()
 
         self._progress_label = QLabel("")
         self._progress_label.hide()
@@ -257,12 +299,10 @@ class LaunchDialog(QDialog):
         args += ["--trial-advance-seconds", str(self._trial_advance_seconds.value())]
         if self._show_trial_info_check.isChecked():
             args.append("--show-trial-info")
-        if self._trigger_check.isChecked():
-            address = self._parse_port_address()
-            if address is not None:
-                args += ["--parallel-port-address", str(address)]
-        else:
-            args.append("--no-trigger-hardware")
+        args += self._build_trigger_args()
+
+        # Persist the chosen backend so the lab's usual setup is preselected next launch.
+        self._settings().setValue("trigger_backend", self._trigger_backend_combo.currentData())
 
         self._process = QProcess(self)
         self._process.readyReadStandardOutput.connect(self._on_stdout)
@@ -294,11 +334,30 @@ class LaunchDialog(QDialog):
         self._show_trial_info_check.setEnabled(enabled)
         self._screen_spin.setEnabled(enabled)
         self._fullscreen_check.setEnabled(enabled)
-        self._trigger_check.setEnabled(enabled)
-        self._port_address_edit.setEnabled(enabled and self._trigger_check.isChecked())
+        self._trigger_backend_combo.setEnabled(enabled)
+        backend = self._trigger_backend_combo.currentData()
+        self._port_address_edit.setEnabled(enabled and backend == "parallel")
+        self._serial_port_edit.setEnabled(enabled and backend == "serial")
+        self._serial_baud_spin.setEnabled(enabled and backend == "serial")
 
-    def _on_trigger_toggled(self, checked: bool) -> None:
-        self._port_address_edit.setEnabled(checked)
+    def _settings(self) -> QSettings:
+        """QSettings scoped to xpman -- used to persist the last-chosen trigger backend."""
+        return QSettings("xpman", "xpman")
+
+    def _on_trigger_backend_changed(self) -> None:
+        """Show only the config fields relevant to the selected backend and re-validate."""
+        backend = self._trigger_backend_combo.currentData()
+        show_parallel = backend == "parallel"
+        show_serial = backend == "serial"
+        self._port_address_label.setVisible(show_parallel)
+        self._port_address_edit.setVisible(show_parallel)
+        self._port_address_edit.setEnabled(show_parallel)
+        self._serial_port_label.setVisible(show_serial)
+        self._serial_port_edit.setVisible(show_serial)
+        self._serial_port_edit.setEnabled(show_serial)
+        self._serial_baud_label.setVisible(show_serial)
+        self._serial_baud_spin.setVisible(show_serial)
+        self._serial_baud_spin.setEnabled(show_serial)
         self._update_launch_button_state()
 
     def _parse_port_address(self) -> int | None:
@@ -307,19 +366,47 @@ class LaunchDialog(QDialog):
         except (ValueError, TypeError):
             return None
 
+    def _build_trigger_args(self) -> list[str]:
+        """Build the worker's trigger CLI args from the selected backend. Assumes the active
+        field is already valid (launch is gated on _update_launch_button_state). ``none`` maps to
+        the backward-compatible ``--no-trigger-hardware`` alias; the others pass their config."""
+        backend = self._trigger_backend_combo.currentData()
+        if backend == "none":
+            return ["--trigger-backend", "none", "--no-trigger-hardware"]
+        if backend == "serial":
+            return [
+                "--trigger-backend", "serial",
+                "--serial-port", self._serial_port_edit.text().strip(),
+                "--serial-baud", str(self._serial_baud_spin.value()),
+            ]
+        args = ["--trigger-backend", "parallel"]
+        address = self._parse_port_address()
+        if address is not None:
+            args += ["--parallel-port-address", str(address)]
+        return args
+
     def _update_launch_button_state(self) -> None:
-        """Launch requires a Subject to exist and, only when real triggers are enabled, a
-        parallel port address that actually parses (accepts hex like "0x0378" or plain decimal,
-        matching launch_worker.py's own `int(s, 0)` parsing)."""
+        """Launch requires a Subject to exist and, for the selected trigger backend, a valid
+        active field: parallel needs a parseable port address (hex like "0x0378" or plain decimal,
+        matching launch_worker.py's own `int(s, 0)` parsing); serial needs a non-empty port name;
+        none needs nothing."""
         if not self._has_subjects:
             self._launch_button.setEnabled(False)
             return
-        address_ok = not self._trigger_check.isChecked() or self._parse_port_address() is not None
-        self._launch_button.setEnabled(address_ok)
-        if address_ok:
+        backend = self._trigger_backend_combo.currentData()
+        field_ok = True
+        error_text = ""
+        if backend == "parallel":
+            field_ok = self._parse_port_address() is not None
+            error_text = "Enter a valid parallel port address, e.g. 0x0378."
+        elif backend == "serial":
+            field_ok = bool(self._serial_port_edit.text().strip())
+            error_text = "Enter the serial (COM) port the trigger box uses, e.g. COM4."
+        self._launch_button.setEnabled(field_ok)
+        if field_ok:
             self._port_address_error_label.hide()
         else:
-            self._port_address_error_label.setText("Enter a valid parallel port address, e.g. 0x0378.")
+            self._port_address_error_label.setText(error_text)
             self._port_address_error_label.show()
 
     # -- progress + abort ------------------------------------------------------------------------

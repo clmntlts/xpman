@@ -282,8 +282,14 @@ class Run(Base):
     # the *achieved* rate the frame math actually used -- not a requested/nominal value.
     psychopy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     numpy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pyserial_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     measured_refresh_hz: Mapped[float | None] = mapped_column(Float, nullable=True)
     refresh_measured_successfully: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Which trigger backend drove this run and (where meaningful) the port/address it used --
+    # captured from TriggerSender.describe() at Run creation. Nullable + additive: old Runs (and
+    # any run whose backend records no port) leave these NULL. See runtime/session.launch_run.
+    trigger_backend: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trigger_port: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     instance: Mapped[Instance] = relationship(back_populates="runs")
     subject: Mapped[Subject | None] = relationship(back_populates="runs")

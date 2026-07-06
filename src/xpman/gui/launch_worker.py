@@ -46,6 +46,7 @@ from xpman.hardware.clock import Clock
 from xpman.hardware.display import make_window
 from xpman.hardware.trigger import ParallelPortTrigger
 from xpman.hardware.trigger_null import NullTrigger
+from xpman.hardware.trigger_serial import SerialTrigger
 from xpman.runtime.engine import count_trials
 from xpman.runtime.session import launch_run
 from xpman.runtime.trial_gate import TrialAdvanceMode, make_trial_gate
@@ -114,8 +115,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Show 'Trial N of M' text on the between-trials screen.",
     )
-    parser.add_argument("--no-trigger-hardware", action="store_true", help="Use NullTrigger instead of a real parallel port.")
+    parser.add_argument(
+        "--trigger-backend",
+        choices=["none", "parallel", "serial"],
+        default=None,
+        help="Which trigger backend to use: 'none' (NullTrigger -- dry run), 'parallel' (real "
+        "parallel port), or 'serial' (USB virtual-COM, e.g. the BioSemi USB Trigger Interface). "
+        "If omitted, defaults to 'parallel' unless --no-trigger-hardware is passed (which is an "
+        "alias for 'none').",
+    )
+    parser.add_argument("--no-trigger-hardware", action="store_true", help="Alias for --trigger-backend none (use NullTrigger instead of real hardware).")
     parser.add_argument("--parallel-port-address", type=lambda s: int(s, 0), default=0x0378)
+    parser.add_argument("--serial-port", default=None, help="COM/virtual-serial port for --trigger-backend serial (e.g. COM4).")
+    parser.add_argument("--serial-baud", type=int, default=115200, help="Baud rate for the serial trigger backend.")
     return parser.parse_args(argv)
 
 
@@ -149,8 +161,18 @@ def run(
     def _resolve_trigger():
         if trigger_factory is not None:
             return trigger_factory()
-        if args.no_trigger_hardware:
+        # --no-trigger-hardware is a backward-compatible alias for --trigger-backend none. When
+        # neither is given, keep the historical default (a real parallel port).
+        backend = args.trigger_backend
+        if backend is None:
+            backend = "none" if args.no_trigger_hardware else "parallel"
+        elif args.no_trigger_hardware:
+            # Both given: the explicit "no hardware" alias wins (it can only mean 'none').
+            backend = "none"
+        if backend == "none":
             return NullTrigger()
+        if backend == "serial":
+            return SerialTrigger(port=args.serial_port, baudrate=args.serial_baud)
         return ParallelPortTrigger(address=args.parallel_port_address)
 
     # Whether the Run row was actually created (on_run_created fired) is what distinguishes a
@@ -202,15 +224,20 @@ def run(
             abort_check=_abort_check,
         )
 
+    # Built inside the try (below) so a failed serial/parallel open is reported as a clean
+    # SETUP_ERROR, not a bare traceback; held here so the finally can always close it (release
+    # the port) on the way out, whether the run completed, aborted, or crashed.
+    trigger = None
     try:
         try:
+            trigger = _resolve_trigger()
             run_row = launch_run(
                 session,
                 instance_id=args.instance_id,
                 subject_id=args.subject_id,
                 registry=registry,
                 window=window,
-                trigger=_resolve_trigger(),
+                trigger=trigger,
                 clock=clock,
                 data_dir=Path(args.data_dir),
                 abort_check=_abort_check,
@@ -227,6 +254,13 @@ def run(
             print(f"CRASHED:{exc}", file=sys.stderr, flush=True)
             return EXIT_CRASHED
     finally:
+        # A close error (e.g. a flaky serial port) must be logged, not raised -- it must never
+        # mask the run's real outcome/exit code or crash this process during teardown.
+        if trigger is not None:
+            try:
+                trigger.close()
+            except Exception as exc:  # noqa: BLE001 - teardown best-effort, never fatal
+                print(f"WARNING: trigger.close() failed: {exc}", file=sys.stderr, flush=True)
         window.close()
 
     return _RUN_STATUS_TO_EXIT_CODE[run_row.status]

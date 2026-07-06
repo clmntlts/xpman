@@ -79,3 +79,11 @@ def test_does_not_touch_real_hardware_and_never_raises():
     for code in (0, 1, 255):
         trigger.send_trigger(code)
     assert trigger.codes_sent == [0, 1, 255]
+
+
+def test_describe_reports_no_backend():
+    assert NullTrigger().describe() == {"backend": "none"}
+
+
+def test_close_is_a_noop():
+    NullTrigger().close()  # inherits the ABC no-op; must not raise

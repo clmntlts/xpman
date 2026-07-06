@@ -75,6 +75,21 @@ def test_parse_args_experiment_id_defaults_none_and_parses():
     assert parse_args([*base, "--experiment-id", "7"]).experiment_id == 7
 
 
+def test_parse_args_trigger_backend_defaults_and_serial_options():
+    base = ["--db-path", "C:/x.db", "--instance-id", "1", "--subject-id", "2", "--data-dir", "C:/d"]
+    default = parse_args(base)
+    assert default.trigger_backend is None  # omitted -> legacy behavior resolved at run time
+    assert default.serial_port is None
+    assert default.serial_baud == 115200
+
+    serial = parse_args(
+        [*base, "--trigger-backend", "serial", "--serial-port", "COM4", "--serial-baud", "57600"]
+    )
+    assert serial.trigger_backend == "serial"
+    assert serial.serial_port == "COM4"
+    assert serial.serial_baud == 57600
+
+
 def test_parse_args_trial_advance_defaults_and_overrides():
     base = ["--db-path", "C:/x.db", "--instance-id", "1", "--subject-id", "2", "--data-dir", "C:/d"]
     default = parse_args(base)
@@ -396,6 +411,142 @@ def test_trigger_factory_override_is_used_instead_of_no_trigger_hardware_flag(db
 
     assert exit_code == EXIT_COMPLETED
     assert len(fake_trigger.sent) > 0  # the real dummy task did send triggers through it
+
+
+# ---------------------------------------------------------------------------
+# _resolve_trigger: the right backend per args (exercised through run())
+# ---------------------------------------------------------------------------
+
+
+def _run_and_capture_trigger(db_path, tmp_path, extra_args, patched_backends):
+    """Run a dummy run (no trigger_factory, so run() resolves the trigger from args) with the
+    given backend classes patched to spy on construction. Returns (exit_code, spies)."""
+    instance_id, subject_id = _build_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs"), *extra_args]
+    )
+    window = _mock_window()
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
+    return exit_code
+
+
+def test_resolve_trigger_none_builds_null_trigger(db_path, tmp_path):
+    with patch("xpman.gui.launch_worker.NullTrigger", wraps=NullTrigger) as null_spy, patch(
+        "xpman.gui.launch_worker.ParallelPortTrigger"
+    ) as parallel_spy, patch("xpman.gui.launch_worker.SerialTrigger") as serial_spy:
+        exit_code = _run_and_capture_trigger(db_path, tmp_path, ["--trigger-backend", "none"], None)
+    assert exit_code == EXIT_COMPLETED
+    null_spy.assert_called_once_with()
+    parallel_spy.assert_not_called()
+    serial_spy.assert_not_called()
+
+
+def test_resolve_trigger_no_hardware_flag_still_builds_null_trigger(db_path, tmp_path):
+    """--no-trigger-hardware remains a working alias for the 'none' backend."""
+    with patch("xpman.gui.launch_worker.NullTrigger", wraps=NullTrigger) as null_spy:
+        exit_code = _run_and_capture_trigger(db_path, tmp_path, ["--no-trigger-hardware"], None)
+    assert exit_code == EXIT_COMPLETED
+    null_spy.assert_called_once_with()
+
+
+def test_resolve_trigger_parallel_builds_parallel_with_address(db_path, tmp_path):
+    with patch(
+        "xpman.gui.launch_worker.ParallelPortTrigger", return_value=NullTrigger()
+    ) as parallel_spy:
+        exit_code = _run_and_capture_trigger(
+            db_path, tmp_path, ["--trigger-backend", "parallel", "--parallel-port-address", "0x0278"], None
+        )
+    assert exit_code == EXIT_COMPLETED
+    parallel_spy.assert_called_once_with(address=0x0278)
+
+
+def test_resolve_trigger_default_is_parallel_when_nothing_specified(db_path, tmp_path):
+    """No --trigger-backend and no --no-trigger-hardware -> the historical default: parallel."""
+    with patch(
+        "xpman.gui.launch_worker.ParallelPortTrigger", return_value=NullTrigger()
+    ) as parallel_spy:
+        exit_code = _run_and_capture_trigger(db_path, tmp_path, [], None)
+    assert exit_code == EXIT_COMPLETED
+    parallel_spy.assert_called_once_with(address=0x0378)
+
+
+def test_resolve_trigger_serial_builds_serial_with_port_and_baud(db_path, tmp_path):
+    with patch(
+        "xpman.gui.launch_worker.SerialTrigger", return_value=NullTrigger()
+    ) as serial_spy:
+        exit_code = _run_and_capture_trigger(
+            db_path, tmp_path,
+            ["--trigger-backend", "serial", "--serial-port", "COM4", "--serial-baud", "57600"],
+            None,
+        )
+    assert exit_code == EXIT_COMPLETED
+    serial_spy.assert_called_once_with(port="COM4", baudrate=57600)
+
+
+def test_trigger_close_called_on_teardown(db_path, tmp_path):
+    """The worker must close the trigger (release the port) on teardown, in the finally alongside
+    window.close()."""
+    instance_id, subject_id = _build_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs")]
+    )
+    window = _mock_window()
+    trigger = NullTrigger()
+    trigger.close = MagicMock(name="close")
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(
+            args, make_window_fn=lambda **kw: window, trigger_factory=lambda: trigger,
+            registry=_dummy_registry(), gate_factory=_no_gate,
+        )
+    assert exit_code == EXIT_COMPLETED
+    trigger.close.assert_called_once_with()
+    window.close.assert_called_once()
+
+
+def test_trigger_close_error_is_logged_not_raised(db_path, tmp_path, capsys):
+    """A close() failure during teardown must be logged, never raised -- it must not mask the
+    run's outcome or crash the worker."""
+    instance_id, subject_id = _build_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs")]
+    )
+    window = _mock_window()
+    trigger = NullTrigger()
+    trigger.close = MagicMock(side_effect=RuntimeError("flaky serial close"))
+    with patch("psychopy.visual.Rect", return_value=MagicMock()):
+        exit_code = run(
+            args, make_window_fn=lambda **kw: window, trigger_factory=lambda: trigger,
+            registry=_dummy_registry(), gate_factory=_no_gate,
+        )
+    assert exit_code == EXIT_COMPLETED  # the run still reports its real outcome
+    err = capsys.readouterr().err
+    assert "trigger.close() failed" in err
+    window.close.assert_called_once()  # window still closed despite the trigger close error
+
+
+def test_serial_open_failure_is_reported_as_setup_error(db_path, tmp_path, capsys):
+    """A serial-port open failure (before any Run row exists) surfaces as a clean SETUP_ERROR,
+    not a bare traceback."""
+    instance_id, subject_id = _build_fixture(db_path)
+    args = parse_args(
+        ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
+         "--data-dir", str(tmp_path / "runs"), "--trigger-backend", "serial", "--serial-port", "COM99"]
+    )
+    window = _mock_window()
+    with patch(
+        "xpman.gui.launch_worker.SerialTrigger",
+        side_effect=RuntimeError("Could not open serial trigger port 'COM99'"),
+    ):
+        exit_code = run(args, make_window_fn=lambda **kw: window, registry=_dummy_registry(), gate_factory=_no_gate)
+    assert exit_code == EXIT_SETUP_ERROR
+    err = capsys.readouterr().err
+    assert "SETUP_ERROR:" in err
+    assert "COM99" in err
+    window.close.assert_called_once()
 
 
 def test_window_closed_even_on_setup_error(db_path, tmp_path):

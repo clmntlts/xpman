@@ -37,6 +37,7 @@ from xpman.hardware.clock import Clock  # noqa: E402
 from xpman.hardware.display import make_window  # noqa: E402
 from xpman.hardware.trigger import ParallelPortTrigger  # noqa: E402
 from xpman.hardware.trigger_null import NullTrigger  # noqa: E402
+from xpman.hardware.trigger_serial import SerialTrigger  # noqa: E402
 from xpman.runtime.session import launch_run  # noqa: E402
 from xpman.tasks.dummy.task import DummyTask  # noqa: E402
 from xpman.tasks.registry import TaskRegistry  # noqa: E402
@@ -52,9 +53,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--square-size-pix", type=int, default=400)
     parser.add_argument("--parallel-port-address", type=lambda s: int(s, 0), default=0x0378)
     parser.add_argument(
+        "--trigger-backend",
+        choices=["none", "parallel", "serial"],
+        default=None,
+        help="Trigger backend: 'none' (NullTrigger), 'parallel' (real parallel port), or 'serial' "
+        "(USB virtual-COM, e.g. the BioSemi USB Trigger Interface). Defaults to 'parallel' unless "
+        "--no-trigger-hardware is passed.",
+    )
+    parser.add_argument("--serial-port", default=None, help="COM/virtual-serial port for --trigger-backend serial (e.g. COM4).")
+    parser.add_argument("--serial-baud", type=int, default=115200, help="Baud rate for the serial trigger backend.")
+    parser.add_argument(
         "--no-trigger-hardware",
         action="store_true",
-        help="Use NullTrigger instead of a real parallel port (visual-only sanity check).",
+        help="Alias for --trigger-backend none: use NullTrigger (visual-only sanity check).",
     )
     parser.add_argument(
         "--data-dir",
@@ -63,6 +74,32 @@ def parse_args() -> argparse.Namespace:
         help="Where to write this run's event log.",
     )
     return parser.parse_args()
+
+
+def _build_trigger(args: argparse.Namespace):
+    """Build the trigger backend selected on the command line (mirrors gui.launch_worker)."""
+    backend = args.trigger_backend
+    if backend is None:
+        backend = "none" if args.no_trigger_hardware else "parallel"
+    elif args.no_trigger_hardware:
+        backend = "none"
+
+    if backend == "none":
+        print("Using NullTrigger (no real hardware output) -- visual-only check.")
+        return NullTrigger()
+    if backend == "serial":
+        print(f"Opening serial trigger port {args.serial_port!r} at {args.serial_baud} baud...")
+        print(
+            "Set the FTDI latency timer to 1 ms (Device Manager -> the COM port -> Advanced) -- "
+            "the 16 ms default is a classic cause of trigger-timing jitter."
+        )
+        return SerialTrigger(port=args.serial_port, baudrate=args.serial_baud)
+    print(f"Opening real parallel port at address {hex(args.parallel_port_address)}...")
+    print(
+        "If this raises, run scripts\\install_parallel_port_driver.ps1 as Administrator "
+        "first (see docs/architecture.md's Windows 11 driver caveat)."
+    )
+    return ParallelPortTrigger(address=args.parallel_port_address)
 
 
 def main() -> None:
@@ -107,16 +144,7 @@ def main() -> None:
     print(f"Opening window (fullscreen={args.fullscreen}, screen={args.screen})...")
     window = make_window(fullscreen=args.fullscreen, screen=args.screen)
 
-    if args.no_trigger_hardware:
-        print("Using NullTrigger (no real parallel port output) -- visual-only check.")
-        trigger = NullTrigger()
-    else:
-        print(f"Opening real parallel port at address {hex(args.parallel_port_address)}...")
-        print(
-            "If this raises, run scripts\\install_parallel_port_driver.ps1 as Administrator "
-            "first (see docs/architecture.md's Windows 11 driver caveat)."
-        )
-        trigger = ParallelPortTrigger(address=args.parallel_port_address)
+    trigger = _build_trigger(args)
 
     registry = TaskRegistry([DummyTask()])
 
