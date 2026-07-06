@@ -11,6 +11,8 @@ is meant to be overridden per Condition, and there is deliberately no default pa
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 from xpman.tasks.fpvs.fixation import FixationParams
@@ -77,6 +79,47 @@ class FamiliarizationParams(BaseModel):
     )
 
 
+class PositionJitterParams(BaseModel):
+    """Optional per-stimulus (or per-trial) random image position within a researcher-defined
+    region (WP-B). Disabled by default, in which case the image stays centered -- the current,
+    byte-for-byte-unchanged behavior. Only the stimulus *image* moves; the fixation marker and the
+    photodiode patch are unaffected (see ``task.py``'s ``_ImageWithFixation.set_position``).
+
+    Offsets are in pixels, relative to screen center. A ``rectangle`` region draws ``x`` uniformly
+    in ``x_range_pix`` (min, max) and ``y`` uniformly in ``y_range_pix``; a ``disk`` region draws
+    area-uniformly within ``radius_pix`` (see ``tasks/fpvs/position.py``). ``per`` chooses a fresh
+    position every stimulus or one fixed position reused for a whole trial.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Randomize each image's position within the region below."
+    )
+    region: Literal["rectangle", "disk"] = Field(
+        default="rectangle",
+        description="Shape of the allowed region: an axis-aligned rectangle or a disk.",
+    )
+    x_range_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Rectangle x offset range (min, max) in pixels from center. Rectangle region only.",
+    )
+    y_range_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Rectangle y offset range (min, max) in pixels from center. Rectangle region only.",
+    )
+    radius_pix: float = Field(
+        default=0.0,
+        ge=0,
+        description="Disk radius in pixels (area-uniform sampling). Disk region only.",
+    )
+    per: Literal["stimulus", "trial"] = Field(
+        default="stimulus",
+        description=(
+            "'stimulus' draws a new position for every image onset; 'trial' draws one position "
+            "once and reuses it for the whole trial's stream."
+        ),
+    )
+
+
 class FPVSProgramParams(BaseModel):
     """No program-level parameters needed yet."""
 
@@ -98,6 +141,7 @@ class FPVSConditionParams(BaseModel):
     fixation: FixationParams = Field(default_factory=FixationParams)
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
+    position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -131,7 +175,11 @@ class FPVSConditionParams(BaseModel):
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
-    SCHEMA_VERSION = "1"
+    #: v2 (WP-B) adds the optional ``position_jitter`` block to Condition params. The bump is
+    #: purely additive: a v1 Condition dict has no ``position_jitter`` key, and the pydantic
+    #: default (``PositionJitterParams()`` with ``enabled=False``) fills it in on validation, so
+    #: old frozen Instances still validate and run centered exactly as before.
+    SCHEMA_VERSION = "2"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -145,4 +193,9 @@ class FPVSSchema:
     def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
+        if old_version == "1":
+            # v1 -> v2 is additive: the only new field (``position_jitter``) is optional with a
+            # disabled default, so old data passes straight through and the missing key is filled
+            # by the pydantic default at validation time. No data transformation needed.
+            return self.SCHEMA_VERSION, data
         raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")

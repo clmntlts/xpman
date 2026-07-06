@@ -20,8 +20,18 @@ from xpman.hardware.trigger_null import NullTrigger
 from xpman.runtime.logging_sink import EventSink
 from xpman.tasks.base import SubjectInfo, TaskContext
 from xpman.tasks.fpvs.image_set import scan_directory
-from xpman.tasks.fpvs.schema import FPVSConditionParams, StimulusSelector
-from xpman.tasks.fpvs.task import _ALLOW_REFRESH_FALLBACK_ENV, FPVSTask, _select_pool
+from xpman.tasks.fpvs.schema import (
+    FPVSConditionParams,
+    PositionJitterParams,
+    StimulusSelector,
+)
+from xpman.tasks.fpvs.task import (
+    _ALLOW_REFRESH_FALLBACK_ENV,
+    _ImageWithFixation,
+    FPVSTask,
+    _build_position_provider,
+    _select_pool,
+)
 
 
 def _touch(path):
@@ -665,6 +675,282 @@ def test_run_trial_respects_abort_check(mock_window, stim_root, event_sink):
         result = task.run_trial(ctx, params.model_dump(), trial_index=0)
 
     assert result.outcome_summary["aborted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Position jitter (WP-B)
+# ---------------------------------------------------------------------------
+
+
+def test_image_with_fixation_set_position_moves_only_the_image():
+    """_ImageWithFixation.set_position must set the IMAGE stim's .pos and leave the fixation
+    marker centered -- so position jitter never displaces fixation."""
+    image_stim = MagicMock(name="image")
+    fixation_stim = MagicMock(name="fixation")
+    wrapper = _ImageWithFixation(image_stim, fixation_stim, identity="img.png")
+
+    wrapper.set_position((37.0, -19.0))
+
+    assert image_stim.pos == (37.0, -19.0)
+    # The fixation stim's pos was never assigned by set_position (stays wherever it was built).
+    assert "pos" not in fixation_stim.__dict__ or fixation_stim.pos is not (37.0, -19.0)
+    # Concretely: set_position touched only the image mock's pos attribute.
+    assert not any(call for call in fixation_stim.method_calls if call[0] == "pos")
+
+
+def test_build_position_provider_none_when_disabled():
+    provider = _build_position_provider(PositionJitterParams(enabled=False), np.random.default_rng(0))
+    assert provider is None
+
+
+def test_build_position_provider_per_stimulus_draws_fresh_each_call():
+    jitter = PositionJitterParams(
+        enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0), y_range_pix=(-50.0, 50.0)
+    )
+    provider = _build_position_provider(jitter, np.random.default_rng(1))
+    positions = [provider() for _ in range(20)]
+    assert len(set(positions)) > 1  # per="stimulus" -> positions vary
+
+
+def test_build_position_provider_per_trial_returns_fixed_position():
+    jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=100.0, per="trial")
+    provider = _build_position_provider(jitter, np.random.default_rng(2))
+    positions = [provider() for _ in range(20)]
+    assert len(set(positions)) == 1  # per="trial" -> one position reused for the whole trial
+
+
+class _PosRecorder:
+    """Stands in for a psychopy ImageStim, recording every .pos assignment (and .opacity) so a
+    test can prove a non-zero jitter position actually reaches ImageStim.pos. One instance is
+    returned for every ImageStim() call in a trial, so it sees the whole stream."""
+
+    def __init__(self) -> None:
+        self.positions: list = []
+        self._pos = (0.0, 0.0)
+
+    @property
+    def pos(self):
+        return self._pos
+
+    @pos.setter
+    def pos(self, value):
+        self._pos = value
+        self.positions.append(value)
+
+    # opacity is set per frame by modulation; accept and ignore it here.
+    opacity = 1.0
+
+    def draw(self) -> None:
+        pass
+
+
+def _jitter_condition(radius_pix: float = 120.0) -> FPVSConditionParams:
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.trial_duration_seconds = 1.0
+    params.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=radius_pix)
+    return params
+
+
+def test_run_trial_jitter_reaches_image_stim_pos(mock_window, stim_root, event_sink):
+    """Value-level proof the jitter position actually lands on ImageStim.pos (a screenshot-free
+    stand-in for the 'renders off-center' visual check): a non-zero, within-radius position is
+    assigned to the image stim during the trial."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = _jitter_condition(radius_pix=120.0)
+
+    recorder = _PosRecorder()
+    with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    # At least one non-centered position was applied, and every applied position is within radius.
+    assert recorder.positions  # set_position ran
+    assert any(p != (0.0, 0.0) for p in recorder.positions)
+    import math
+
+    assert all(math.hypot(p[0], p[1]) <= 120.0 + 1e-9 for p in recorder.positions)
+
+
+def test_run_trial_jitter_disabled_leaves_image_centered(mock_window, stim_root, event_sink):
+    """Disabled jitter (the default) must never touch ImageStim.pos -- the centered path is
+    byte-for-byte the current behavior."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.trial_duration_seconds = 1.0
+    assert params.position_jitter.enabled is False  # default
+
+    recorder = _PosRecorder()
+    with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert recorder.positions == []  # .pos never assigned -> stays centered
+
+
+def test_run_trial_jitter_onsets_log_pos(mock_window, stim_root, event_sink):
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = _jitter_condition(radius_pix=100.0)
+    _run_trial_outcome(task, ctx, params)
+
+    rows = _read_events(event_sink)
+    onsets = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert onsets
+    # Every onset logs a concrete [x, y] position within the disk (never None when jitter is on).
+    import math as _math
+
+    for row in onsets:
+        pos = json.loads(row["payload_json"])["pos"]
+        assert pos is not None
+        assert _math.hypot(pos[0], pos[1]) <= 100.0 + 1e-9
+
+
+def test_run_trial_no_jitter_onsets_log_pos_none(mock_window, stim_root, event_sink):
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.trial_duration_seconds = 1.0
+    _run_trial_outcome(task, ctx, params)
+
+    rows = _read_events(event_sink)
+    onsets = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert onsets
+    for row in onsets:
+        assert json.loads(row["payload_json"])["pos"] is None  # centered -> pos None
+
+
+def _presentation_order(task, ctx, params):
+    """Run a trial and return the resolved (shuffled) presentation order as the sequence of
+    'image' names logged at each onset -- the pool-shuffle order the decoupling guard checks."""
+    rows = _run_trial_and_read_events(task, ctx, params)
+    import json
+
+    onsets = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    return [json.loads(r["payload_json"])["image"] for r in onsets]
+
+
+def _run_trial_and_read_events(task, ctx, params):
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+    return _read_events(ctx.event_sink)
+
+
+def test_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_root, tmp_path):
+    """Decoupling guard (WP-B): the position RNG is spawned from ctx.rng AFTER the order-affecting
+    draws, so enabling jitter must NOT change the presentation (pool-shuffle) order vs. disabled,
+    given the same seed. Two runs with identical seeds -- one jittered, one not -- must present the
+    images in the same order."""
+    from xpman.hardware.clock import Clock
+    from xpman.hardware.trigger_null import NullTrigger
+
+    def _fresh_ctx(sink):
+        return TaskContext(
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            rng=np.random.default_rng(2024),  # identical seed for both runs
+            subject=SubjectInfo(id=1, first_name="T", last_name="S"),
+            instance_params={},
+            resource_dir=str(stim_root),
+            event_sink=sink,
+            abort_check=lambda: False,
+        )
+
+    base_params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    base_params.base.trial_duration_seconds = 2.0
+
+    disabled = base_params.model_copy(deep=True)
+    enabled = base_params.model_copy(deep=True)
+    enabled.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=100.0)
+
+    sink_off = EventSink(tmp_path / "off" / "events.csv", tmp_path / "off" / "events.parquet")
+    task_off = FPVSTask()
+    ctx_off = _fresh_ctx(sink_off)
+    task_off.prepare(ctx_off)
+    order_off = _presentation_order(task_off, ctx_off, disabled)
+
+    sink_on = EventSink(tmp_path / "on" / "events.csv", tmp_path / "on" / "events.parquet")
+    task_on = FPVSTask()
+    ctx_on = _fresh_ctx(sink_on)
+    task_on.prepare(ctx_on)
+    order_on = _presentation_order(task_on, ctx_on, enabled)
+
+    assert order_off  # sanity: something was actually presented
+    assert order_on == order_off  # enabling jitter left the pool-shuffle order untouched
+
+
+def test_check_triggers_warns_on_large_position_jitter():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.base.base_trigger_code = 1
+    params.oddball.oddball_trigger_code = 2
+    params.timing.fade_in_seconds = 1.0
+    params.timing.fade_out_seconds = 1.0
+    params.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=1000.0)
+    warnings = task.check_triggers(params.model_dump())
+    assert any("position_jitter is large" in w for w in warnings)
+
+
+def test_check_triggers_no_position_warning_for_small_jitter():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.base.base_trigger_code = 1
+    params.oddball.oddball_trigger_code = 2
+    params.timing.fade_in_seconds = 1.0
+    params.timing.fade_out_seconds = 1.0
+    params.position_jitter = PositionJitterParams(
+        enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0), y_range_pix=(-50.0, 50.0)
+    )
+    warnings = task.check_triggers(params.model_dump())
+    assert not any("position_jitter" in w for w in warnings)
+
+
+def test_check_triggers_no_position_warning_when_disabled():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.base.base_trigger_code = 1
+    params.oddball.oddball_trigger_code = 2
+    params.timing.fade_in_seconds = 1.0
+    params.timing.fade_out_seconds = 1.0
+    # Large region but DISABLED -> no advisory (nothing is jittered).
+    params.position_jitter = PositionJitterParams(enabled=False, region="disk", radius_pix=1000.0)
+    warnings = task.check_triggers(params.model_dump())
+    assert not any("position_jitter" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------

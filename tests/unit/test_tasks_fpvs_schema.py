@@ -6,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
-from xpman.tasks.fpvs.schema import FPVSConditionParams, FPVSSchema, StimulusSelector
+from xpman.tasks.fpvs.schema import (
+    FPVSConditionParams,
+    FPVSSchema,
+    PositionJitterParams,
+    StimulusSelector,
+)
 
 
 def test_condition_params_have_defaults_for_every_sub_model():
@@ -39,13 +44,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "1"
+    assert FPVSSchema.SCHEMA_VERSION == "2"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("1", {"x": 1})
-    assert version == "1"
+    version, data = schema.migrate("2", {"x": 1})
+    assert version == "2"
     assert data == {"x": 1}
 
 
@@ -53,6 +58,88 @@ def test_migrate_unknown_version_raises():
     schema = FPVSSchema()
     with pytest.raises(ValueError):
         schema.migrate("999", {})
+
+
+# ---------------------------------------------------------------------------
+# PositionJitterParams + v1 -> v2 additive migration (WP-B)
+# ---------------------------------------------------------------------------
+
+
+def test_position_jitter_defaults_disabled_and_centered():
+    jitter = PositionJitterParams()
+    assert jitter.enabled is False
+    assert jitter.region == "rectangle"
+    assert jitter.x_range_pix == (0.0, 0.0)
+    assert jitter.y_range_pix == (0.0, 0.0)
+    assert jitter.radius_pix == 0.0
+    assert jitter.per == "stimulus"
+
+
+def test_condition_params_have_position_jitter_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.position_jitter.enabled is False
+
+
+def test_position_jitter_rectangle_validates_and_roundtrips():
+    jitter = PositionJitterParams(
+        enabled=True, region="rectangle", x_range_pix=(-100.0, 100.0), y_range_pix=(-50.0, 50.0)
+    )
+    restored = PositionJitterParams.model_validate(jitter.model_dump())
+    assert restored == jitter
+    assert restored.region == "rectangle"
+    assert restored.x_range_pix == (-100.0, 100.0)
+
+
+def test_position_jitter_disk_validates_and_roundtrips():
+    jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=120.0, per="trial")
+    restored = PositionJitterParams.model_validate(jitter.model_dump())
+    assert restored == jitter
+    assert restored.region == "disk"
+    assert restored.radius_pix == 120.0
+    assert restored.per == "trial"
+
+
+def test_position_jitter_rejects_negative_radius():
+    with pytest.raises(ValidationError):
+        PositionJitterParams(radius_pix=-1.0)
+
+
+def test_position_jitter_rejects_unknown_region():
+    with pytest.raises(ValidationError):
+        PositionJitterParams(region="triangle")
+
+
+def test_migrate_v1_to_v2_passes_data_through():
+    """v1 -> v2 is additive: old data passes straight through, and the new version is returned."""
+    schema = FPVSSchema()
+    v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
+    version, data = schema.migrate("1", v1_data)
+    assert version == "2"
+    assert data == v1_data  # no transformation -- the missing key is filled by the pydantic default
+
+
+def test_v1_condition_without_position_jitter_still_validates_disabled():
+    """Critical (WP-B): a frozen v1 Condition dict has NO position_jitter key. It must still
+    validate under the v2 model, with position_jitter defaulting to disabled -- so old Instances
+    keep running centered, byte-for-byte unchanged."""
+    # A realistic v1 Condition payload: every existing sub-model, but NO position_jitter key.
+    v1_condition = FPVSConditionParams().model_dump()
+    v1_condition.pop("position_jitter")
+    assert "position_jitter" not in v1_condition
+
+    params = FPVSConditionParams.model_validate(v1_condition)
+    assert params.position_jitter.enabled is False
+
+
+def test_migrated_v1_condition_validates_under_v2_model():
+    """End-to-end: migrate a v1 Condition dict (no position_jitter) then validate it -- the whole
+    freeze-and-run path old Instances take."""
+    schema = FPVSSchema()
+    v1_condition = FPVSConditionParams().model_dump()
+    v1_condition.pop("position_jitter")
+    _, migrated = schema.migrate("1", v1_condition)
+    params = FPVSConditionParams.model_validate(migrated)
+    assert params.position_jitter.enabled is False
 
 
 def test_stimulus_selector_all_fields_optional():

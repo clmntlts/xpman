@@ -35,16 +35,21 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_sequence,
 )
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
+from xpman.tasks.fpvs.position import sample_position
 from xpman.tasks.fpvs.response import ResponseCollector, score_responses
 from xpman.tasks.fpvs.schema import (
     FamiliarizationParams,
     FPVSConditionParams,
     FPVSSchema,
+    PositionJitterParams,
     StimulusSelector,
 )
 from xpman.tasks.fpvs.stimulus_inspect import inspect_pool
 
 if TYPE_CHECKING:
+    from typing import Callable
+
+    import numpy.random
     import psychopy.visual
 
 #: Used when the window's own measured refresh rate can't be determined (e.g.
@@ -95,6 +100,14 @@ _STIMULUS_INSPECT_SAMPLE = 64
 #: modulation stops being true contrast modulation and injects a luminance artifact at the base
 #: frequency (see tasks/fpvs/stimulus_inspect.py). Advisory only.
 LUMINANCE_DIVERGENCE_THRESHOLD = 0.1
+
+#: When the real display/image sizes aren't known at design time (``check_triggers`` runs before
+#: any window exists), the off-screen jitter advisory falls back to warning when the configured
+#: displacement alone -- the rectangle's largest |offset| or the disk radius -- exceeds this many
+#: pixels. Half of 800 px: a jitter this large would push a stimulus toward/past the edge of even
+#: a modest monitor before accounting for the image's own extent. Coarse and advisory only; the
+#: real off-screen check is a visual/lab confirmation (see docs/verification_protocol.md).
+POSITION_JITTER_OFFSCREEN_WARN_PIX = 400.0
 
 
 def _refresh_fallback_allowed() -> bool:
@@ -153,10 +166,14 @@ def _run_familiarization(
     stimuli: list,
     fixation_stim,
     refresh_rate_hz: float,
+    position_provider: "Callable[[], tuple[float, float]] | None" = None,
 ) -> None:
     """Show a base-only familiarization stream (no oddball) before the real sequence, framed by
     start/stop triggers and followed by a fixation-only blank. Reuses ``run_base_sequence`` (the
-    existing base-only engine) with the familiarization frequency/duration/modulation."""
+    existing base-only engine) with the familiarization frequency/duration/modulation.
+
+    ``position_provider`` (WP-B): forwarded so the familiarization stream jitters consistently with
+    the real sequence when enabled; ``None`` keeps it centered."""
     ctx.event_sink.log(
         "familiarization_start",
         {"frequency_hz": fam.frequency_hz, "duration_seconds": fam.duration_seconds},
@@ -177,6 +194,7 @@ def _run_familiarization(
         abort_check=ctx.abort_check,
         modulation=fam.modulation,
         rng=ctx.rng,
+        position_provider=position_provider,
     )
 
     if fam.stop_trigger_code is not None:
@@ -192,6 +210,29 @@ def _run_familiarization(
         abort_check=ctx.abort_check,
         event_label="familiarization_blank",
     )
+
+
+def _build_position_provider(
+    jitter: PositionJitterParams, position_rng: "numpy.random.Generator"
+) -> "Callable[[], tuple[float, float]] | None":
+    """Build the ``position_provider`` the paradigm calls per stimulus, or ``None`` when jitter is
+    disabled (so the sequence runs the centered path -- byte-for-byte the current behavior).
+
+    ``position_rng`` is a **dedicated, decoupled** sub-stream (``ctx.rng.spawn(1)[0]`` in
+    ``run_trial``), independent of the main ``ctx.rng`` used for pool shuffling -- so enabling
+    jitter never perturbs the trial/pool order (WP-B decoupling requirement).
+
+    ``per="stimulus"`` draws a fresh position on every call; ``per="trial"`` draws once and reuses
+    that fixed position for the whole trial's stream.
+    """
+    if not jitter.enabled:
+        return None
+
+    if jitter.per == "trial":
+        fixed = sample_position(position_rng, jitter)
+        return lambda: fixed
+
+    return lambda: sample_position(position_rng, jitter)
 
 
 def _gray_to_psychopy_rgb(gray: float) -> tuple[float, float, float]:
@@ -217,6 +258,11 @@ class _ImageWithFixation:
 
     def set_modulation(self, opacity: float) -> None:
         self._image_stim.opacity = opacity
+
+    def set_position(self, pos: tuple[float, float]) -> None:
+        """Move **only** the stimulus image to ``pos`` (pixel offset from center); the fixation
+        marker on top stays centered so position jitter never displaces fixation (WP-B)."""
+        self._image_stim.pos = pos
 
     def draw(self) -> None:
         self._image_stim.draw()
@@ -390,6 +436,19 @@ class FPVSTask(TaskModule):
         n_fade_in_frames = round(params.timing.fade_in_seconds * refresh)
         n_fade_out_frames = round(params.timing.fade_out_seconds * refresh)
 
+        # Position jitter (WP-B) draws from a DEDICATED, decoupled RNG sub-stream, not ctx.rng, so
+        # enabling it never perturbs the pool-shuffle / interval draws above -- toggling jitter
+        # can't silently change trial order. The spawn is done ONLY when jitter is enabled: spawn
+        # advances ctx.rng, and ctx.rng is still drawn from later (the pool re-permutes on each
+        # wraparound via rng=ctx.rng), so spawning on the disabled path would change those draws
+        # and break the "disabled == today, byte-for-byte" guarantee. Enabled: spawn happens after
+        # every order-affecting draw above, so those are identical to the disabled run -- only the
+        # later wraparound permutations differ, which is expected when jitter is on.
+        position_provider = None
+        if params.position_jitter.enabled:
+            position_rng = ctx.rng.spawn(1)[0]
+            position_provider = _build_position_provider(params.position_jitter, position_rng)
+
         self._response_collector = ResponseCollector(params.response)
         self._response_collector.clear()
         trial_start_time = ctx.clock.get_time()
@@ -408,7 +467,9 @@ class FPVSTask(TaskModule):
         # Familiarization phase (base-only stream), after the pre-interval and before the main
         # stimulation -- matching legacy ordering. Reuses the base pool.
         if params.familiarization.enabled:
-            _run_familiarization(ctx, params.familiarization, base_stims, fixation_stim, refresh)
+            _run_familiarization(
+                ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider
+            )
 
         sequence_result = run_base_oddball_sequence(
             window=ctx.window,
@@ -427,6 +488,7 @@ class FPVSTask(TaskModule):
             n_fade_in_frames=n_fade_in_frames,
             n_fade_out_frames=n_fade_out_frames,
             rng=ctx.rng,
+            position_provider=position_provider,
         )
 
         # Fixation-only post-stimulus interval.
@@ -629,5 +691,35 @@ class FPVSTask(TaskModule):
                 "little/no inter-stimulus gap). Confirm your monitor is fast enough, or check "
                 "for a typo (e.g. 60 instead of 6)."
             )
+
+        # Off-screen position-jitter advisory (WP-B). The real display and native image sizes
+        # aren't known at design time (no window/prepare yet), so this is a coarse, best-effort
+        # check: warn when the configured displacement alone -- the rectangle's largest |offset|
+        # or the disk radius -- exceeds a generous threshold, which would push an image toward or
+        # past the screen edge before even accounting for the image's own half-width. Advisory
+        # only, never blocks; the definitive off-screen check is a visual/lab confirmation.
+        jitter = params.position_jitter
+        if jitter.enabled:
+            if jitter.region == "disk":
+                max_offset = jitter.radius_pix
+                extent_desc = f"disk radius {jitter.radius_pix:g} px"
+            else:
+                max_offset = max(
+                    abs(jitter.x_range_pix[0]),
+                    abs(jitter.x_range_pix[1]),
+                    abs(jitter.y_range_pix[0]),
+                    abs(jitter.y_range_pix[1]),
+                )
+                extent_desc = (
+                    f"rectangle offsets x={jitter.x_range_pix}, y={jitter.y_range_pix} px"
+                )
+            if max_offset > POSITION_JITTER_OFFSCREEN_WARN_PIX:
+                warnings.append(
+                    f"position_jitter is large ({extent_desc}, up to {max_offset:g} px from "
+                    f"center, over the {POSITION_JITTER_OFFSCREEN_WARN_PIX:g} px advisory "
+                    "threshold) -- combined with the image's own size this can push a stimulus "
+                    "partly or fully off the display. Confirm the region fits your monitor "
+                    "(the fixation marker stays centered regardless)."
+                )
 
         return warnings
