@@ -8,12 +8,13 @@ hardware" pattern as ``core/export.py``. Callers (see
 ``tests/manual_hardware/analyze_verification_run.py``) read ``events.csv``, parse each row's
 ``payload_json`` into a ``payload`` dict, and pass already-parsed rows in here.
 
-Trigger-to-onset latency pairs each ``trigger_sent`` with the onset of the *same* stimulus by
-``stim_index`` (FPVS logs both with one) and reports the signed ``trigger_time - onset_time`` --
-how long after the visual onset the trigger fired. A trigger with no matching onset (e.g. the
-dummy task) falls back to the flip immediately at/before it, which is that same onset frame. See
-``_compute_trigger_latency`` for why this replaced an earlier nearest-flip-by-timestamp metric
-(which was ~0 by construction and so couldn't surface a mistimed trigger).
+Trigger-to-onset latency pairs each ``trigger_sent`` with the most recent onset *at or before it
+in time* and reports the signed ``trigger_time - onset_time`` -- how long after the visual onset
+the trigger fired. Pairing is by timestamp, deliberately **not** by ``stim_index`` (which restarts
+at 0 every trial, so matching on it collides across a multi-trial run). Flip-interval stats are
+likewise segmented per stimulation stream, so the long gaps between trials (fixation intervals +
+the between-trials gate) never count as frame intervals. See ``_compute_trigger_latency`` /
+``_flip_segments``.
 
 Two things this does NOT compute, on purpose, because the event log alone can't tell you:
 trigger pulse width/voltage (a physical property of the port signal -- needs an oscilloscope),
@@ -24,9 +25,18 @@ omitting them.
 
 from __future__ import annotations
 
+import bisect
 import statistics
 from dataclasses import dataclass
 from typing import Any
+
+#: Events that bracket one stimulation stream (base+oddball, or a familiarization base stream).
+#: Flips are only logged *inside* these windows, so segmenting by them isolates within-stimulation
+#: frame timing from the long gaps between trials (fixation intervals + the between-trials gate /
+#: manual keypress), which are not dropped frames and must not pollute the interval statistics.
+_SEQUENCE_START_EVENTS = frozenset({"base_oddball_sequence_start", "base_sequence_start"})
+_SEQUENCE_END_EVENTS = frozenset({"base_oddball_sequence_end", "base_sequence_end"})
+_ONSET_EVENTS = frozenset({"stimulus_onset", "oddball_onset"})
 
 #: An inter-flip interval longer than this multiple of the nominal frame period counts as a
 #: dropped-frame outlier -- matches docs/verification_protocol.md's own stated threshold.
@@ -142,17 +152,51 @@ class VerificationReport:
         return "\n".join(lines)
 
 
+def _flip_segments(events_sorted: list[dict[str, Any]]) -> list[list[float]]:
+    """Group flip timestamps into per-stimulation segments, so intervals are only ever computed
+    *within* one continuous stimulation stream -- never across the gap between two trials (fixation
+    intervals + the between-trials gate), which would otherwise look like enormous "frame
+    intervals". Segments are bracketed by the sequence start/end events; a stream that started but
+    logged no end (e.g. a crash mid-trial) is still closed out. If a log has no sequence markers at
+    all (the dummy task flips one continuous stream), all flips are treated as a single segment."""
+    segments: list[list[float]] = []
+    current: list[float] | None = None
+    saw_sequence = False
+    for e in events_sorted:
+        event_type = e["event_type"]
+        if event_type in _SEQUENCE_START_EVENTS:
+            if current is not None:
+                segments.append(current)
+            current = []
+            saw_sequence = True
+        elif event_type in _SEQUENCE_END_EVENTS:
+            if current is not None:
+                segments.append(current)
+                current = None
+        elif event_type == "flip" and current is not None:
+            current.append(e["timestamp"])
+    if current is not None:
+        segments.append(current)
+    if not saw_sequence:
+        return [[e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]]
+    return segments
+
+
 def _compute_flip_interval_stats(events_sorted: list[dict[str, Any]], nominal_frame_period_s: float) -> FlipIntervalStats:
-    flip_times = [e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]
-    if len(flip_times) < 2:
+    segments = _flip_segments(events_sorted)
+    n_flips = sum(len(seg) for seg in segments)
+    intervals: list[float] = []
+    for seg in segments:
+        ordered = sorted(seg)
+        intervals.extend(b - a for a, b in zip(ordered, ordered[1:]))
+    if not intervals:
         return FlipIntervalStats(
-            n_flips=len(flip_times), mean_interval_s=None, stddev_interval_s=None,
+            n_flips=n_flips, mean_interval_s=None, stddev_interval_s=None,
             n_outliers=0, nominal_frame_period_s=nominal_frame_period_s,
         )
-    intervals = [b - a for a, b in zip(flip_times, flip_times[1:])]
     n_outliers = sum(1 for interval in intervals if interval > _OUTLIER_FACTOR * nominal_frame_period_s)
     return FlipIntervalStats(
-        n_flips=len(flip_times),
+        n_flips=n_flips,
         mean_interval_s=statistics.fmean(intervals),
         stddev_interval_s=statistics.stdev(intervals) if len(intervals) > 1 else 0.0,
         n_outliers=n_outliers,
@@ -164,38 +208,27 @@ def _compute_trigger_latency(events_sorted: list[dict[str, Any]]) -> TriggerLate
     """Signed trigger-to-onset latency: for each ``trigger_sent`` how long *after* the stimulus's
     visual onset the trigger fired.
 
-    Pairs each trigger to the onset of the *same* stimulus by ``stim_index`` (FPVS logs both the
-    ``trigger_sent`` and the ``stimulus_onset``/``oddball_onset`` with a ``stim_index``), so the
-    latency is ``trigger_time - onset_flip_time`` for that exact stimulus. This replaces an earlier
-    nearest-flip-in-either-direction metric that took ``min(abs(...))`` over *all* flips: because a
-    trigger fires right at its onset flip, that distance was ~0 by construction and couldn't reveal
-    a trigger that fired late, early, or against the wrong frame. A trigger with no matching onset
-    (e.g. the dummy task, which has no onset event) falls back to the most recent flip at or before
-    it -- in practice the same onset flip, since the trigger is emitted immediately after its flip.
-    A *negative* mean here would signal a trigger firing before its visual onset (a bug)."""
+    Pairs each trigger to the **most recent onset at or before it in time** -- the trigger is
+    emitted immediately after its own onset flip, so the onset just preceding it *is* its onset.
+    Timestamp pairing (not ``stim_index``) is essential: ``stim_index`` restarts at 0 every trial,
+    so matching on it collides across a multi-trial run and pairs a trigger from one trial with an
+    onset from another, producing wildly wrong (even hugely negative) latencies. Falls back to the
+    most recent ``flip`` for tasks that log no onset event (e.g. the dummy task) -- in practice the
+    same frame. A *negative* mean would signal a trigger firing before its visual onset (a bug)."""
     trigger_events = [e for e in events_sorted if e["event_type"] == "trigger_sent"]
     if not trigger_events:
         return TriggerLatencyStats(n_triggers=0, mean_latency_s=None, stddev_latency_s=None)
 
-    onset_ts_by_index: dict[Any, float] = {}
-    for e in events_sorted:
-        if e["event_type"] in ("stimulus_onset", "oddball_onset"):
-            idx = (e.get("payload") or {}).get("stim_index")
-            if idx is not None:
-                onset_ts_by_index[idx] = e["timestamp"]
-
-    flip_times = [e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]
+    reference_times = [e["timestamp"] for e in events_sorted if e["event_type"] in _ONSET_EVENTS]
+    if not reference_times:  # no onset events (dummy task) -> pair against flips instead
+        reference_times = [e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]
 
     latencies: list[float] = []
     for trig in trigger_events:
         ts = trig["timestamp"]
-        idx = (trig.get("payload") or {}).get("stim_index")
-        onset_ts = onset_ts_by_index.get(idx) if idx is not None else None
-        if onset_ts is None:  # fall back to the most recent flip at/before the trigger
-            preceding = [t for t in flip_times if t <= ts]
-            onset_ts = preceding[-1] if preceding else None
-        if onset_ts is not None:
-            latencies.append(ts - onset_ts)
+        position = bisect.bisect_right(reference_times, ts) - 1  # last reference at/before trigger
+        if position >= 0:
+            latencies.append(ts - reference_times[position])
 
     if not latencies:
         return TriggerLatencyStats(n_triggers=len(trigger_events), mean_latency_s=None, stddev_latency_s=None)

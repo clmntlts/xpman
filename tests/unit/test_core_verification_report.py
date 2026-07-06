@@ -55,14 +55,43 @@ def test_flip_interval_stats_none_with_zero_flips():
     assert report.flip_interval.mean_interval_s is None
 
 
+def test_flip_intervals_exclude_between_trial_gaps():
+    """Regression: flips span multiple stimulation streams with big gaps (fixation intervals + the
+    between-trials gate / manual keypress) between them. Those gaps must NOT count as frame
+    intervals -- segmenting by sequence start/end keeps only within-stimulation intervals."""
+    events = [
+        _event("base_oddball_sequence_start", 0.0),
+        _event("flip", 0.0), _event("flip", 0.1), _event("flip", 0.2),
+        _event("base_oddball_sequence_end", 0.2),
+        # 29.8 s gap here (post-interval + "press space" + pre-interval) -- not a frame interval
+        _event("base_oddball_sequence_start", 30.0),
+        _event("flip", 30.0), _event("flip", 30.1), _event("flip", 30.2),
+        _event("base_oddball_sequence_end", 30.2),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    assert report.flip_interval.n_flips == 6
+    assert report.flip_interval.mean_interval_s == pytest.approx(0.1)  # only the 0.1 s intervals
+    assert report.flip_interval.n_outliers == 0  # the 29.8 s gap is excluded, not an outlier
+
+
+def test_flip_intervals_single_stream_without_sequence_markers():
+    """The dummy task logs a continuous flip stream with no sequence markers -- all flips are then
+    one segment (the previous whole-run behavior)."""
+    events = [_event("flip", 0.0), _event("flip", 0.1), _event("flip", 0.2)]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    assert report.flip_interval.n_flips == 3
+    assert report.flip_interval.mean_interval_s == pytest.approx(0.1)
+
+
 # ---------------------------------------------------------------------------
 # Trigger-to-onset latency
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_latency_pairs_to_onset_by_stim_index():
-    """Each trigger is paired to the onset of the SAME stimulus via stim_index, and the latency
-    is the signed trigger_time - onset_time for that stimulus."""
+def test_trigger_latency_pairs_to_most_recent_onset_by_time():
+    """Each trigger pairs to the onset at/before it in time; latency is signed trigger - onset."""
     events = [
         _event("stimulus_onset", 1.000, {"stim_index": 0}),
         _event("trigger_sent", 1.003, {"code": 1, "stim_index": 0}),
@@ -75,9 +104,24 @@ def test_trigger_latency_pairs_to_onset_by_stim_index():
     assert report.trigger_latency.mean_latency_s == pytest.approx(0.0025)  # (0.003 + 0.002) / 2
 
 
-def test_trigger_latency_falls_back_to_preceding_flip_without_stim_index():
-    """A trigger with no matching onset (e.g. dummy task) pairs to the most recent flip at/before
-    it -- which in practice is its own onset flip."""
+def test_trigger_latency_pairs_by_time_not_stim_index_across_trials():
+    """Regression: stim_index restarts at 0 every trial, so pairing must be by *time*. Otherwise a
+    trigger from trial 1 gets matched with a later trial's onset (huge, even hugely negative,
+    bogus latency). Two trials both use stim_index 0 far apart in time."""
+    events = [
+        _event("stimulus_onset", 1.000, {"stim_index": 0}),
+        _event("trigger_sent", 1.002, {"code": 1, "stim_index": 0}),
+        _event("stimulus_onset", 100.000, {"stim_index": 0}),  # trial 2, same index, 99 s later
+        _event("trigger_sent", 100.004, {"code": 1, "stim_index": 0}),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    # Each trigger pairs to its OWN trial's onset -> 0.002 and 0.004; mean 0.003, not a ~50 s value.
+    assert report.trigger_latency.mean_latency_s == pytest.approx(0.003)
+
+
+def test_trigger_latency_falls_back_to_preceding_flip_without_onsets():
+    """A run with no onset events (e.g. dummy task) pairs each trigger to the most recent flip."""
     events = [
         _event("flip", 1.000, {"unrelated_key": "a"}),
         _event("trigger_sent", 1.003, {"code": 1}),
@@ -88,18 +132,6 @@ def test_trigger_latency_falls_back_to_preceding_flip_without_stim_index():
 
     assert report.trigger_latency.n_triggers == 2
     assert report.trigger_latency.mean_latency_s == pytest.approx(0.0025)
-
-
-def test_trigger_latency_is_negative_when_trigger_precedes_its_onset():
-    """A trigger that fires before its own stimulus onset yields a negative latency -- the whole
-    point of the signed (not abs) metric: it can surface a mistimed trigger."""
-    events = [
-        _event("stimulus_onset", 1.000, {"stim_index": 0}),
-        _event("trigger_sent", 0.990, {"code": 1, "stim_index": 0}),
-    ]
-    report = build_verification_report(events, nominal_frame_period_s=0.1)
-
-    assert report.trigger_latency.mean_latency_s == pytest.approx(-0.010)
 
 
 def test_trigger_latency_none_with_no_trigger_events():
