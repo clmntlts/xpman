@@ -51,6 +51,7 @@ from xpman.gui.dialogs.condition_edit_dialog import ConditionEditDialog
 from xpman.gui.dialogs.confirm import confirm_delete
 from xpman.gui.dialogs.experiment_create_dialog import ExperimentCreateDialog
 from xpman.gui.dialogs.experiment_edit_dialog import ExperimentEditDialog
+from xpman.gui.dialogs.events_log_dialog import EventsLogDialog
 from xpman.gui.dialogs.instance_freeze_dialog import InstanceFreezeDialog
 from xpman.gui.dialogs.launch_dialog import LaunchDialog
 from xpman.gui.dialogs.program_create_dialog import ProgramCreateDialog
@@ -340,6 +341,13 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel("No trial results recorded for this Run yet."))
 
         export_row = QHBoxLayout()
+        events_button = QPushButton("Trigger / Event Log...")
+        events_button.setToolTip(
+            "View the triggers this run sent (and other logged events) -- works without EEG "
+            "hardware, since triggers are logged whether the real port or the null trigger was used."
+        )
+        events_button.clicked.connect(lambda: self._on_view_events(run_id))
+        export_row.addWidget(events_button)
         export_csv_button = QPushButton("Export CSV...")
         export_csv_button.clicked.connect(lambda: self._on_export_run(run_id, "csv"))
         export_row.addWidget(export_csv_button)
@@ -353,6 +361,35 @@ class MainWindow(QMainWindow):
         self._current_form = None
         self._detail_title.setText(f"Run -- {subject_str} ({run.status.value})")
         self._save_button.setEnabled(False)
+
+    def _resolve_run_events_csv(self, run) -> "Path | None":
+        """Best path to a Run's ``events.csv`` for the trigger viewer, or ``None`` if it can't be
+        located. Prefers a Result's stored ``events_file_path`` (recorded at run time, relative to
+        data_dir -- and it survives the subject later being deleted), falling back to the canonical
+        ``data_dir/<instance>/<subject>/<run>/events.csv`` layout."""
+        if self._data_dir is None:
+            return None
+        for result in run.results:
+            if result.events_file_path:
+                stored = Path(result.events_file_path)
+                if not stored.is_absolute():
+                    stored = Path(self._data_dir) / stored
+                return stored.with_suffix(".csv")
+        if run.subject_id is not None:
+            return Path(self._data_dir) / str(run.instance_id) / str(run.subject_id) / str(run.id) / "events.csv"
+        return None
+
+    def _on_view_events(self, run_id: int) -> None:
+        run = repo.get_run(self._session, run_id)
+        events_csv = self._resolve_run_events_csv(run)
+        if events_csv is None:
+            QMessageBox.information(
+                self,
+                "No event log",
+                "This run has no locatable event log (its data directory isn't configured).",
+            )
+            return
+        EventsLogDialog(events_csv, parent=self).exec()
 
     def _on_export_run(self, run_id: int, fmt: str) -> None:
         if fmt == "csv":

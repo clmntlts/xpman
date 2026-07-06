@@ -148,6 +148,59 @@ def test_run_info_handles_deleted_subject_and_instance(qtbot, session, registry)
 
 
 # ---------------------------------------------------------------------------
+# Trigger / event log viewer wiring
+# ---------------------------------------------------------------------------
+
+
+def test_run_view_has_trigger_log_button(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    window._on_node_selected(TreeNode(kind="run", id=fixture["run"].id, name="Run"))
+
+    from PySide6.QtWidgets import QPushButton
+
+    labels = [b.text() for b in window._detail_scroll.widget().findChildren(QPushButton)]
+    assert "Trigger / Event Log..." in labels
+
+
+def test_on_view_events_resolves_relative_path_against_data_dir(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session, with_results=False)
+    run = fixture["run"]
+    session.add(
+        Result(
+            run_id=run.id, trial_index=0, condition_id=None,
+            outcome_summary_json={}, events_file_path="9/9/9/events.parquet",
+        )
+    )
+    session.commit()
+
+    window = MainWindow(session, fixture["profile"].id, registry, data_dir=tmp_path)
+    qtbot.addWidget(window)
+
+    with patch("xpman.gui.main_window.EventsLogDialog") as mock_dialog:
+        window._on_view_events(run.id)
+
+    mock_dialog.assert_called_once()
+    passed_path = mock_dialog.call_args[0][0]
+    assert passed_path == tmp_path / "9" / "9" / "9" / "events.csv"  # relative resolved + .csv
+
+
+def test_on_view_events_without_data_dir_shows_info_not_dialog(qtbot, session, registry):
+    fixture = _build_fixture(session)  # MainWindow built with no data_dir
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    with patch("xpman.gui.main_window.EventsLogDialog") as mock_dialog, patch.object(
+        QMessageBox, "information"
+    ) as mock_info:
+        window._on_view_events(fixture["run"].id)
+
+    mock_dialog.assert_not_called()
+    mock_info.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Export wiring
 # ---------------------------------------------------------------------------
 
