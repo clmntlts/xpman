@@ -20,8 +20,20 @@ from xpman.tasks.dummy.task import DummyTask
 @pytest.fixture()
 def mock_window():
     window = MagicMock(name="Window")
-    # Increasing flip timestamps, like a real waitBlanking=True window would return.
-    window.flip.side_effect = (i * 1 / 60 for i in range(10_000))
+    # callOnFlip records pending callbacks; flip() invokes them (so trigger.set_code/clear_code
+    # actually run, the way a real PsychoPy window fires callOnFlip at the buffer swap) then
+    # returns the next increasing flip timestamp, like a real waitBlanking=True window would.
+    _pending: list = []
+    _timestamps = (i * 1 / 60 for i in range(10_000))
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        return next(_timestamps)
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
     return window
 
 
@@ -79,6 +91,40 @@ def test_run_trial_sends_correct_number_and_code_of_triggers(ctx):
     assert result.outcome_summary["flips_completed"] == 5
     assert result.outcome_summary["aborted"] is False
     assert trigger.codes_sent == [42, 42, 42, 42, 42]
+
+
+def test_run_trial_emits_triggers_via_callonflip(ctx):
+    """The dummy task must fire its per-flip trigger through window.callOnFlip (the same vsync-
+    bound path the FPVS loop uses), not a direct post-flip send -- so the manual dummy hardware
+    check exercises the real path. Each flip registers set_code(code)."""
+    task = DummyTask()
+    recorded: list[tuple[str, tuple]] = []
+    trigger: NullTrigger = ctx.trigger
+
+    def _name_for(fn):
+        if fn == trigger.set_code:
+            return "set_code"
+        if fn == trigger.clear_code:
+            return "clear_code"
+        return getattr(fn, "__name__", repr(fn))
+
+    real_call_on_flip = ctx.window.callOnFlip
+
+    def _spy(fn, *a, **k):
+        recorded.append((_name_for(fn), a))
+        return real_call_on_flip(fn, *a, **k)
+
+    ctx.window.callOnFlip = _spy
+
+    with patch("psychopy.visual.Rect", return_value=_mock_rect()):
+        task.prepare(ctx)
+        task.run_trial(
+            ctx, {"flip_rate_hz": 10, "duration_seconds": 0.3, "trigger_code": 8}, trial_index=0
+        )
+
+    # 3 flips -> 3 set_code(8) registrations (one per flip, via callOnFlip, not send_trigger).
+    assert [op for op in recorded if op[0] == "set_code"] == [("set_code", (8,))] * 3
+    assert trigger.codes_sent == [8, 8, 8]  # and they actually fired at the flips
 
 
 def test_run_trial_alternates_colors(ctx):

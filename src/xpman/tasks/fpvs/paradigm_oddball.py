@@ -260,22 +260,26 @@ def _present_stimulus(
     onset_time: float | None = None
 
     for frame_in_stim in range(n_frames):
-        # Reset any trigger code set on the previous frame's onset. Doing it here -- at the top of
-        # the next frame -- instead of a blocking core.wait right after the onset flip is what
-        # keeps the pulse from stealing time from the frame budget (a ~3 ms inline hold after
-        # flip risks a dropped frame). The code was set after the previous flip, so it has been
-        # held high for one full inter-flip interval by the time we clear it here. Idempotent when
-        # nothing is set (setData(0) on an already-0 port), so it's safe to call every frame; the
-        # sequence's final onset (no following frame) is cleared by the trailing clear_code in the
-        # caller. See TriggerSender.set_code/clear_code.
-        trigger.clear_code()
-
         if abort_check():
             aborted = True
             break
 
         is_onset = frame_in_stim == 0
         global_frame_index = start_frame_index + frame_in_stim
+
+        # Bind the trigger set/clear to the vsync via window.callOnFlip: PsychoPy runs the
+        # registered callback the instant the next flip() swaps buffers (the rising edge the
+        # amplifier timestamps), so the code lands at the flip rather than after flip() returns --
+        # tighter and less jittered than the old post-flip direct set_code. Exactly one
+        # registration per frame: set_code on the onset frame (if a code is configured), otherwise
+        # clear_code. The non-onset clear_code returns the port to 0 one refresh after the onset,
+        # giving a ~1-frame pulse; it's idempotent (setData(0) on an already-0 port), so it is safe
+        # every non-onset frame. The sequence's final onset (no following frame to clear it) is
+        # reset by the trailing clear_code in the caller. See TriggerSender.set_code/clear_code.
+        if is_onset and trigger_code is not None:
+            window.callOnFlip(trigger.set_code, trigger_code)
+        else:
+            window.callOnFlip(trigger.clear_code)
 
         if photodiode is not None and should_toggle(
             photodiode_params,
@@ -301,15 +305,13 @@ def _present_stimulus(
         if is_onset:
             onset_time = flip_time
             if trigger_code is not None:
-                # Non-blocking: drive the code onto the pins right after the onset flip (the
-                # rising edge the amplifier timestamps), then return to the loop immediately. The
-                # next frame's top-of-loop clear_code ends the pulse ~one refresh later, so
-                # nothing blocks here. (Old behavior held it inline with core.wait -- the finding.)
-                trigger.set_code(trigger_code)
+                # The send already happened at the flip (via the callOnFlip registration above);
+                # only the *log* stays here, timestamped with flip_time to mark when the pulse
+                # actually went out. Once per stimulus, off the per-frame path.
                 event_sink.log(
                     "trigger_sent",
                     {"code": trigger_code, "stim_index": stim_index, "is_oddball": is_oddball},
-                    timestamp=clock.get_time(),
+                    timestamp=flip_time,
                 )
             # Log which image this onset showed (stimulus provenance -- reading onsets in order
             # also recovers the full resolved/shuffled presentation order). ``identity`` is an

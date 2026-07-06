@@ -56,18 +56,25 @@ class DummyTask(TaskModule):
 
             is_white = not is_white
             self._stim.fillColor = "white" if is_white else "black"
+
+            # Bind the trigger to the vsync: window.callOnFlip runs the callback the instant the
+            # next flip() swaps buffers (the edge the amplifier timestamps), so the code lands at
+            # the flip rather than after flip() returns -- the same tightened path the FPVS loop
+            # uses (see tasks/fpvs/paradigm_oddball.py). Registered before draw()/flip(); the code
+            # set here is cleared on the *next* iteration's flip (and the trailing clear_code after
+            # the loop resets the port after the final flip), giving a ~1-frame pulse without any
+            # blocking hold after flip.
+            ctx.window.callOnFlip(ctx.trigger.set_code, params.trigger_code)
             self._stim.draw()
 
             # win.flip() blocks until the vertical blank and returns that wall-clock time when
             # the window was built with waitBlanking=True (xpman.hardware.display's default) --
             # this is the precise, frame-locked timestamp; ctx.clock is only a fallback for the
-            # (non-timing-critical) case where blanking wasn't requested.
+            # (non-timing-critical) case where blanking wasn't requested. The set_code registered
+            # above has fired by the time flip() returns.
             flip_time = ctx.window.flip()
             if flip_time is None:
                 flip_time = ctx.clock.get_time()
-
-            ctx.trigger.send_trigger(params.trigger_code)
-            trigger_sent_time = ctx.clock.get_time()
 
             ctx.event_sink.log(
                 "flip",
@@ -77,9 +84,15 @@ class DummyTask(TaskModule):
             ctx.event_sink.log(
                 "trigger_sent",
                 {"trial_index": trial_index, "flip_index": flip_index, "code": params.trigger_code},
-                timestamp=trigger_sent_time,
+                timestamp=flip_time,
             )
+            # Clear the code on the next frame's flip so the pulse spans ~one refresh, matching the
+            # FPVS non-onset frames. The final flip's code is reset by the trailing clear_code below.
+            ctx.window.callOnFlip(ctx.trigger.clear_code)
             flips_completed += 1
+
+        # Reset the port after the final flip (its clear is registered on a flip that never comes).
+        ctx.trigger.clear_code()
 
         ctx.event_sink.log(
             "trial_end", {"trial_index": trial_index, "flips_completed": flips_completed}

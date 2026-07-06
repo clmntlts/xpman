@@ -105,7 +105,20 @@ def test_achieved_frequency_rejects_non_positive_frames():
 @pytest.fixture()
 def mock_window():
     window = MagicMock(name="Window")
-    window.flip.side_effect = (i / 60.0 for i in range(100_000))
+    # callOnFlip records pending callbacks; flip() invokes them (so trigger.set_code/clear_code
+    # actually run, the way a real PsychoPy window fires callOnFlip at the buffer swap) then
+    # returns the next flip timestamp, preserving the i/60 per-frame sequence.
+    _pending: list = []
+    _timestamps = (i / 60.0 for i in range(100_000))
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        return next(_timestamps)
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
     window.size = (800, 600)  # needed by PhotodiodePatch's corner-based positioning
     return window
 
@@ -239,6 +252,100 @@ def test_no_trigger_sent_when_code_is_none(mock_window, stimuli, event_sink, tri
         event_sink=event_sink,
     )
     assert trigger.codes_sent == []
+
+
+def _callonflip_recording_window(trigger):
+    """A mock window that *records* every callOnFlip(fn, *args) registration (as
+    ``(method_name, args)`` keyed off ``trigger``'s bound methods) and still invokes the pending
+    callbacks on flip, so both the registration pattern (C1) and the NullTrigger recording can be
+    asserted in one run. Registrations are exposed on ``window.callonflip_ops``."""
+    window = MagicMock(name="Window")
+    window.size = (800, 600)
+    ops: list[tuple[str, tuple]] = []
+    window.callonflip_ops = ops
+    _pending: list = []
+    _timestamps = (i / 60.0 for i in range(100_000))
+
+    def _name_for(fn):
+        if fn == trigger.set_code:
+            return "set_code"
+        if fn == trigger.clear_code:
+            return "clear_code"
+        return getattr(fn, "__name__", repr(fn))
+
+    def _call_on_flip(fn, *a, **k):
+        ops.append((_name_for(fn), a))
+        _pending.append((fn, a, k))
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        return next(_timestamps)
+
+    window.callOnFlip = _call_on_flip
+    window.flip.side_effect = _flip
+    return window
+
+
+def test_callonflip_registers_set_code_on_onset_and_clear_on_other_frames(
+    stimuli, event_sink, trigger, clock
+):
+    window = _callonflip_recording_window(trigger)
+    # 60 Hz refresh, 6 Hz base -> 10 frames/stimulus; 1/6 s trial -> exactly 1 stimulus of 10
+    # frames: frame 0 (onset) registers set_code(42), the other 9 register clear_code.
+    run_base_sequence(
+        window=window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1 / 6, base_trigger_code=42),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert window.callonflip_ops[0] == ("set_code", (42,))  # onset frame registers the code
+    assert all(op == ("clear_code", ()) for op in window.callonflip_ops[1:10])  # rest clear it
+    assert window.callonflip_ops.count(("set_code", (42,))) == 1  # exactly one set for one onset
+
+
+def test_callonflip_registers_only_clear_when_base_trigger_code_is_none(
+    stimuli, event_sink, trigger, clock
+):
+    window = _callonflip_recording_window(trigger)
+    run_base_sequence(
+        window=window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0, base_trigger_code=None),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    # A "no code" condition never registers set_code -- every frame (onset included) clears.
+    assert all(op == ("clear_code", ()) for op in window.callonflip_ops)
+    assert not any(name == "set_code" for name, _ in window.callonflip_ops)
+
+
+def test_callonflip_registers_oddball_and_base_codes_at_their_positions(
+    base_stimuli, oddball_stimuli, event_sink, trigger, clock
+):
+    window = _callonflip_recording_window(trigger)
+    # base=6 Hz, oddball=1.2 Hz -> period 5; 3 s trial -> 18 stimuli, oddballs at positions
+    # 5/10/15 (codes 2), the other 15 base onsets carry code 1.
+    run_base_oddball_sequence(
+        window=window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    set_ops = [op for op in window.callonflip_ops if op[0] == "set_code"]
+    assert set_ops.count(("set_code", (1,))) == 15  # 15 base onsets
+    assert set_ops.count(("set_code", (2,))) == 3  # 3 oddball onsets
 
 
 def test_photodiode_toggles_on_every_stimulus_onset(mock_window, stimuli, event_sink, trigger, clock):
