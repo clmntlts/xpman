@@ -2,9 +2,13 @@
 hardware**.
 
 Answers "were triggers actually sent, which codes, and when?" by reading the Run's ``events.csv``
-(written for every run, real-port *or* null-trigger) and showing the same summary the
-``analyze_verification_run.py`` CLI prints -- trigger-code breakdown, achieved base/oddball
-frequencies, trigger-to-onset latency, event counts -- plus a per-onset ``trigger_sent`` table.
+(written for every run, real-port *or* null-trigger). Two tabs:
+
+- **Summary**: the same numbers ``analyze_verification_run.py`` prints -- trigger-code breakdown,
+  achieved base/oddball frequencies, trigger-to-onset latency, event counts -- plus a per-onset
+  ``trigger_sent`` table.
+- **Timeline**: a per-trial strip of when each stimulus was presented (base vs oddball) and when
+  triggers fired, so alignment / a missing trigger is obvious at a glance.
 
 The log proves the *software* issued each trigger; confirming the *electrical* pulse still needs a
 scope/LED on the parallel port (see docs/verification_protocol.md). Read-only: opens no hardware,
@@ -22,11 +26,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from xpman.core.events_log import TriggerRow, build_run_report
+from xpman.gui.dialogs.timeline_view import TimelineView
 
 _TRIGGER_COLUMNS = ("Time (s)", "Code", "Type", "Stim #")
 
@@ -39,23 +45,20 @@ class EventsLogDialog(QDialog):
     def __init__(self, events_csv: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Trigger / event log")
-        self.resize(560, 620)
+        self.resize(820, 640)
 
         layout = QVBoxLayout(self)
+        self._message = QLabel()
+        self._message.setWordWrap(True)
+        layout.addWidget(self._message)
+
+        self._tabs = QTabWidget()
         self._summary = QPlainTextEdit()
         self._summary.setReadOnly(True)
         self._table = QTableWidget(0, len(_TRIGGER_COLUMNS))
         self._table.setHorizontalHeaderLabels(_TRIGGER_COLUMNS)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-
-        self._message = QLabel()
-        self._message.setWordWrap(True)
-
-        layout.addWidget(self._message)
-        layout.addWidget(QLabel("Summary (same numbers as analyze_verification_run.py):"))
-        layout.addWidget(self._summary, stretch=1)
-        layout.addWidget(QLabel("Triggers sent (one row per stimulus onset that fired a trigger):"))
-        layout.addWidget(self._table, stretch=1)
+        layout.addWidget(self._tabs, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -66,20 +69,18 @@ class EventsLogDialog(QDialog):
 
     def _load(self, events_csv: Path) -> None:
         try:
-            report, triggers = build_run_report(events_csv)
+            report, triggers, timelines = build_run_report(events_csv)
         except FileNotFoundError:
             self._message.setText(
                 f"No event log found for this run at:\n{events_csv}\n\n"
                 "A log is written once a run actually starts executing trials; a run that failed "
                 "to start (or was never launched) won't have one."
             )
-            self._summary.setVisible(False)
-            self._table.setVisible(False)
+            self._tabs.setVisible(False)
             return
         except Exception as exc:  # noqa: BLE001 - surface any parse problem in-dialog, don't crash
             self._message.setText(f"Could not read the event log:\n{exc}")
-            self._summary.setVisible(False)
-            self._table.setVisible(False)
+            self._tabs.setVisible(False)
             return
 
         if not triggers:
@@ -99,6 +100,15 @@ class EventsLogDialog(QDialog):
 
         self._summary.setPlainText(report.format())
         self._populate_table(triggers)
+
+        summary_tab = QWidget()
+        summary_layout = QVBoxLayout(summary_tab)
+        summary_layout.addWidget(QLabel("Summary (same numbers as analyze_verification_run.py):"))
+        summary_layout.addWidget(self._summary, stretch=1)
+        summary_layout.addWidget(QLabel("Triggers sent (one row per stimulus onset that fired a trigger):"))
+        summary_layout.addWidget(self._table, stretch=1)
+        self._tabs.addTab(summary_tab, "Summary")
+        self._tabs.addTab(TimelineView(timelines), "Timeline")
 
     def _populate_table(self, triggers: list[TriggerRow]) -> None:
         self._table.setRowCount(len(triggers))
