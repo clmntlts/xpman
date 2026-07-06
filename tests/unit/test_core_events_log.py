@@ -126,6 +126,47 @@ def test_build_trial_timelines_segments_and_relativizes():
     # Trial 2's stimulus #0 has the SAME index as trial 1's -> same x -> columns align across trials.
     assert timelines[1].onsets[0].index == t1.onsets[0].index == 0
     assert timelines[1].onsets[0].time_s == pytest.approx(0.0)
+    # Both base+oddball streams are trials, numbered among trials.
+    assert [t.kind for t in timelines] == ["trial", "trial"]
+    assert [t.label for t in timelines] == ["Trial 1", "Trial 2"]
+
+
+def test_build_trial_timelines_labels_familiarization_distinctly():
+    """A base-only (familiarization) stream is tagged and labelled 'Familiarization', and trials
+    are numbered among trials only -- so the familiarization isn't miscounted as an empty trial."""
+    events = [
+        _ev("base_oddball_sequence_start", 0.0),  # trial 1
+        _ev("stimulus_onset", 0.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("base_oddball_sequence_end", 1.0),
+        _ev("base_sequence_start", 2.0),  # familiarization (base-only, no triggers)
+        _ev("stimulus_onset", 2.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("base_sequence_end", 3.0),
+        _ev("base_oddball_sequence_start", 4.0),  # trial 2
+        _ev("stimulus_onset", 4.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("base_oddball_sequence_end", 5.0),
+    ]
+    timelines = build_trial_timelines(events)
+
+    assert [t.kind for t in timelines] == ["trial", "familiarization", "trial"]
+    assert [t.label for t in timelines] == ["Trial 1", "Familiarization", "Trial 2"]
+
+
+def test_build_trial_timelines_places_responses_in_their_stream():
+    """response_scored is logged after the sequence ends, so it's matched to its stream by
+    response_time and placed at the reference_stim_index it responded to."""
+    events = [
+        _ev("base_oddball_sequence_start", 10.0),
+        _ev("oddball_onset", 10.83, {"is_oddball": True, "stim_index": 5}),
+        _ev("base_oddball_sequence_end", 11.0),
+        # logged AFTER the sequence end, but response_time is during it:
+        _ev("response_scored", 11.2, {"response_time": 10.9, "reference_stim_index": 5, "is_valid": True}),
+    ]
+    timelines = build_trial_timelines(events)
+
+    assert len(timelines[0].responses) == 1
+    resp = timelines[0].responses[0]
+    assert resp.index == 5  # aligned under the stimulus it responded to
+    assert resp.time_s == pytest.approx(0.9)  # 10.9 - 10.0
 
 
 def test_build_trial_timelines_index_falls_back_to_ordinal_without_stim_index():

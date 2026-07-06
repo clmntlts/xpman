@@ -6,8 +6,10 @@ no DB. The x-axis is **stimulus position within the trial**, not measured time, 
 stimulus lands at the same x in every trial: trials stack into an aligned raster you can compare
 column-for-column (the periodic oddballs form clean vertical lines; a deviating trial jumps out).
 Onsets are ticks (oddballs taller + accented); triggers are marks on the row just below, so
-vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious. Rendered
-with ``QGraphicsScene`` so it's cheap for thousands of marks and its items are inspectable in tests.
+vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious; scored
+responses (blue) sit below the triggers. The base-only familiarization stream is labelled as such
+(base ticks, no triggers -- not an "empty trial"). Rendered with ``QGraphicsScene`` so it's cheap
+for thousands of marks and its items are inspectable in tests.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ _BASE = QColor("#6b7280")  # gray
 _ODDBALL = QColor("#e0662b")  # orange accent
 _TRIGGER = QColor("#2f855a")  # green
 _TRIGGER_ODDBALL = QColor("#c0392b")  # red
+_RESPONSE = QColor("#3b82f6")  # blue
 _AXIS = QColor("#9aa0a6")
 _TEXT = QColor("#d0d0d0")
 
@@ -56,7 +59,12 @@ class TimelineView(QGraphicsView):
         # every trial -- trials line up column-for-column for direct visual comparison (measured
         # time jitters by a frame or two). All trials share one grid = the widest trial's index.
         max_index = max(
-            (m.index for t in timelines for m in (*t.onsets, *t.triggers) if m.index is not None),
+            (
+                m.index
+                for t in timelines
+                for m in (*t.onsets, *t.triggers, *t.responses)
+                if m.index is not None
+            ),
             default=0,
         )
         denom = max_index or 1
@@ -69,7 +77,9 @@ class TimelineView(QGraphicsView):
 
         for row, trial in enumerate(timelines):
             y = _TOP + row * _ROW_H + _ROW_H / 2
-            label = scene.addText(f"Trial {trial.index}  ({trial.n_base}b / {trial.n_oddball}o)")
+            counts = f"{trial.n_base}b" + (f" / {trial.n_oddball}o" if trial.kind == "trial" else "")
+            display = trial.label or f"Trial {trial.index}"
+            label = scene.addText(f"{display}  ({counts})")
             label.setDefaultTextColor(_TEXT)
             label.setPos(4, y - _ROW_H / 2)
 
@@ -92,10 +102,22 @@ class TimelineView(QGraphicsView):
                 dot = scene.addEllipse(x - 1.5, trig_y - 1.5, 3, 3, QPen(color), QBrush(color))
                 dot.setToolTip(f"trigger code {trig.code} · stimulus #{trig.index} @ {trig.time_s:.3f}s")
 
+            resp_y = y + _TRIGGER_GAP + 7
+            for resp in trial.responses:
+                x = x_at(resp.index)
+                mark = scene.addRect(x - 2, resp_y - 2, 4, 4, QPen(_RESPONSE), QBrush(_RESPONSE))
+                where = f"stimulus #{resp.index}" if resp.index is not None else "no matched stimulus"
+                mark.setToolTip(f"response · {where} @ {resp.time_s:.3f}s")
+
         scene.setSceneRect(scene.itemsBoundingRect().adjusted(-8, -8, 8, 8))
 
     def _draw_legend(self, scene: QGraphicsScene) -> None:
-        entries = [("base onset", _BASE), ("oddball onset", _ODDBALL), ("trigger", _TRIGGER)]
+        entries = [
+            ("base onset", _BASE),
+            ("oddball onset", _ODDBALL),
+            ("trigger", _TRIGGER),
+            ("response", _RESPONSE),
+        ]
         x = _LABEL_W
         for text, color in entries:
             swatch = scene.addRect(x, 6, 10, 10, QPen(color), QBrush(color))
@@ -103,7 +125,7 @@ class TimelineView(QGraphicsView):
             item = scene.addText(text)
             item.setDefaultTextColor(_TEXT)
             item.setPos(x + 12, -2)
-            x += 130
+            x += 120
 
     def _draw_position_axis(self, scene: QGraphicsScene, max_index, x_at, *, n_rows: int) -> None:
         y = _TOP + n_rows * _ROW_H + 6

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -60,13 +60,23 @@ class TimelineMark:
 
 @dataclass(frozen=True)
 class TrialTimeline:
-    """One trial's stimulation stream: its onsets and the triggers that fired, on a shared
-    relative time axis (0 == the trial's first stimulation frame)."""
+    """One stimulation stream: its onsets, the triggers that fired, and any scored responses, on
+    a shared per-trial axis (0 == the stream's first stimulation frame).
 
-    index: int  # 1-based, in run order
+    ``kind`` is ``"trial"`` for a base+oddball trial or ``"familiarization"`` for the base-only
+    familiarization stream (which has onsets but no per-stimulus triggers -- so it's expected to
+    show base ticks and no trigger dots). ``label`` is the display name (``"Trial 2"`` /
+    ``"Familiarization"``) with trials numbered among trials only, so the familiarization isn't
+    miscounted as a trial.
+    """
+
+    index: int  # 1-based, in run order (all streams)
     duration_s: float
     onsets: list[TimelineMark]
     triggers: list[TimelineMark]
+    kind: str = "trial"
+    label: str = ""
+    responses: list[TimelineMark] = field(default_factory=list)
 
     @property
     def n_base(self) -> int:
@@ -77,58 +87,97 @@ class TrialTimeline:
         return sum(1 for o in self.onsets if o.is_oddball is True)
 
 
+def _mark_index(payload: dict, fallback: int) -> int:
+    idx = payload.get("stim_index")
+    return idx if idx is not None else fallback
+
+
 def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
-    """Split a run's events into one :class:`TrialTimeline` per stimulation stream, each holding
-    its stimulus onsets and ``trigger_sent`` marks at times relative to that stream's start. Trials
-    are delimited by the sequence start/end events (the same segmentation the flip-interval stats
-    use), so onsets/triggers are never mixed across trials -- exactly what makes ``stim_index``
-    unsafe as a key elsewhere. A stream that started but logged no end (a crash mid-trial) is still
-    emitted."""
+    """Split a run's events into one :class:`TrialTimeline` per stimulation stream -- its stimulus
+    onsets, ``trigger_sent`` marks, and scored responses, at times relative to that stream's start.
+
+    Streams are delimited by the sequence start/end events (the same segmentation the flip-interval
+    stats use), so onsets/triggers are never mixed across trials. A base-only stream
+    (``base_sequence_*``) is tagged ``kind="familiarization"`` and labelled as such; base+oddball
+    streams are numbered ``"Trial N"`` among themselves. Responses are matched to their stream in a
+    second pass by their (post-sequence-logged) ``response_time`` payload, and placed at the
+    ``reference_stim_index`` they responded to. A stream that started but logged no end (a crash
+    mid-trial) is still emitted."""
     events_sorted = sorted(events, key=lambda e: e["timestamp"])
-    timelines: list[TrialTimeline] = []
-    start_ts: float | None = None
-    onsets: list[TimelineMark] = []
-    triggers: list[TimelineMark] = []
-    last_ts = 0.0
 
-    def _flush(end_ts: float | None) -> None:
-        nonlocal start_ts, onsets, triggers
-        if start_ts is None:
-            return
-        duration = (end_ts if end_ts is not None else last_ts) - start_ts
-        timelines.append(
-            TrialTimeline(
-                index=len(timelines) + 1,
-                duration_s=max(duration, 0.0),
-                onsets=onsets,
-                triggers=triggers,
-            )
-        )
-        start_ts, onsets, triggers = None, [], []
-
+    # First pass: raw windows with their time bounds and marks.
+    windows: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
     for e in events_sorted:
         event_type = e["event_type"]
         ts = e["timestamp"]
+        payload = e.get("payload") or {}
         if event_type in _SEQUENCE_START_EVENTS:
-            _flush(ts)  # close any prior unterminated stream
-            start_ts, onsets, triggers, last_ts = ts, [], [], ts
+            if cur is not None:
+                cur["end"] = cur["last"]
+                windows.append(cur)
+            cur = {
+                "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [], "responses": [],
+                "kind": "familiarization" if event_type == "base_sequence_start" else "trial",
+            }
         elif event_type in _SEQUENCE_END_EVENTS:
-            _flush(ts)
-        elif start_ts is not None:
-            payload = e.get("payload") or {}
+            if cur is not None:
+                cur["end"] = ts
+                windows.append(cur)
+                cur = None
+        elif cur is not None:
             if event_type in _ONSET_EVENTS:
-                idx = payload.get("stim_index")
-                index = idx if idx is not None else len(onsets)  # ordinal fallback for old logs
-                onsets.append(TimelineMark(ts - start_ts, payload.get("is_oddball"), None, index))
-                last_ts = ts
+                index = _mark_index(payload, len(cur["onsets"]))
+                cur["onsets"].append(TimelineMark(ts - cur["start"], payload.get("is_oddball"), None, index))
+                cur["last"] = ts
             elif event_type == "trigger_sent":
-                idx = payload.get("stim_index")
-                index = idx if idx is not None else len(triggers)
-                triggers.append(
-                    TimelineMark(ts - start_ts, payload.get("is_oddball"), payload.get("code"), index)
+                index = _mark_index(payload, len(cur["triggers"]))
+                cur["triggers"].append(
+                    TimelineMark(ts - cur["start"], payload.get("is_oddball"), payload.get("code"), index)
                 )
-                last_ts = ts
-    _flush(None)
+                cur["last"] = ts
+    if cur is not None:
+        cur["end"] = cur["last"]
+        windows.append(cur)
+
+    # Second pass: place scored responses into the stream their keypress fell within. response_scored
+    # is logged after the sequence ends, so it can't be captured inline -- match by response_time.
+    for e in events_sorted:
+        if e["event_type"] != "response_scored":
+            continue
+        payload = e.get("payload") or {}
+        rt = payload.get("response_time")
+        if rt is None:
+            continue
+        for w in windows:
+            if w["start"] <= rt <= (w["end"] if w["end"] is not None else w["last"]):
+                w["responses"].append(
+                    TimelineMark(rt - w["start"], None, None, payload.get("reference_stim_index"))
+                )
+                break
+
+    timelines: list[TrialTimeline] = []
+    trial_n = 0
+    fam_n = 0
+    for i, w in enumerate(windows):
+        if w["kind"] == "trial":
+            trial_n += 1
+            label = f"Trial {trial_n}"
+        else:
+            fam_n += 1
+            label = "Familiarization" if fam_n == 1 else f"Familiarization {fam_n}"
+        end = w["end"] if w["end"] is not None else w["last"]
+        timelines.append(
+            TrialTimeline(
+                index=i + 1,
+                duration_s=max(end - w["start"], 0.0),
+                onsets=w["onsets"],
+                triggers=w["triggers"],
+                kind=w["kind"],
+                label=label,
+                responses=w["responses"],
+            )
+        )
     return timelines
 
 
