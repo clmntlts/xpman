@@ -30,9 +30,33 @@ if TYPE_CHECKING:
     from xpman.hardware.trigger import TriggerSender
     from xpman.tasks.registry import TaskRegistry
 
-#: Bump if xpman's own version scheme changes; recorded on every Run for debugging old data
-#: against the app version that produced it (see ``core.models.Run.xpman_version``).
+#: Fallback recorded on a Run when xpman isn't installed as a distribution (e.g. running straight
+#: from a source checkout), so ``importlib.metadata`` can't find a version. Bump alongside the
+#: package version. See ``_resolve_versions`` and ``core.models.Run.xpman_version``.
 XPMAN_VERSION = "0.1.0"
+
+
+def _resolve_versions() -> dict[str, str | None]:
+    """Best-effort environment provenance recorded on every Run for reproducibility: the real
+    installed xpman version (falling back to ``XPMAN_VERSION`` from a bare source checkout) plus
+    the PsychoPy and NumPy versions the frame math / RNG actually ran against. Each lookup is
+    guarded so a missing/oddly-packaged dependency degrades to ``None`` rather than blocking a run.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    def _pkg(name: str) -> str | None:
+        try:
+            return version(name)
+        except PackageNotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 - provenance is never worth crashing a launch over
+            return None
+
+    return {
+        "xpman_version": _pkg("xpman") or XPMAN_VERSION,
+        "psychopy_version": _pkg("psychopy"),
+        "numpy_version": _pkg("numpy"),
+    }
 
 
 def launch_run(
@@ -47,6 +71,8 @@ def launch_run(
     data_dir: Path,
     abort_check: Callable[[], bool] = lambda: False,
     on_run_created: Callable[[Run], None] | None = None,
+    experiment_id: int | None = None,
+    on_before_trial: Callable[[int], None] | None = None,
 ) -> Run:
     """Resolve ``instance_id``/``subject_id``, create a Run, and execute it end to end.
 
@@ -61,6 +87,12 @@ def launch_run(
             late for a caller that wants to know the run id early (e.g. a GUI launching this in
             a subprocess and wanting to announce the id right away so the parent process can
             start polling for progress). Exceptions raised by this callback are not caught.
+        experiment_id: If set, run only that experiment from the Instance's frozen program
+            (the launch flow picks one; see ``engine._build_trial_sequence``). ``None`` runs
+            every experiment.
+        on_before_trial: Optional hook called before each trial (the between-trials gate --
+            manual keypress / auto delay; see ``runtime/trial_gate.py``). ``None`` runs trials
+            back-to-back with no pause.
 
     Raises:
         LookupError: ``instance_id`` or ``subject_id`` doesn't exist.
@@ -83,11 +115,14 @@ def launch_run(
     task_name = instance.frozen_json["program"]["task_name"]
     task = registry.get(task_name)
 
+    versions = _resolve_versions()
     run = Run(
         instance_id=instance.id,
         subject_id=subject.id,
         started_at=datetime.now(timezone.utc),
-        xpman_version=XPMAN_VERSION,
+        xpman_version=versions["xpman_version"],
+        psychopy_version=versions["psychopy_version"],
+        numpy_version=versions["numpy_version"],
         status=RunStatus.ABORTED,  # placeholder until execute_run finalizes it either way
     )
     session.add(run)
@@ -110,4 +145,7 @@ def launch_run(
         clock=clock,
         event_sink=event_sink,
         abort_check=abort_check,
+        experiment_id=experiment_id,
+        on_before_trial=on_before_trial,
+        data_dir=data_dir,
     )

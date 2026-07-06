@@ -307,3 +307,103 @@ def test_menu_offers_check_triggers_for_condition(qtbot, session, registry):
     index = _find_index(window, "condition", fixture["condition"].id)
     menu = window._build_context_menu(index)
     assert "Check Triggers..." in _action_texts(menu)
+
+
+# ---------------------------------------------------------------------------
+# Preview Stimuli
+# ---------------------------------------------------------------------------
+
+
+class _PreviewRecordingTask(_CheckableTask):
+    """Records what params/resource_dir the GUI hands to describe_condition_resources."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.preview_calls: list[tuple[dict, str]] = []
+
+    def describe_condition_resources(self, condition_params: dict, resource_dir: str) -> list[str]:
+        self.preview_calls.append((condition_params, resource_dir))
+        return ["canned preview line"]
+
+
+def test_menu_offers_preview_stimuli_for_condition(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "condition", fixture["condition"].id)
+    menu = window._build_context_menu(index)
+    assert "Preview Stimuli..." in _action_texts(menu)
+
+
+def test_preview_stimuli_uses_saved_params_when_form_not_open(qtbot, session):
+    task = _PreviewRecordingTask()
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([task]))
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    with patch.object(QMessageBox, "information") as mock_info:
+        window._preview_stimuli(node)
+
+    mock_info.assert_called_once()
+    assert "canned preview line" in mock_info.call_args[0][2]
+    params, resource_dir = task.preview_calls[0]
+    assert params == fixture["condition"].parameters_json
+    assert resource_dir == "C:/stim"
+
+
+def test_preview_stimuli_uses_live_form_values_when_condition_form_open(qtbot, session):
+    task = _PreviewRecordingTask()
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([task]))
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    window._on_node_selected(node)
+    # Unsaved edit -- the preview must see it without a Save first.
+    window._current_form._field_widgets["trigger_code"].set_value(42)
+
+    with patch.object(QMessageBox, "information"):
+        window._preview_stimuli(node)
+
+    params, _resource_dir = task.preview_calls[0]
+    assert params["trigger_code"] == 42
+    assert repo.get_condition(session, fixture["condition"].id).parameters_json["trigger_code"] == 1
+
+
+def test_preview_button_visible_only_for_condition_nodes(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    condition_node = window._tree.model_.node_at(
+        _find_index(window, "condition", fixture["condition"].id)
+    )
+    window._on_node_selected(condition_node)
+    assert window._preview_button.isVisible()
+
+    program_node = window._tree.model_.node_at(_find_index(window, "program", fixture["program"].id))
+    window._on_node_selected(program_node)
+    assert not window._preview_button.isVisible()
+
+    subject_node = window._tree.model_.node_at(_find_index(window, "subject", fixture["subject"].id))
+    window._on_node_selected(subject_node)
+    assert not window._preview_button.isVisible()
+
+
+def test_preview_button_triggers_preview_for_current_condition(qtbot, session):
+    task = _PreviewRecordingTask()
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([task]))
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    window._on_node_selected(node)
+    with patch.object(QMessageBox, "information") as mock_info:
+        window._preview_button.click()
+
+    mock_info.assert_called_once()
+    assert len(task.preview_calls) == 1

@@ -108,6 +108,29 @@ class EventSink:
         if len(self._buffer) >= self._flush_every:
             self._flush_parquet_buffer()
 
+    def log_many(self, events: "list[tuple[str, dict | None, float | None]]") -> None:
+        """Log a batch of events with a **single** CSV disk flush at the end, instead of one flush
+        per event as ``log`` does.
+
+        For high-frequency records (notably the per-frame ``flip`` events) buffered in memory
+        during a timing-critical loop and written *afterwards*: ``log``'s per-call
+        ``self._csv_file.flush()`` is a real disk write, so calling it once per frame right after
+        ``window.flip()`` can steal enough time from the frame budget to drop a frame. Collecting
+        the records cheaply and handing them here after the stimulation keeps that disk I/O off the
+        hot path. Each event is ``(event_type, payload, timestamp)``. Ordering within the file is
+        not chronological when mixed with inline ``log`` calls, but every row carries its own
+        timestamp and analysis sorts by it (see ``core.verification_report``)."""
+        if self._closed:
+            raise RuntimeError("cannot log to a closed EventSink")
+        for event_type, payload, timestamp in events:
+            ts = float(timestamp) if timestamp is not None else time.perf_counter()
+            payload_json = json.dumps(payload or {}, default=_json_default)
+            self._csv_writer.writerow([ts, event_type, payload_json])
+            self._buffer.append({"timestamp": ts, "event_type": event_type, "payload_json": payload_json})
+        self._csv_file.flush()
+        if len(self._buffer) >= self._flush_every:
+            self._flush_parquet_buffer()
+
     def _flush_parquet_buffer(self) -> None:
         if not self._buffer:
             return

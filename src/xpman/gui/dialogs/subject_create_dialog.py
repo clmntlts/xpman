@@ -7,10 +7,29 @@ requires at least one of the two name fields, not necessarily both.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLineEdit,
+    QPlainTextEdit,
+    QVBoxLayout,
+)
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
+
+#: Key under which the free-text subject notes are stored in ``Subject.info_json`` -- the
+#: legacy app had free-text "other info" fields; xpman keeps one notes field, in a JSON dict so
+#: structured fields can be added later without a schema change.
+INFO_NOTES_KEY = "notes"
+
+
+def notes_to_info_json(notes: str) -> dict:
+    """Wrap free-text notes for ``Subject.info_json``; empty text stores nothing (``{}``)."""
+    notes = notes.strip()
+    return {INFO_NOTES_KEY: notes} if notes else {}
 
 
 class SubjectCreateDialog(QDialog):
@@ -38,6 +57,11 @@ class SubjectCreateDialog(QDialog):
         self._last_name_edit = QLineEdit()
         self._last_name_edit.textChanged.connect(self._update_button_state)
         form.addRow("Last name:", self._last_name_edit)
+
+        self._info_edit = QPlainTextEdit()
+        self._info_edit.setPlaceholderText("Any notes about this subject (optional).")
+        self._info_edit.setFixedHeight(70)
+        form.addRow("Information:", self._info_edit)
 
         layout.addLayout(form)
         layout.addStretch(1)
@@ -68,7 +92,9 @@ class SubjectCreateDialog(QDialog):
             profile_id=self._profile_id,
             first_name=first_name,
             last_name=last_name,
+            info_json=notes_to_info_json(self._info_edit.toPlainText()),
         )
-        self._session.commit()
+        if not safe_commit(self._session, self, action="create the subject"):
+            return
         self.created_subject_id = subject.id
         self.accept()

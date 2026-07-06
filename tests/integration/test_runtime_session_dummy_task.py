@@ -117,12 +117,20 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     assert run.status == RunStatus.COMPLETED
     assert run.ended_at is not None
 
+    # Environment provenance recorded for reproducibility. xpman_version is always set (real
+    # package version or the source-checkout fallback); psychopy/numpy versions are populated
+    # when those packages are installed (they are in this test env).
+    assert run.xpman_version in {XPMAN_VERSION} or run.xpman_version  # non-empty
+    assert run.numpy_version is not None
+
     # 2 trials/block-repeat * 2 repeats (repeat_count=2) = 4 executed trials total.
     results = session.query(Result).filter(Result.run_id == run.id).order_by(Result.trial_index).all()
     assert len(results) == 4
     for result in results:
         assert result.outcome_summary_json["aborted"] is False
         assert result.events_file_path is not None
+        # Stored relative to data_dir (portable), not as an absolute path.
+        assert result.events_file_path == f"{instance_id}/{subject_id}/{run.id}/events.parquet"
 
     # Event log actually landed at the documented data_dir/<instance>/<subject>/<run>/ path.
     run_dir = tmp_path / str(instance_id) / str(subject_id) / str(run.id)
@@ -133,6 +141,32 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
         rows = list(csv.DictReader(f))
     event_types = {r["event_type"] for r in rows}
     assert {"run_started", "prepare", "trial_start", "flip", "trigger_sent", "trial_end", "cleanup"} <= event_types
+
+
+def test_run_metadata_is_persisted_onto_run(session, registry, mock_window, tmp_path):
+    """A task's run_metadata() (supplied after prepare) is written onto the Run row by the engine
+    -- here the achieved refresh rate and whether it was really measured."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    dummy = registry.get("dummy")
+
+    with patch.object(
+        dummy,
+        "run_metadata",
+        return_value={"measured_refresh_hz": 119.88, "refresh_measured_successfully": True},
+    ), patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+
+    assert run.measured_refresh_hz == pytest.approx(119.88)
+    assert run.refresh_measured_successfully is True
 
 
 def test_randomize_per_subject_is_reproducible_for_same_subject(session, registry, mock_window, tmp_path):

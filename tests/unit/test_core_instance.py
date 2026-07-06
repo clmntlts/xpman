@@ -225,3 +225,67 @@ def test_frozen_json_does_not_share_live_dict_references(session):
     assert frozen_condition["parameters_json"] == {"oddball_freq_hz": 1.2}
     assert verify_instance_integrity(inst) is True
     assert inst.checksum == checksum_before
+
+
+# ---------------------------------------------------------------------------
+# randomize_trials: applied at freeze time (baked into frozen order_index)
+# ---------------------------------------------------------------------------
+
+
+def _build_block_with_trials(session, *, randomize_trials: bool, n_trials: int = 12):
+    """A Program with one Block of ``n_trials`` trials created in order, each pointing at its
+    own Condition so the frozen trials are individually distinguishable by condition_id."""
+    profile = repo.create_profile(session, name="Dr. Test")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    experiment = repo.create_experiment(session, program_id=program.id, name="Exp", parameters_json={})
+    block = repo.create_block(
+        session, experiment_id=experiment.id, name="Block 1",
+        randomize_trials=randomize_trials, order_index=0,
+    )
+    for i in range(n_trials):
+        condition = repo.create_condition(session, experiment_id=experiment.id, name=f"C{i}", parameters_json={})
+        repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=i)
+    session.commit()
+    return program.id
+
+
+def _frozen_trials(snapshot: dict) -> list[dict]:
+    return snapshot["program"]["experiments"][0]["blocks"][0]["trials"]
+
+
+def test_randomize_trials_true_bakes_a_permuted_order_into_freeze(session):
+    program_id = _build_block_with_trials(session, randomize_trials=True, n_trials=12)
+    trials = _frozen_trials(build_snapshot(session, program_id))
+
+    # order_index values are a clean 0..n-1 permutation matching list position.
+    assert [t["order_index"] for t in trials] == list(range(len(trials)))
+    # The condition_ids (creation order 0..11 by id) are no longer in ascending order --
+    # i.e. the trial order was actually shuffled, not left in creation order.
+    condition_ids = [t["condition_id"] for t in trials]
+    assert condition_ids != sorted(condition_ids)
+
+
+def test_randomize_trials_false_preserves_creation_order(session):
+    program_id = _build_block_with_trials(session, randomize_trials=False, n_trials=12)
+    trials = _frozen_trials(build_snapshot(session, program_id))
+
+    condition_ids = [t["condition_id"] for t in trials]
+    assert condition_ids == sorted(condition_ids)  # untouched, ascending by creation
+    assert [t["order_index"] for t in trials] == list(range(len(trials)))
+
+
+def test_randomize_trials_is_deterministic_across_freezes(session):
+    program_id = _build_block_with_trials(session, randomize_trials=True, n_trials=12)
+    order_a = [t["condition_id"] for t in _frozen_trials(build_snapshot(session, program_id))]
+    order_b = [t["condition_id"] for t in _frozen_trials(build_snapshot(session, program_id))]
+    assert order_a == order_b  # same block -> same shuffle -> stable checksum
+
+
+def test_randomize_trials_single_trial_is_noop(session):
+    program_id = _build_block_with_trials(session, randomize_trials=True, n_trials=1)
+    trials = _frozen_trials(build_snapshot(session, program_id))
+    assert len(trials) == 1
+    assert trials[0]["order_index"] == 0

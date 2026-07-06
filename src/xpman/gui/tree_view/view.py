@@ -8,7 +8,7 @@ from PySide6.QtCore import QModelIndex, Signal
 from PySide6.QtWidgets import QTreeView
 from sqlalchemy.orm import Session
 
-from xpman.gui.tree_view.model import ExperimentTreeModel, TreeNode
+from xpman.gui.tree_view.model import ExperimentTreeModel, NodeKey, TreeNode
 
 __all__ = ["ExperimentTreeView"]
 
@@ -58,10 +58,33 @@ class ExperimentTreeView(QTreeView):
         """
         return self._model
 
-    def refresh(self) -> None:
-        """Re-query the DB and rebuild the tree, then restore default expansion."""
+    def refresh(self, *, select: tuple[str, int] | None = None) -> None:
+        """Re-query the DB and rebuild the tree, preserving expansion and selection.
+
+        The model reset invalidates every QModelIndex, so state is captured as ``NodeKey``
+        paths beforehand and re-resolved afterwards -- nodes that no longer exist (deleted
+        entities) are silently skipped. Without this, every create/edit/delete collapsed the
+        whole tree and cleared the selection, forcing re-navigation after every single action.
+
+        ``select``: optionally a ``(kind, id)`` pair to select *instead of* restoring the
+        previous selection -- used by create/duplicate actions so the new entity is
+        immediately selected (and its ancestors expanded), with the detail panel following
+        via the resulting ``nodeSelected`` emission.
+        """
+        expanded_keys, selected_key = self._capture_state()
         self._model.refresh()
-        self._expand_default()
+        self._restore_expansion(expanded_keys)
+        if select is not None:
+            index = self._model.index_for_node(*select)
+            if index.isValid():
+                self._expand_ancestors(index)
+                self.setCurrentIndex(index)
+                self.scrollTo(index)
+                return
+        if selected_key is not None:
+            index = self._model.index_for_key(selected_key)
+            if index.isValid():
+                self.setCurrentIndex(index)
 
     def selected_node(self) -> TreeNode | None:
         """Return the TreeNode currently selected, or None if nothing is selected."""
@@ -72,6 +95,33 @@ class ExperimentTreeView(QTreeView):
 
     def _expand_default(self) -> None:
         self.expandToDepth(_DEFAULT_EXPAND_DEPTH)
+
+    def _capture_state(self) -> tuple[list[NodeKey], NodeKey | None]:
+        expanded: list[NodeKey] = []
+
+        def walk(parent: QModelIndex) -> None:
+            for row in range(self._model.rowCount(parent)):
+                index = self._model.index(row, 0, parent)
+                if self.isExpanded(index):
+                    key = self._model.key_for_index(index)
+                    if key is not None:
+                        expanded.append(key)
+                walk(index)
+
+        walk(QModelIndex())
+        return expanded, self._model.key_for_index(self.currentIndex())
+
+    def _restore_expansion(self, keys: list[NodeKey]) -> None:
+        for key in keys:
+            index = self._model.index_for_key(key)
+            if index.isValid():
+                self.expand(index)
+
+    def _expand_ancestors(self, index: QModelIndex) -> None:
+        parent = index.parent()
+        while parent.isValid():
+            self.expand(parent)
+            parent = parent.parent()
 
     def _on_current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:  # noqa: ARG002
         node = self._model.node_at(current)

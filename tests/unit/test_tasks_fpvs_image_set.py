@@ -245,3 +245,39 @@ def test_filter_entries_combined(stim_root):
     matches = filter_entries(result.entries, category=Category.FACE, angle_deg=45, eccentricity_deg=28.0)
     assert len(matches) == 1
     assert matches[0].index == 1
+
+
+def test_filter_entries_by_filename_pattern_matches(stim_root):
+    result = scan_directory(stim_root)
+    matches = filter_entries(result.entries, filename_pattern="*fs*.bmp")
+    # Face_001fs_ori0.bmp, Face_001fs.bmp x3 (Face_fs/Face_fs(no_point)/Face_fs_negated), Object_001fs.bmp
+    assert len(matches) == 5
+    assert all("fs" in e.path.name for e in matches)
+
+
+def test_filter_entries_by_filename_pattern_no_matches(stim_root):
+    result = scan_directory(stim_root)
+    matches = filter_entries(result.entries, filename_pattern="*.png")
+    assert matches == []
+
+
+def test_filter_entries_by_filename_pattern_combined_with_other_filters(stim_root):
+    result = scan_directory(stim_root)
+    # AND semantics: category=FACE excludes the one matching Object_001fs.bmp.
+    matches = filter_entries(result.entries, category=Category.FACE, filename_pattern="*fs*.bmp")
+    assert len(matches) == 4
+    assert all(e.category is Category.FACE for e in matches)
+
+
+def test_filter_entries_by_filename_pattern_matches_unrecognized_entries(tmp_path):
+    root = tmp_path / "SepStim"
+    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
+    _touch(root / "my_own_stimuli" / "happy_face_01.jpg")
+    _touch(root / "my_own_stimuli" / "sad_face_02.jpg")
+    _touch(root / "my_own_stimuli" / "neutral_object_01.jpg")
+
+    result = scan_directory(root)
+    matches = filter_entries(result.entries, filename_pattern="*happy*")
+    assert len(matches) == 1
+    assert matches[0].recognized is False
+    assert matches[0].path.name == "happy_face_01.jpg"

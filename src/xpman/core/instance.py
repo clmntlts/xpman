@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import random
 from datetime import datetime
 
 from sqlalchemy.orm import Session, selectinload
@@ -58,6 +59,29 @@ def _serialize_trial(trial: Trial) -> dict:
 
 
 def _serialize_block(block: Block) -> dict:
+    """Serialize a Block, applying ``randomize_trials`` here (at freeze time) if set.
+
+    ``randomize_trials`` semantics: present this Block's trials in a fixed pseudo-random order,
+    identical for every subject who runs this Instance -- legacy's "randomize once" button. We
+    bake it into the snapshot by shuffling with a per-block-deterministic RNG
+    (``random.Random(block.id)``) and reassigning each trial's ``order_index`` to its new
+    position, so the whole downstream pipeline (the engine sorts trials by ``order_index``)
+    honors the shuffled order without any runtime special-casing. Deterministic given the
+    block, so re-freezing the same Program reproduces the same order and the checksum stays
+    stable. ``randomize_per_subject`` is a *separate*, additional runtime reshuffle (see
+    ``runtime/engine.py``) layered on top of whatever order is frozen here.
+    """
+    trials = sorted(block.trials, key=lambda t: (t.order_index, t.id))
+    if block.randomize_trials and len(trials) > 1:
+        random.Random(block.id).shuffle(trials)
+
+    serialized_trials = []
+    for position, trial in enumerate(trials):
+        entry = _serialize_trial(trial)
+        if block.randomize_trials:
+            entry["order_index"] = position
+        serialized_trials.append(entry)
+
     return {
         "id": block.id,
         "name": block.name,
@@ -65,10 +89,7 @@ def _serialize_block(block: Block) -> dict:
         "randomize_trials": block.randomize_trials,
         "randomize_per_subject": block.randomize_per_subject,
         "order_index": block.order_index,
-        "trials": [
-            _serialize_trial(trial)
-            for trial in sorted(block.trials, key=lambda t: (t.order_index, t.id))
-        ],
+        "trials": serialized_trials,
     }
 
 

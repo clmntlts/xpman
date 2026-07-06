@@ -40,12 +40,15 @@ from pathlib import Path
 from typing import Callable
 
 from xpman.core.db import get_engine, get_sessionmaker
+from xpman.core.instance import get_instance
 from xpman.core.models import Run, RunStatus
 from xpman.hardware.clock import Clock
 from xpman.hardware.display import make_window
 from xpman.hardware.trigger import ParallelPortTrigger
 from xpman.hardware.trigger_null import NullTrigger
+from xpman.runtime.engine import count_trials
 from xpman.runtime.session import launch_run
+from xpman.runtime.trial_gate import TrialAdvanceMode, make_trial_gate
 from xpman.tasks.registry import TaskRegistry, discover_tasks
 
 #: Exit codes the parent process (LaunchDialog) interprets to report a final status. Distinct
@@ -79,6 +82,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--db-path", required=True, help="Path to the shared xpman SQLite database.")
     parser.add_argument("--instance-id", type=int, required=True)
     parser.add_argument("--subject-id", type=int, required=True)
+    parser.add_argument(
+        "--experiment-id",
+        type=int,
+        default=None,
+        help="Run only this experiment from the Instance's frozen program. Omit to run all.",
+    )
     parser.add_argument("--data-dir", required=True, help="Root directory for this Run's event log.")
     parser.add_argument(
         "--abort-file",
@@ -88,6 +97,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--fullscreen", action="store_true")
     parser.add_argument("--screen", type=int, default=0)
+    parser.add_argument(
+        "--trial-advance",
+        choices=["manual", "auto"],
+        default="manual",
+        help="Between trials: wait for a keypress (manual) or auto-advance after a delay.",
+    )
+    parser.add_argument(
+        "--trial-advance-seconds",
+        type=float,
+        default=2.0,
+        help="Auto-advance delay in seconds (only used when --trial-advance auto).",
+    )
+    parser.add_argument(
+        "--show-trial-info",
+        action="store_true",
+        help="Show 'Trial N of M' text on the between-trials screen.",
+    )
     parser.add_argument("--no-trigger-hardware", action="store_true", help="Use NullTrigger instead of a real parallel port.")
     parser.add_argument("--parallel-port-address", type=lambda s: int(s, 0), default=0x0378)
     return parser.parse_args(argv)
@@ -99,6 +125,7 @@ def run(
     make_window_fn: Callable[..., object] = make_window,
     trigger_factory: Callable[[], object] | None = None,
     registry: TaskRegistry | None = None,
+    gate_factory: Callable[..., object] | None = make_trial_gate,
 ) -> int:
     """Execute one Run per ``args``. Returns an ``EXIT_*`` code, never raises for a Run-level
     failure (those are reported via the return code + stderr) -- only setup-level programming
@@ -110,6 +137,10 @@ def run(
         trigger_factory: Injectable for tests -- defaults to resolving a real
             ``ParallelPortTrigger``/``NullTrigger`` from ``args``.
         registry: Injectable for tests -- defaults to the real ``discover_tasks()``.
+        gate_factory: Builds the between-trials gate (``runtime/trial_gate.make_trial_gate``).
+            Injectable for tests -- a headless test passes ``lambda **kw: None`` so the real
+            gate (which draws + waits on a real keypress) never runs; the manual gate would
+            otherwise block forever with no display/keyboard.
     """
     engine = get_engine(args.db_path)
     session = get_sessionmaker(engine)()
@@ -144,6 +175,33 @@ def run(
         return abort_file is not None and abort_file.exists()
 
     window = make_window_fn(fullscreen=args.fullscreen, screen=args.screen)
+    clock = Clock()
+
+    # Best-effort trial count for the gate's "Trial N of M" text -- a bad instance/subject id
+    # is left for launch_run below to report as a clean SETUP_ERROR, so failure here just
+    # falls back to no total (the gate then shows "Trial N" without "of M").
+    n_trials = 0
+    instance_for_count = get_instance(session, args.instance_id)
+    if instance_for_count is not None:
+        try:
+            n_trials = count_trials(
+                instance_for_count.frozen_json["program"], experiment_id=args.experiment_id
+            )
+        except ValueError:
+            n_trials = 0
+
+    gate = None
+    if gate_factory is not None:
+        gate = gate_factory(
+            window,
+            clock,
+            mode=TrialAdvanceMode(args.trial_advance),
+            seconds=args.trial_advance_seconds,
+            show_info=args.show_trial_info,
+            n_trials=n_trials,
+            abort_check=_abort_check,
+        )
+
     try:
         try:
             run_row = launch_run(
@@ -153,10 +211,12 @@ def run(
                 registry=registry,
                 window=window,
                 trigger=_resolve_trigger(),
-                clock=Clock(),
+                clock=clock,
                 data_dir=Path(args.data_dir),
                 abort_check=_abort_check,
                 on_run_created=_announce,
+                experiment_id=args.experiment_id,
+                on_before_trial=gate,
             )
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any failure, setup-time
             # or in-run, must still exit cleanly with a reportable code, not crash this process

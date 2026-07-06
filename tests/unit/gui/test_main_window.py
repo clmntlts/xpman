@@ -159,6 +159,92 @@ def test_selecting_program_shows_form_with_program_schema(qtbot, session, regist
     assert window._current_form.model_cls is DummyProgramParams
 
 
+def test_selecting_experiment_shows_overview_with_save_disabled(qtbot, session, registry):
+    """FPVS/dummy define no experiment-level params, so an Experiment node shows the build-hub
+    overview alone: no empty parameter form, Save disabled."""
+    from xpman.gui.experiment_overview import ExperimentOverviewWidget
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    node = TreeNode(kind="experiment", id=fixture["experiment"].id, name="Exp 1")
+    window._on_node_selected(node)
+
+    assert isinstance(window._detail_scroll.widget(), ExperimentOverviewWidget)
+    assert window._current_form is None
+    assert not window._save_button.isEnabled()
+    assert "overview" in window._detail_title.text()
+
+
+def test_experiment_overview_new_condition_reaches_dialog_with_experiment_id(qtbot, session, registry):
+    from unittest.mock import patch
+
+    from PySide6.QtWidgets import QDialog
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    node = TreeNode(kind="experiment", id=fixture["experiment"].id, name="Exp 1")
+    window._on_node_selected(node)
+    overview = window._detail_scroll.widget()
+
+    with patch("xpman.gui.main_window.ConditionCreateDialog") as dialog_cls:
+        dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Rejected
+        overview.createConditionRequested.emit(fixture["experiment"].id)
+    dialog_cls.assert_called_once_with(session, fixture["experiment"].id, parent=window)
+
+
+def test_experiment_overview_duplicate_condition_creates_copy(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    node = TreeNode(kind="experiment", id=fixture["experiment"].id, name="Exp 1")
+    window._on_node_selected(node)
+    overview = window._detail_scroll.widget()
+
+    overview.duplicateConditionRequested.emit(fixture["condition"].id)
+
+    conditions = repo.list_conditions(session, experiment_id=fixture["experiment"].id)
+    assert len(conditions) == 2
+    assert any(c.name == "Fast (copy)" for c in conditions)
+
+
+def test_experiment_overview_with_experiment_level_params_shows_form(qtbot, session):
+    """A task that defines experiment-level fields still gets a working form + Save below
+    the overview tables."""
+    from pydantic import BaseModel
+
+    class _ExpParams(BaseModel):
+        inter_block_pause_seconds: float = 2.0
+
+    class _TaskWithExpParams(_FakeTask):
+        class _Schema(_FakeTask._Schema):
+            def experiment_params_model(self):
+                return _ExpParams
+
+        schema = _Schema()
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([_TaskWithExpParams()]))
+    qtbot.addWidget(window)
+
+    node = TreeNode(kind="experiment", id=fixture["experiment"].id, name="Exp 1")
+    window._on_node_selected(node)
+
+    assert window._current_form is not None
+    assert window._current_form.model_cls is _ExpParams
+    assert window._save_button.isEnabled()
+
+    window._current_form._field_widgets["inter_block_pause_seconds"].set_value(5.0)
+    window._on_save()
+    session.expire_all()
+    experiment = repo.get_experiment(session, fixture["experiment"].id)
+    assert experiment.parameters_json["inter_block_pause_seconds"] == 5.0
+
+
 def test_save_persists_edited_condition_params(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)

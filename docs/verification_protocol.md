@@ -77,13 +77,22 @@ frames on real hardware, which is exactly what the diode capture is for.
   --events-csv "<path the manual_hardware script printed>"
 ```
 
-It prints inter-flip interval mean/stddev/outlier count, trigger-to-flip latency, a trigger-code
+It prints inter-flip interval mean/stddev/outlier count, trigger-to-onset latency, a trigger-code
 breakdown, the requested-vs-achieved frequency echo, and an RT summary — the exact numbers to
 put next to the oscilloscope capture. `--refresh-rate-hz` is auto-detected from a logged
 `refresh_rate_measured` event for FPVS runs; pass it explicitly for Dummy runs (which don't
 measure a refresh rate) or to override. See `src/xpman/core/verification_report.py` for what
 each number does and doesn't cover — notably, trigger pulse width/voltage still has to come
 from the scope directly; the event log can't tell you that.
+
+Note (2026-07-04): the reported latency is now **trigger-to-onset**, paired per stimulus by
+`stim_index` (`trigger_time − onset_flip_time`, signed), replacing an earlier
+nearest-flip-in-either-direction metric that was ~0 by construction. A *negative* mean means a
+trigger fired before its visual onset. Also, xpman now emits the trigger pulse **non-blocking**:
+the code is set right after the onset flip and cleared at the top of the next frame, so the pulse
+width is ~one refresh interval (set by the frame cadence), **not** the `reset_after` hold — the
+old inline `core.wait` right after flip is gone. Confirm the actual pulse width on the scope
+(item 3); it should track the frame period, not the 3 ms software default.
 
 ## What to measure, every time
 
@@ -92,15 +101,27 @@ and compare:
 
 1. Inter-flip interval: mean, stddev, and count of outliers >1.5x the nominal frame period
    (dropped-frame proxy).
-2. Trigger-to-flip latency: mean and stddev (does the TTL pulse arrive before/after/in-sync
-   with the corresponding visual change, and how consistently).
-3. Trigger pulse width and voltage levels.
+2. Trigger-to-onset latency: mean and stddev (does the TTL pulse arrive before/after/in-sync
+   with the corresponding visual change, and how consistently). xpman now reports this paired
+   per stimulus by `stim_index`; a negative mean flags a trigger firing before its onset.
+3. Trigger pulse width and voltage levels. Since the pulse is now cleared on the frame *after*
+   the onset (non-blocking), expect a width of ~one refresh interval, not the old `reset_after`.
 4. Actual integer codes read off the parallel port data pins during a scripted sequence of
    known events (one base image, one oddball image, one response) — confirms xpman emits the
    same codes for the same semantic events (closes open_questions.md #4).
 5. RT calibration: inject "responses" at a precisely known true delay (solenoid/mechanical
    key-presser, or a photodiode-triggered relay) on both apps; compare each app's *recorded*
    RT against the known true value.
+6. **Contrast modulation (added 2026-07-04, with the sinusoidal-modulation work).** With a
+   Condition using the default sinusoidal `modulation`, capture the photodiode trace over
+   several base cycles and confirm: (a) no dropped frames with modulation on — the inter-flip
+   interval stats (item 1) should be unchanged from an unmodulated run, since per-frame
+   modulation is just an O(1) opacity scalar (see `tasks/fpvs/modulation.py`); (b) the luminance
+   actually follows the intended raised-cosine within each cycle (invisible at the cycle
+   boundary/onset, full at mid-cycle), not a hard step; and (c) at `contrast_min` the image
+   fades toward the **mid-gray** background (`background_gray`, default 0.5), not toward black —
+   a black fade means the background wasn't set to the images' mean luminance and the modulation
+   is not true contrast modulation. Also eyeball fade-in/fade-out ramps at the trial edges.
 
 Target: xpman's jitter/drop-rate and RT-recording accuracy should be at least as good as the
 legacy app's — PsychoPy's published timing benchmarks suggest this is likely, but it must be

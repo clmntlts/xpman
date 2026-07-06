@@ -83,3 +83,24 @@ def test_blank_both_does_not_create(qtbot, session, profile):
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.created_subject_id is None
     assert repo.list_subjects(session, profile_id=profile.id) == []
+
+
+def test_create_stores_information_notes(qtbot, session, profile):
+    dialog = SubjectCreateDialog(session, profile.id)
+    qtbot.addWidget(dialog)
+    dialog._first_name_edit.setText("Ada")
+    dialog._info_edit.setPlainText("Left-handed; wears glasses.")
+    dialog._on_create()
+
+    subject = repo.get_subject(session, dialog.created_subject_id)
+    assert subject.info_json == {"notes": "Left-handed; wears glasses."}
+
+
+def test_create_with_blank_information_stores_empty_dict(qtbot, session, profile):
+    dialog = SubjectCreateDialog(session, profile.id)
+    qtbot.addWidget(dialog)
+    dialog._first_name_edit.setText("Ada")
+    dialog._on_create()
+
+    subject = repo.get_subject(session, dialog.created_subject_id)
+    assert subject.info_json == {}

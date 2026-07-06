@@ -1,9 +1,12 @@
 """``NullTrigger``: a no-op ``TriggerSender`` for dev/CI without real parallel-port hardware.
 
 Used anywhere a real ``ParallelPortTrigger`` would otherwise be required -- automated tests,
-CI, and any dev-machine run where no parallel port is attached. Every ``send_trigger`` call is
-recorded (code + timestamp) instead of touching real hardware, so tests can assert on exactly
-what a task "sent" without needing a logic analyzer or even a physical port.
+CI, and any dev-machine run where no parallel port is attached. Every emitted code is recorded
+(code + timestamp) the moment it goes on the (virtual) pins -- i.e. in ``set_code``, which both
+the non-blocking path and ``send_trigger`` (via the base class) route through -- so tests can
+assert on exactly what a task "sent" without needing a logic analyzer or even a physical port.
+``clear_code`` is a no-op (resetting to 0 isn't an event worth recording) and the pulse ``_hold``
+is skipped entirely, so a null trigger never actually blocks.
 """
 
 from __future__ import annotations
@@ -16,28 +19,35 @@ from xpman.hardware.trigger import DEFAULT_RESET_AFTER, TriggerSender
 
 @dataclass(frozen=True)
 class SentTrigger:
-    """One recorded ``NullTrigger.send_trigger`` call."""
+    """One recorded emitted code (a ``set_code`` call, whether direct or via ``send_trigger``)."""
 
     code: int
     timestamp: float
 
 
 class NullTrigger(TriggerSender):
-    """No-op ``TriggerSender`` that records every call instead of emitting real TTL pulses.
+    """No-op ``TriggerSender`` that records every emitted code instead of driving real TTL pulses.
 
     Attributes:
-        sent: In-memory, append-only log of every ``send_trigger`` call so far, oldest first.
-            Each entry is a ``SentTrigger(code, timestamp)`` where ``timestamp`` comes from
-            ``time.perf_counter()`` at the moment ``send_trigger`` was called.
+        sent: In-memory, append-only log of every code put on the (virtual) pins so far, oldest
+            first. Each entry is a ``SentTrigger(code, timestamp)`` where ``timestamp`` comes from
+            ``time.perf_counter()`` at the moment ``set_code`` was called. ``send_trigger`` routes
+            through ``set_code`` (base class), so it is recorded too; ``clear_code`` is not.
     """
 
     def __init__(self, reset_after: float = DEFAULT_RESET_AFTER) -> None:
         super().__init__(reset_after=reset_after)
         self.sent: list[SentTrigger] = []
 
-    def send_trigger(self, code: int) -> None:
+    def set_code(self, code: int) -> None:
         """Record ``code`` with the current timestamp. Does not touch any real hardware."""
         self.sent.append(SentTrigger(code=code, timestamp=time.perf_counter()))
+
+    def clear_code(self) -> None:
+        """No-op: resetting the virtual pins to 0 is not a recorded event."""
+
+    def _hold(self, seconds: float) -> None:
+        """No-op: a null trigger never actually blocks, even for ``send_trigger``."""
 
     def reset(self) -> None:
         """Clear the recorded call log. Convenience for tests that reuse one instance."""

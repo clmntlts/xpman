@@ -25,11 +25,24 @@ def test_trigger_sender_is_abstract():
 
 def test_trigger_sender_rejects_negative_reset_after():
     class DummyTrigger(TriggerSender):
-        def send_trigger(self, code: int) -> None:
+        def set_code(self, code: int) -> None:
+            pass
+
+        def clear_code(self) -> None:
             pass
 
     with pytest.raises(ValueError):
         DummyTrigger(reset_after=-1.0)
+
+
+def test_set_code_and_clear_code_do_not_wait():
+    """The non-blocking primitives must not hold/wait -- they just drive and reset the pins."""
+    with _MockedParallelPort(reset_after=0.005) as ctx:
+        ctx.trigger.set_code(7)
+        ctx.trigger.clear_code()
+
+        ctx.mock_wait.assert_not_called()  # no blocking hold on the non-blocking path
+        assert ctx.mock_port_instance.setData.call_args_list == [((7,), {}), ((0,), {})]
 
 
 class _MockedParallelPort:

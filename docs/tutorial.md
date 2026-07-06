@@ -140,17 +140,27 @@ Right-click any node for the actions valid there:
 | Node | Right-click actions |
 |---|---|
 | Profile (root) | New Subject..., New Program... |
-| Subject | Delete Subject |
-| Program | New Experiment..., Create Instance..., Delete Program |
-| Experiment | New Condition..., New Block..., Delete Experiment |
-| Condition | Delete Condition |
-| Block | New Trial..., Delete Block |
-| Trial | Delete Trial |
-| Instance | Launch... |
+| Subject | Edit Subject..., Delete Subject |
+| Program | New Experiment..., Create Instance..., Edit Program..., Duplicate, Delete Program |
+| Experiment | New Condition..., New Block..., Edit Experiment..., Duplicate, Delete Experiment |
+| Condition | Edit Condition..., Check Triggers..., Preview Stimuli..., Duplicate, Delete Condition |
+| Block | Manage Trials..., Edit Block..., Duplicate, Move Up/Down, Delete Block |
+| Trial | Move Up/Down, Delete Trial |
+| Instance | Launch..., Delete Instance |
 | Run | *(no actions — view only)* |
 
 Group headers ("Subjects (3)", "Programs (2)", etc.) offer the matching "New ..." action too,
 so you don't have to right-click the parent node itself.
+
+**Duplicate** copies the entity — including all its parameters — as `"<name> (copy)"`, and
+selects the copy. Duplicating an Experiment or Program is a *deep* copy: all Conditions,
+Blocks, and Trials come along (Trials pointing at the copied Conditions, not the originals).
+This is the fast way to build a variant that differs by one parameter: Duplicate, rename, tweak.
+Instances and Runs are never copied — they're the original's frozen launch history.
+
+The tree keeps its expansion and selection across every action — creating, editing,
+duplicating, or deleting something never collapses the tree, and newly created entities are
+selected automatically.
 
 Every node's label is informative on its own — you don't need to open anything to see counts
 and key facts:
@@ -169,8 +179,16 @@ and key facts:
 
 Single-click (not right-click) a node to see its details on the right:
 
-- **Program / Experiment / Condition** → an **editable parameter form** (see
-  [4.9](#49-editing-parameters--the-schema-form)). Save button becomes active.
+- **Program / Condition** → an **editable parameter form** (see
+  [4.9](#49-editing-parameters--the-schema-form)). Save button becomes active. For a
+  Condition, a **Preview Stimuli** button also appears next to Save — it shows how many (and
+  which) images each stimulus selector matches, *using the values currently in the form,
+  including unsaved edits*. A selector matching zero images is flagged loudly, since it would
+  make the run fail.
+- **Experiment** → the **build hub**: two tables — its Conditions, and its Blocks (with
+  repeat and trial counts) — with buttons for New / Duplicate / Delete and, per Block,
+  Manage Trials.... This is where most experiment building happens without touching the tree.
+  (If the task defines experiment-level parameters, the usual form appears below the tables.)
 - **Subject** → read-only: name, created date, and any extra info recorded.
 - **Block** → read-only: name, repeat count, both randomization flags.
 - **Trial** → read-only: assigned Condition (or "(no condition assigned)"), position.
@@ -207,17 +225,23 @@ Right-click **Profile** (or "Programs") → **New Program...**
 - **New Block...** (right-click an Experiment):
   - **Name** — required.
   - **Repeat count** — integer, default 1, how many times this Block's Trial sequence runs.
-  - **Randomize trials** — shuffle the Trials once; every Subject sees the same shuffled
-    order.
+  - **Randomize trials** — shuffle the Trials once, when the Instance is frozen; every Subject
+    who runs that Instance sees the same shuffled order (deterministic — re-freezing the same
+    design reproduces it).
   - **Randomize per subject** — reshuffle independently for every Subject (seeded from the
     Instance + Subject, so re-running the *same* Subject against the *same* Instance always
     reproduces their own order — it's not different every time you press launch).
-- **New Trial...** (right-click a Block) — pick the **Condition** this Trial slot runs. If the
-  Experiment has no Conditions yet, the dialog tells you to create one first and disables Ok.
+- **Manage Trials...** (right-click a Block) — a table with one row per Trial, each with a
+  **Condition** dropdown. **Add Trial** appends one row; **Add Multiple...** appends N rows at
+  once (pick a Condition and a count) — the fast way to build a Block with many Trials.
+  **Remove Selected** and **Move Up**/**Move Down** edit the table only. Nothing is written to
+  the database until you click **Save**; **Cancel** discards every change. If the Experiment has
+  no Conditions yet, Add/Add Multiple are disabled (a Trial needs a Condition to point at) —
+  create a Condition first.
 
-New Blocks/Trials are always appended to the end of the existing list — there's currently no
-drag-and-drop reordering (see [9](#9-known-limitations)); to fix ordering today, delete and
-recreate.
+New Blocks are always appended to the end of the existing list — there's currently no
+drag-and-drop reordering for Blocks (see [9](#9-known-limitations)); to fix Block ordering
+today, delete and recreate. Trials can be freely reordered within **Manage Trials...**.
 
 ### 4.8 Creating an Instance (freezing a Program)
 
@@ -225,6 +249,11 @@ Right-click a **Program** → **Create Instance...**
 
 - Shows a summary of what's about to be frozen: "N experiment(s), M condition(s), P block(s),
   Q trial(s)."
+- **Pre-freeze checks run automatically** and any problems are listed right in the dialog:
+  empty Experiments/Blocks, Trials with no Condition assigned, Condition parameters that don't
+  validate, trigger-code conflicts (e.g. base and oddball sharing a code), a missing resource
+  directory. Warnings never block — freezing a deliberately incomplete skeleton is allowed —
+  but the button then reads **Create Instance Anyway**, so ignoring them is a conscious choice.
 - **Instance name** is pre-filled as `"<Program name> - <current date/time>"` — edit it to
   whatever you like (e.g. name it after a protocol version).
 - Click **Create Instance**. This is instant and cannot be undone (the Instance itself can't
@@ -235,8 +264,9 @@ against. See [3](#3-concepts-the-object-hierarchy) for why this matters.
 
 ### 4.9 Editing parameters — the schema form
 
-Selecting a Program, Experiment, or Condition shows a form generated directly from that task's
-parameter definitions:
+Selecting a Program or Condition shows a form generated directly from that task's parameter
+definitions (an Experiment shows its build hub instead, with this form below the tables only
+when the task defines experiment-level parameters):
 
 - Each field has a label and a **tooltip** (hover for it) explaining what it does and any
   constraints (e.g. "must be > 0").
@@ -293,6 +323,11 @@ Right-click an **Instance** → **Launch...**
    (if something went wrong) `Run crashed: ...` / `Could not start the run: ...` with the
    underlying error. The dialog stays open afterward — launch another Subject, or close it.
 
+If you try to **close the Launch window while a run is still going**, xpman asks "Stop the run
+and close?" — choosing Yes stops the experiment and closes its fullscreen window; No keeps it
+running. (This prevents accidentally leaving a stuck fullscreen stimulus window with no way to
+close it.)
+
 ## 5. Walkthrough: build and run a full FPVS session
 
 This walks through everything end-to-end, from an empty Profile to a completed Run with
@@ -319,15 +354,22 @@ exported results.
      means if you want to customize further.
    - Click **Save**.
 7. **Create a Block.** Right-click the Experiment → New Block... → name it, set a repeat count
-   (e.g. 1 for a first test), leave randomization unchecked for now.
-8. **Create a Trial.** Right-click the Block → New Trial... → pick the `Faces 6Hz` Condition →
-   Ok. (Add more Trials, each pointing at a Condition, to build a longer sequence — order
-   follows creation order.)
-9. **Freeze an Instance.** Right-click the Program → Create Instance... → confirm the summary
-   counts look right → give it a name → Create Instance.
-10. **Launch a Run.** Right-click the new Instance → Launch... → pick your Subject → leave
-    Fullscreen checked → check or uncheck triggers depending on whether an amplifier is
-    connected → Launch. Watch the progress bar; use Abort if needed.
+   (e.g. 1 for a first test). Leave randomization unchecked for now — or check **Randomize
+   trials** to have the Block's trials frozen in a fixed shuffled order (the same order for
+   every subject); check **Randomize per subject** to reshuffle independently for each subject.
+8. **Add Trials.** Right-click the Block → Manage Trials... → **Add Multiple...** → pick the
+   `Faces 6Hz` Condition and a count (e.g. `20`) → Ok → **Save**. (Reorder with Move Up/Down or
+   add more rows with different Conditions before saving, to build a longer/mixed sequence.)
+9. **Freeze an Instance.** Right-click the Program → Create Instance... → review the pre-freeze
+   checks (any problems are listed) → give it a name → Create Instance.
+10. **Launch a Run.** Right-click the new Instance → Launch...
+    - Pick your **Subject** and the **Experiment** to run (one per Run — a Program can hold
+      several experiments as alternative protocols).
+    - **Between trials**: leave "Wait for keypress (manual)" for a real EEG session (the run
+      pauses before each trial until you press SPACE) or choose auto-advance with a delay.
+    - Set **Monitor (screen index)** if the stimulus screen isn't the primary display.
+    - Leave Fullscreen checked; check/uncheck triggers depending on whether an amplifier is
+      connected → **Launch**. Watch the progress bar; use Abort if needed.
 11. **Review results.** Expand the Instance's "Runs" group, click the new Run — check status
     and the per-trial table. Click **Export CSV...** to save a spreadsheet-ready file.
 
@@ -370,6 +412,49 @@ sections, shown as labeled boxes in the form:
 |---|---|---|---|---|
 | `oddball_freq_hz` | number | 1.2 | > 0, must not exceed `base_freq_hz` | Target oddball frequency. |
 | `oddball_trigger_code` | integer, optional | not set | 1–255 if set | Trigger sent on every oddball-image onset; unset sends none. |
+
+**Contrast modulation** (`modulation`) — how each image's contrast is shaped across its cycle.
+The default is the canonical FPVS sinusoidal modulation: each image fades smoothly in and out
+every cycle (invisible at the cycle boundary, full contrast mid-cycle), rather than being
+hard-cut on and off.
+
+| Field | Type | Default | Constraints | Meaning |
+|---|---|---|---|---|
+| `waveform` | dropdown | `sinusoidal` | `sinusoidal` / `square` / `none` | `sinusoidal` = standard FPVS contrast modulation; `square` = hard on/off with a duty cycle; `none` = every image at full opacity (the old hard-swap behavior). |
+| `contrast_min` | number | 0.0 | 0–1 | Opacity at the dimmest point of the cycle. |
+| `contrast_max` | number | 1.0 | 0–1 | Opacity at the brightest point of the cycle. |
+| `square_onset_fraction` | number | 0.5 | 0–1 | *Square only:* fraction of the cycle the image is "on". |
+
+**Trial timeline** (`timing`) — the fixation-only intervals and contrast fades around the
+stimulation. A trial runs: pre-interval (fixation only) → fade-in → plateau → fade-out →
+post-interval. The plateau length is `base.trial_duration_seconds`. All default to 0, so a
+Condition that doesn't set them is just a plateau with no fades or intervals.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `pre_interval_seconds` | two numbers (min, max) | (0, 0) | Fixation-only interval before stimulation; a random duration in [min, max] is drawn per trial (set min = max for a fixed length). |
+| `fade_in_seconds` | number | 0.0 | Contrast ramps 0 → 1 over this long at the start. |
+| `fade_out_seconds` | number | 0.0 | Contrast ramps 1 → 0 over this long at the end. |
+| `post_interval_seconds` | two numbers (min, max) | (0, 0) | Fixation-only interval after stimulation. |
+
+**Familiarization** (`familiarization`) — an optional phase, shown once before the real
+sequence, that streams the base stimuli (no oddball) so the subject gets used to them. Runs
+after the pre-interval and before fade-in.
+
+| Field | Type | Default | Constraints | Meaning |
+|---|---|---|---|---|
+| `enabled` | checkbox | off | — | Turn the familiarization phase on. |
+| `duration_seconds` | number | 20.0 | > 0 | How long the familiarization stream runs. |
+| `frequency_hz` | number | 6.0 | > 0 | Familiarization stimulation frequency. |
+| `modulation` | group | sinusoidal | — | Same contrast-modulation fields as above, for the familiarization stream. |
+| `start_trigger_code` / `stop_trigger_code` | integer, optional | not set | 1–255 | Triggers marking familiarization start/end. |
+| `post_blank_seconds` | number | 2.0 | ≥ 0 | Fixation-only blank between familiarization and the real sequence. |
+
+**`background_gray`** (number, 0–1, default 0.5) — the gray level the stimulation fades toward.
+This **must** be the images' mean luminance (mid-gray) for contrast modulation to be correct:
+opacity is blended against this background, so a wrong value (e.g. black) would make images fade
+to black instead of fading in contrast. The default 0.5 (mid-gray) matches the standard FPVS
+setup; leave it unless your images have a non-gray mean.
 
 **Base stimulus filter** (`base_selector`) and **Oddball stimulus filter** (`oddball_selector`)
 — identical fields, applied independently to pick which images from the Program's resource
@@ -463,6 +548,24 @@ The Launch dialog's status message includes the underlying error text. Common ca
 - **A parallel port isn't present/accessible** — either fix the hardware/driver
   ([7.2](#72-eeg-triggers-arent-arriving--parallel-port-errors)), or uncheck "Send real
   triggers" for now.
+- **"Could not measure the monitor's refresh rate"** — xpman deliberately aborts rather than
+  guessing 60 Hz, because frame-counted FPVS timing would be silently wrong. Make sure the
+  stimulus window is fullscreen on the intended monitor, vsync is on, and the display isn't
+  mirrored/duplicated, then relaunch. Only as a deliberate dev override (not for real
+  recordings), set the environment variable `XPMAN_ALLOW_REFRESH_FALLBACK=1` to fall back to
+  60 Hz — such Runs are flagged `refresh_measured_successfully = false` so they're never mistaken
+  for measured data.
+
+### 7.3a Advisory warnings in the event log / "Check Triggers…"
+
+Some misconfigurations don't stop a Run but are worth catching. "Check Triggers…" (and the
+pre-freeze check) warn when **no trigger codes are set** (the EEG would have no event markers and
+be unanalyzable) or when **both fades are 0 s** (an abrupt onset transient can contaminate the
+periodic response). At run time, the event log records advisories when the stimulus set's measured
+mean luminance diverges from `background_gray` (opacity modulation stops being true *contrast*
+modulation) or when images have **heterogeneous pixel dimensions** (they'd render at different
+on-screen sizes). These are advisory only — they never block a Run — but a real study should
+resolve them.
 
 ### 7.4 "No task types are registered"
 
@@ -515,13 +618,17 @@ This requires writing Python, unlike everything else in this tutorial.
 
 ## 9. Known limitations
 
-- No drag-and-drop reordering of Blocks/Trials yet — fix ordering mistakes by deleting and
-  recreating.
-- No "test condition" dry-run preview or trigger-conflict checker in the GUI yet, even though
-  the task-plugin interface supports both.
-- No standalone installer/executable yet — running xpman requires the Python environment setup
-  in [Section 2](#2-installing-and-starting-xpman).
-- FPVS familiarization phases and distractor/sweep paradigm variants aren't implemented yet.
+- No drag-and-drop reordering of Blocks yet — fix Block ordering mistakes by deleting and
+  recreating. Trials can be reordered directly via a Block's "Manage Trials..." dialog.
+- No live "test condition" dry-run (a real windowed preview of a Condition) yet — though
+  "Preview Stimuli..." shows which images a Condition's selectors match, and "Check Triggers..."
+  flags trigger conflicts, both without running anything.
+- Deleting an Instance is only allowed when it has **no Runs** — deleting one with results
+  would destroy them (a result is only interpretable through its Instance's frozen snapshot).
+- An Instance runs **one** experiment per launch (chosen in the Launch dialog); a Program's
+  experiments are alternative protocols, not one big sequence.
+- FPVS familiarization phases and distractor/sweep/baseline/frequency-modulation paradigm
+  variants aren't implemented yet (the core base+oddball paradigm is).
 - Real hardware timing verification against the lab's EEG rig hasn't been run yet — see
   `docs/verification_protocol.md`.
 

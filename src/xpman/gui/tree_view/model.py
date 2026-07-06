@@ -40,7 +40,15 @@ from sqlalchemy.orm import Session
 from xpman.core import repository as repo
 from xpman.core.models import Block, Condition, Experiment, Instance, Profile, Program, Run, Subject, Trial
 
-__all__ = ["TreeNode", "ExperimentTreeModel"]
+__all__ = ["TreeNode", "ExperimentTreeModel", "NodeKey"]
+
+#: Stable identity of a tree position across full model rebuilds: the path of
+#: ``(kind, id)`` pairs from the profile row down to the node itself. Group nodes have
+#: ``id=None``, but each parent has at most one group child of a given kind (one
+#: "Experiments" folder per Program, etc.), so the *path* is still unique -- which is exactly
+#: what lets expansion/selection survive a ``beginResetModel()`` rebuild, where raw
+#: ``QModelIndex``es are invalidated wholesale.
+NodeKey = tuple[tuple[str, int | None], ...]
 
 
 @dataclass(frozen=True)
@@ -282,11 +290,12 @@ class ExperimentTreeModel(QAbstractItemModel):
     def refresh(self) -> None:
         """Re-query the DB and rebuild the whole tree.
 
-        Preserves selection/expansion on a best-effort basis by resetting the model wholesale
-        (beginResetModel/endResetModel) -- any view attached to this model will lose its
-        current selection and collapse state, which Qt handles gracefully (no crash, view
-        just redraws from scratch). ExperimentTreeView.refresh() is a thin wrapper around this
-        for callers that only have the view handle.
+        Resets the model wholesale (beginResetModel/endResetModel), which invalidates every
+        outstanding QModelIndex -- a bare Qt view attached to this model would lose its
+        selection and collapse state. ``ExperimentTreeView.refresh()`` compensates: it
+        captures expansion/selection as ``NodeKey`` paths before calling this and re-applies
+        them afterwards via ``index_for_key``, so from the user's perspective the tree stays
+        where they left it.
         """
         self.beginResetModel()
         self._build_tree()
@@ -299,6 +308,45 @@ class ExperimentTreeModel(QAbstractItemModel):
         if item is None or item is self._root:
             return None
         return item.node
+
+    def key_for_index(self, index: QModelIndex) -> NodeKey | None:
+        """Return the ``NodeKey`` path identifying ``index``, or None for an invalid index.
+        Keys stay meaningful across ``refresh()`` (unlike the index itself)."""
+        if not index.isValid():
+            return None
+        item: _Item = index.internalPointer()
+        if item is None or item is self._root:
+            return None
+        segments: list[tuple[str, int | None]] = []
+        while item is not None and item is not self._root:
+            segments.append((item.node.kind, item.node.id))
+            item = item.parent
+        return tuple(reversed(segments))
+
+    def index_for_key(self, key: NodeKey) -> QModelIndex:
+        """Resolve a ``NodeKey`` back to an index in the *current* tree. Returns an invalid
+        index if any path segment no longer exists (e.g. the entity was deleted)."""
+        item = self._root
+        for kind, node_id in key:
+            item = next(
+                (c for c in item.children if c.node.kind == kind and c.node.id == node_id),
+                None,
+            )
+            if item is None:
+                return QModelIndex()
+        return self.createIndex(item.row(), 0, item)
+
+    def index_for_node(self, kind: str, node_id: int) -> QModelIndex:
+        """Find the first node with this ``(kind, id)`` anywhere in the tree -- for callers
+        that know the entity but not its path (e.g. "select the Condition I just created").
+        Returns an invalid index if not found."""
+        stack = list(self._root.children)
+        while stack:
+            item = stack.pop()
+            if item.node.kind == kind and item.node.id == node_id:
+                return self.createIndex(item.row(), 0, item)
+            stack.extend(item.children)
+        return QModelIndex()
 
     # -- QAbstractItemModel overrides -----------------------------------
 

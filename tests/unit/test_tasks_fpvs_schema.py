@@ -62,6 +62,14 @@ def test_stimulus_selector_all_fields_optional():
     assert selector.eccentricity_deg is None
     assert selector.is_fs is None
     assert selector.variant is None
+    assert selector.filename_pattern is None
+
+
+def test_stimulus_selector_filename_pattern_roundtrips_via_dict():
+    selector = StimulusSelector(filename_pattern="*happy*.png")
+    restored = StimulusSelector.model_validate(selector.model_dump())
+    assert restored == selector
+    assert restored.filename_pattern == "*happy*.png"
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 from xpman.tasks.fpvs.fixation import FixationParams
+from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
@@ -36,6 +37,44 @@ class StimulusSelector(BaseModel):
     eccentricity_deg: float | None = None
     is_fs: bool | None = None
     variant: str | None = None
+    filename_pattern: str | None = Field(
+        default=None,
+        description=(
+            "Optional glob pattern (e.g. '*happy*.png') matched against each image's bare "
+            "filename. Combines with any filters above -- every set filter must match. This is "
+            "the main way to select a subset from a stimulus set that doesn't follow the "
+            "built-in SepStim naming convention, where the other filters above have nothing "
+            "recognized to match against."
+        ),
+    )
+
+
+class FamiliarizationParams(BaseModel):
+    """Optional familiarization phase shown once before the real sequence -- the subject sees
+    the stimuli streaming (base-only, no oddball) so they're used to them before recording. Runs
+    after the pre-stimulus interval and before the main stimulation's fade-in (legacy ordering).
+    Reuses the Condition's ``base_selector`` pool. Disabled by default.
+    """
+
+    enabled: bool = Field(default=False, description="Show a familiarization phase before the run.")
+    duration_seconds: float = Field(
+        default=20.0, gt=0, description="How long the familiarization stream runs."
+    )
+    frequency_hz: float = Field(
+        default=6.0, gt=0, description="Familiarization stimulation frequency, in Hz."
+    )
+    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    start_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when familiarization starts."
+    )
+    stop_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when familiarization ends."
+    )
+    post_blank_seconds: float = Field(
+        default=2.0,
+        ge=0,
+        description="Fixation-only blank between familiarization and the real sequence.",
+    )
 
 
 class FPVSProgramParams(BaseModel):
@@ -53,9 +92,22 @@ class FPVSConditionParams(BaseModel):
     oddball: OddballParams = Field(default_factory=OddballParams)
     base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
     oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    timing: TimingParams = Field(default_factory=TimingParams)
+    familiarization: FamiliarizationParams = Field(default_factory=FamiliarizationParams)
     fixation: FixationParams = Field(default_factory=FixationParams)
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
+    background_gray: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Background gray level (0=black, 1=white) the stimulation fades toward. Must be the "
+            "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
+            "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_oddball_below_base_frequency(self) -> "FPVSConditionParams":

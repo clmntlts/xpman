@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBo
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.commit import safe_commit
 
 
 class ExperimentCreateDialog(QDialog):
@@ -67,6 +68,7 @@ class ExperimentCreateDialog(QDialog):
             name=name,
             parameters_json={},
         )
-        self._session.commit()
+        if not safe_commit(self._session, self, action="create the experiment"):
+            return
         self.created_experiment_id = experiment.id
         self.accept()

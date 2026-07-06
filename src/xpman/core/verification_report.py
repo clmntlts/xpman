@@ -8,11 +8,12 @@ hardware" pattern as ``core/export.py``. Callers (see
 ``tests/manual_hardware/analyze_verification_run.py``) read ``events.csv``, parse each row's
 ``payload_json`` into a ``payload`` dict, and pass already-parsed rows in here.
 
-Trigger-to-flip latency pairs each ``trigger_sent`` event with its *nearest* ``flip`` event by
-timestamp, deliberately not by a task-specific payload key (FPVS uses ``stim_index``, Dummy
-uses ``flip_index``) -- both tasks log ``trigger_sent`` right after ``trigger.send_trigger()``
-returns and a ``flip`` event at ``flip_time`` for the same frame, so nearest-by-timestamp works
-unmodified for any future task without this module needing to know its event shape.
+Trigger-to-onset latency pairs each ``trigger_sent`` with the onset of the *same* stimulus by
+``stim_index`` (FPVS logs both with one) and reports the signed ``trigger_time - onset_time`` --
+how long after the visual onset the trigger fired. A trigger with no matching onset (e.g. the
+dummy task) falls back to the flip immediately at/before it, which is that same onset frame. See
+``_compute_trigger_latency`` for why this replaced an earlier nearest-flip-by-timestamp metric
+(which was ~0 by construction and so couldn't surface a mistimed trigger).
 
 Two things this does NOT compute, on purpose, because the event log alone can't tell you:
 trigger pulse width/voltage (a physical property of the port signal -- needs an oscilloscope),
@@ -95,9 +96,13 @@ class VerificationReport:
                 f"nominal_frame_period={fi.nominal_frame_period_s * 1000:.2f}ms"
             )
 
-        lines += ["", "Trigger-to-flip latency (item 2 -- xpman's own command latency, not port I/O time):"]
+        lines += [
+            "",
+            "Trigger-to-onset latency (item 2 -- xpman's own command latency vs. the stimulus "
+            "onset flip, not port I/O time; a negative mean means a trigger fired before its onset):",
+        ]
         if self.trigger_latency.mean_latency_s is None:
-            lines.append("  No trigger_sent events found.")
+            lines.append("  No trigger_sent events found (or none could be paired to an onset/flip).")
         else:
             tl = self.trigger_latency
             lines.append(
@@ -156,12 +161,44 @@ def _compute_flip_interval_stats(events_sorted: list[dict[str, Any]], nominal_fr
 
 
 def _compute_trigger_latency(events_sorted: list[dict[str, Any]]) -> TriggerLatencyStats:
-    flip_times = [e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]
-    trigger_events = [e for e in events_sorted if e["event_type"] == "trigger_sent"]
-    if not trigger_events or not flip_times:
-        return TriggerLatencyStats(n_triggers=len(trigger_events), mean_latency_s=None, stddev_latency_s=None)
+    """Signed trigger-to-onset latency: for each ``trigger_sent`` how long *after* the stimulus's
+    visual onset the trigger fired.
 
-    latencies = [min(abs(t - trig["timestamp"]) for t in flip_times) for trig in trigger_events]
+    Pairs each trigger to the onset of the *same* stimulus by ``stim_index`` (FPVS logs both the
+    ``trigger_sent`` and the ``stimulus_onset``/``oddball_onset`` with a ``stim_index``), so the
+    latency is ``trigger_time - onset_flip_time`` for that exact stimulus. This replaces an earlier
+    nearest-flip-in-either-direction metric that took ``min(abs(...))`` over *all* flips: because a
+    trigger fires right at its onset flip, that distance was ~0 by construction and couldn't reveal
+    a trigger that fired late, early, or against the wrong frame. A trigger with no matching onset
+    (e.g. the dummy task, which has no onset event) falls back to the most recent flip at or before
+    it -- in practice the same onset flip, since the trigger is emitted immediately after its flip.
+    A *negative* mean here would signal a trigger firing before its visual onset (a bug)."""
+    trigger_events = [e for e in events_sorted if e["event_type"] == "trigger_sent"]
+    if not trigger_events:
+        return TriggerLatencyStats(n_triggers=0, mean_latency_s=None, stddev_latency_s=None)
+
+    onset_ts_by_index: dict[Any, float] = {}
+    for e in events_sorted:
+        if e["event_type"] in ("stimulus_onset", "oddball_onset"):
+            idx = (e.get("payload") or {}).get("stim_index")
+            if idx is not None:
+                onset_ts_by_index[idx] = e["timestamp"]
+
+    flip_times = [e["timestamp"] for e in events_sorted if e["event_type"] == "flip"]
+
+    latencies: list[float] = []
+    for trig in trigger_events:
+        ts = trig["timestamp"]
+        idx = (trig.get("payload") or {}).get("stim_index")
+        onset_ts = onset_ts_by_index.get(idx) if idx is not None else None
+        if onset_ts is None:  # fall back to the most recent flip at/before the trigger
+            preceding = [t for t in flip_times if t <= ts]
+            onset_ts = preceding[-1] if preceding else None
+        if onset_ts is not None:
+            latencies.append(ts - onset_ts)
+
+    if not latencies:
+        return TriggerLatencyStats(n_triggers=len(trigger_events), mean_latency_s=None, stddev_latency_s=None)
     return TriggerLatencyStats(
         n_triggers=len(trigger_events),
         mean_latency_s=statistics.fmean(latencies),
