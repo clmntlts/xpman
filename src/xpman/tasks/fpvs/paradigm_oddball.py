@@ -250,14 +250,28 @@ def _present_stimulus(
     abort_check: Callable[[], bool],
     modulation_fn: Callable[[int, int], float] | None = None,
     flip_log: "list[tuple[str, dict, float]] | None" = None,
+    position: "tuple[float, float] | None" = None,
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
     ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
     (and ``onset_time is None``) means ``abort_check()`` fired before the onset frame ever
-    drew -- callers should not count that as a shown stimulus."""
+    drew -- callers should not count that as a shown stimulus.
+
+    ``position`` (WP-B): when not ``None``, the ``(x, y)`` pixel offset applied to this stimulus
+    via ``stim.set_position`` before its frames, and logged in the onset payload; ``None`` leaves
+    the stimulus centered (the default/current behavior) and logs ``pos: None``."""
     frames_presented = 0
     aborted = False
     onset_time: float | None = None
+
+    # Apply the per-stimulus position once, before any of its frames draw. Only the image moves
+    # (the wrapper's set_position touches the image stim, not the fixation marker). getattr guard:
+    # plain drawables/mocks used in some tests have no set_position -- a None position skips this
+    # entirely, so the centered path never requires the method.
+    if position is not None:
+        set_position = getattr(stim, "set_position", None)
+        if set_position is not None:
+            set_position(position)
 
     for frame_in_stim in range(n_frames):
         if abort_check():
@@ -324,6 +338,10 @@ def _present_stimulus(
                     "frame_index": global_frame_index,
                     "is_oddball": is_oddball,
                     "image": getattr(stim, "identity", None),
+                    # Where this image was shown: [x, y] pixel offset from center, or None when
+                    # centered (jitter off) -- so onsets record position provenance the same way
+                    # they record image identity (WP-B).
+                    "pos": [position[0], position[1]] if position is not None else None,
                 },
                 timestamp=flip_time,
             )
@@ -429,6 +447,7 @@ def run_base_sequence(
     n_fade_in_frames: int = 0,
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
+    position_provider: Callable[[], tuple[float, float]] | None = None,
 ) -> BaseSequenceResult:
     """Present ``stimuli`` (cycled through, wrapping around if shorter than needed) at
     ``params.base_freq_hz``, frame-counted against ``refresh_rate_hz``, for
@@ -437,6 +456,11 @@ def run_base_sequence(
     ``rng``: when given, the pool is re-permuted on each wraparound (so image identities don't
     recur in the same order every cycle -- see :class:`_PoolSequencer`); ``None`` cycles in the
     given order.
+
+    ``position_provider`` (WP-B, per C3): when given, called **once per stimulus** to get an
+    ``(x, y)`` pixel offset applied via ``stim.set_position`` before that stimulus's frames; each
+    onset event logs the position. ``None`` (the default) leaves every stimulus centered -- the
+    current behavior, byte-for-byte unchanged.
 
     Args:
         stimuli: Already-built drawables to cycle through, in the order to present them --
@@ -500,6 +524,8 @@ def run_base_sequence(
             aborted = True
             break
         stim = stimuli[pool.next()]
+        # One position draw per stimulus (C3). None provider -> centered (stim_position stays None).
+        stim_position = position_provider() if position_provider is not None else None
 
         frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
@@ -518,6 +544,7 @@ def run_base_sequence(
             abort_check=abort_check,
             modulation_fn=modulation_fn,
             flip_log=flip_log,
+            position=stim_position,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim
@@ -573,6 +600,7 @@ def run_base_oddball_sequence(
     n_fade_in_frames: int = 0,
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
+    position_provider: Callable[[], tuple[float, float]] | None = None,
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -583,6 +611,10 @@ def run_base_oddball_sequence(
     Each pool is cycled through independently. ``rng``: when given, each pool is re-permuted on
     every wraparound (so image identities don't recur in the same order each cycle -- see
     :class:`_PoolSequencer`); ``None`` cycles each pool in the order given.
+
+    ``position_provider`` (WP-B, per C3): called **once per stimulus** (both base and oddball
+    positions) to get the ``(x, y)`` pixel offset applied via ``stim.set_position`` before that
+    stimulus's frames; each onset logs the position. ``None`` leaves every stimulus centered.
 
     Raises:
         ValueError: either ``base_stimuli`` or ``oddball_stimuli`` is empty, or
@@ -649,6 +681,10 @@ def run_base_oddball_sequence(
             stim = base_stimuli[base_pool.next()]
             trigger_code = base_params.base_trigger_code
             onset_event_type = "stimulus_onset"
+        # One position draw per stimulus (C3), for both base and oddball positions. None provider
+        # -> centered (stim_position stays None). Named stim_position to avoid shadowing the
+        # 1-indexed stream ``position`` loop variable.
+        stim_position = position_provider() if position_provider is not None else None
 
         frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
@@ -667,6 +703,7 @@ def run_base_oddball_sequence(
             abort_check=abort_check,
             modulation_fn=modulation_fn,
             flip_log=flip_log,
+            position=stim_position,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim

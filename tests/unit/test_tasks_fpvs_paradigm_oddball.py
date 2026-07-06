@@ -932,6 +932,151 @@ def test_oddball_sequence_modulates_base_and_oddball_streams(mock_window, event_
 
 
 # ---------------------------------------------------------------------------
+# Position provider (WP-B, contract C3)
+# ---------------------------------------------------------------------------
+
+
+class _PositionSpyStim:
+    """Records every set_position call (and draw count) so a test can check the per-stimulus
+    position application without a real ImageStim."""
+
+    def __init__(self) -> None:
+        self.positions: list[tuple[float, float]] = []
+        self.draw_count = 0
+
+    def set_position(self, pos: tuple[float, float]) -> None:
+        self.positions.append(pos)
+
+    def draw(self) -> None:
+        self.draw_count += 1
+
+
+def test_position_provider_called_once_per_stimulus_with_in_range_values(
+    mock_window, event_sink, trigger, clock
+):
+    spy = _PositionSpyStim()
+    calls = {"n": 0}
+
+    def provider():
+        calls["n"] += 1
+        return (10.0 * calls["n"], -5.0)  # distinct, deterministic, in a known range
+
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),  # 6 stimuli
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=provider,
+    )
+    # Exactly one position per stimulus onset (6 stimuli), applied via set_position (not per frame).
+    assert calls["n"] == 6
+    assert len(spy.positions) == 6
+    assert spy.positions == [(10.0, -5.0), (20.0, -5.0), (30.0, -5.0), (40.0, -5.0), (50.0, -5.0), (60.0, -5.0)]
+
+
+def test_no_position_provider_never_calls_set_position(mock_window, event_sink, trigger, clock):
+    spy = _PositionSpyStim()
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[spy],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=None,
+    )
+    assert spy.positions == []  # disabled path: image stays centered, set_position never called
+    assert spy.draw_count == 60
+
+
+def test_onset_events_carry_pos_when_provider_set(mock_window, event_sink, trigger, clock):
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[_PositionSpyStim()],
+        params=BaseSequenceParams(base_freq_hz=30.0, trial_duration_seconds=1 / 30, base_trigger_code=7),
+        refresh_rate_hz=60.0,  # 2 frames/stim, exactly 1 stimulus
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=lambda: (12.0, 34.0),
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    import json
+
+    onsets = [r for r in rows if r["event_type"] == "stimulus_onset"]
+    assert len(onsets) == 1
+    assert json.loads(onsets[0]["payload_json"])["pos"] == [12.0, 34.0]
+
+
+def test_onset_events_pos_is_none_when_no_provider(mock_window, event_sink, trigger, clock):
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[_PositionSpyStim()],
+        params=BaseSequenceParams(base_freq_hz=30.0, trial_duration_seconds=1 / 30, base_trigger_code=7),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    import json
+
+    onsets = [r for r in rows if r["event_type"] == "stimulus_onset"]
+    assert len(onsets) == 1
+    assert json.loads(onsets[0]["payload_json"])["pos"] is None  # centered -> pos None
+
+
+def test_oddball_sequence_applies_provider_to_base_and_oddball(
+    mock_window, event_sink, trigger, clock
+):
+    base_spy = _PositionSpyStim()
+    odd_spy = _PositionSpyStim()
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[base_spy],
+        oddball_stimuli=[odd_spy],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),  # 18 stimuli
+        oddball_params=OddballParams(oddball_freq_hz=1.2),  # period 5 -> 3 oddballs, 15 base
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=lambda: (1.0, 2.0),
+    )
+    # Position applied once per stimulus in BOTH pools (15 base onsets, 3 oddball onsets).
+    assert len(base_spy.positions) == 15
+    assert len(odd_spy.positions) == 3
+    assert all(p == (1.0, 2.0) for p in base_spy.positions + odd_spy.positions)
+
+
+def test_provider_missing_set_position_does_not_break(mock_window, event_sink, trigger, clock):
+    """C3's getattr guard: a plain drawable/mock without set_position must not crash when a
+    provider is set (the position simply isn't applied to it)."""
+    plain = MagicMock(name="plain_no_set_position", spec=["draw"])  # no set_position attribute
+    result = run_base_sequence(
+        window=mock_window,
+        stimuli=[plain],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=0.5),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        position_provider=lambda: (5.0, 5.0),
+    )
+    assert result.aborted is False
+    assert plain.draw.called
+
+
+# ---------------------------------------------------------------------------
 # present_fixation_only
 # ---------------------------------------------------------------------------
 
