@@ -19,6 +19,9 @@ dependencies = [
     "alembic>=1.13,<2",
     "pydantic>=2.6,<3",
     "pyarrow>=17,<25",
+    # Already installed transitively via PsychoPy, but declared explicitly because the serial
+    # (USB virtual-COM) trigger backend imports it directly -- see hardware/trigger_serial.py.
+    "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]

@@ -35,6 +35,41 @@ def test_trigger_sender_rejects_negative_reset_after():
         DummyTrigger(reset_after=-1.0)
 
 
+class _StubTrigger(TriggerSender):
+    """Minimal concrete subclass: only the two abstract primitives, nothing else -- proving
+    describe()/close() are concrete defaults on the ABC (a subclass need not implement them)."""
+
+    def set_code(self, code: int) -> None:
+        pass
+
+    def clear_code(self) -> None:
+        pass
+
+
+def test_stub_subclass_with_only_primitives_is_instantiable():
+    # Must NOT raise TypeError: describe()/close() are concrete on the ABC, not abstract.
+    trigger = _StubTrigger()
+    assert isinstance(trigger, TriggerSender)
+
+
+def test_default_describe_keys_off_class_name():
+    assert _StubTrigger().describe() == {"backend": "_stubtrigger"}
+
+
+def test_default_close_is_a_noop():
+    _StubTrigger().close()  # must not raise
+
+
+def test_parallel_trigger_describe_reports_backend_and_address():
+    with _MockedParallelPort(address=0x0278) as ctx:
+        assert ctx.trigger.describe() == {"backend": "parallel", "address": "0x278"}
+
+
+def test_parallel_trigger_close_is_a_noop():
+    with _MockedParallelPort() as ctx:
+        ctx.trigger.close()  # inherits the ABC no-op; must not raise
+
+
 def test_set_code_and_clear_code_do_not_wait():
     """The non-blocking primitives must not hold/wait -- they just drive and reset the pins."""
     with _MockedParallelPort(reset_after=0.005) as ctx:

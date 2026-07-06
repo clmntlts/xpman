@@ -46,6 +46,10 @@ class NullTrigger(TriggerSender):
     def clear_code(self) -> None:
         """No-op: resetting the virtual pins to 0 is not a recorded event."""
 
+    def describe(self) -> dict:
+        """Provenance summary: no real trigger hardware was used for this run."""
+        return {"backend": "none"}
+
     def _hold(self, seconds: float) -> None:
         """No-op: a null trigger never actually blocks, even for ``send_trigger``."""
 

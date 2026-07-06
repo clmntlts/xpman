@@ -156,6 +156,53 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     assert {"run_started", "prepare", "trial_start", "flip", "trigger_sent", "trial_end", "cleanup"} <= event_types
 
 
+def test_trigger_provenance_recorded_from_describe(session, registry, mock_window, tmp_path):
+    """launch_run records the trigger backend (and, where the backend exposes one, its port) from
+    trigger.describe() onto the Run -- here NullTrigger, whose describe() reports backend 'none'
+    and no port. pyserial_version is also captured like psychopy/numpy."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+
+    assert run.trigger_backend == "none"
+    assert run.trigger_port is None  # NullTrigger reports no port
+    assert run.pyserial_version is not None  # pyserial is installed in this test env
+
+
+def test_trigger_provenance_records_serial_port(session, registry, mock_window, tmp_path):
+    """A backend whose describe() exposes a port (serial) records it in trigger_port."""
+
+    class _FakeSerialTrigger(NullTrigger):
+        def describe(self) -> dict:
+            return {"backend": "serial", "port": "COM4", "baud": 115200}
+
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=_FakeSerialTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+
+    assert run.trigger_backend == "serial"
+    assert run.trigger_port == "COM4"
+
+
 def test_run_metadata_is_persisted_onto_run(session, registry, mock_window, tmp_path):
     """A task's run_metadata() (supplied after prepare) is written onto the Run row by the engine
     -- here the achieved refresh rate and whether it was really measured."""

@@ -56,6 +56,7 @@ def _resolve_versions() -> dict[str, str | None]:
         "xpman_version": _pkg("xpman") or XPMAN_VERSION,
         "psychopy_version": _pkg("psychopy"),
         "numpy_version": _pkg("numpy"),
+        "pyserial_version": _pkg("pyserial"),
     }
 
 
@@ -116,6 +117,11 @@ def launch_run(
     task = registry.get(task_name)
 
     versions = _resolve_versions()
+    # Trigger backend provenance, straight from the sender's own describe(): which backend
+    # (none/parallel/serial) and, where it exposes one, the physical port/address it drove. The
+    # "port" key is only present for serial; parallel reports "address", none reports neither --
+    # so trigger_port stays NULL for those, which is exactly right (additive, nullable columns).
+    trigger_info = trigger.describe()
     run = Run(
         instance_id=instance.id,
         subject_id=subject.id,
@@ -123,6 +129,9 @@ def launch_run(
         xpman_version=versions["xpman_version"],
         psychopy_version=versions["psychopy_version"],
         numpy_version=versions["numpy_version"],
+        pyserial_version=versions["pyserial_version"],
+        trigger_backend=trigger_info.get("backend"),
+        trigger_port=trigger_info.get("port"),
         status=RunStatus.ABORTED,  # placeholder until execute_run finalizes it either way
     )
     session.add(run)
