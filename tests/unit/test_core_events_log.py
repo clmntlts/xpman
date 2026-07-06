@@ -100,15 +100,15 @@ def test_build_run_report(tmp_path):
 def test_build_trial_timelines_segments_and_relativizes():
     events = [
         _ev("base_oddball_sequence_start", 10.0),
-        _ev("stimulus_onset", 10.0, {"is_oddball": False}),
-        _ev("trigger_sent", 10.001, {"code": 1, "is_oddball": False}),
-        _ev("oddball_onset", 10.83, {"is_oddball": True}),
-        _ev("trigger_sent", 10.831, {"code": 2, "is_oddball": True}),
+        _ev("stimulus_onset", 10.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("trigger_sent", 10.001, {"code": 1, "is_oddball": False, "stim_index": 0}),
+        _ev("oddball_onset", 10.83, {"is_oddball": True, "stim_index": 5}),
+        _ev("trigger_sent", 10.831, {"code": 2, "is_oddball": True, "stim_index": 5}),
         _ev("base_oddball_sequence_end", 11.0),
         # trial 2, much later
         _ev("base_oddball_sequence_start", 40.0),
-        _ev("stimulus_onset", 40.0, {"is_oddball": False}),
-        _ev("trigger_sent", 40.001, {"code": 1, "is_oddball": False}),
+        _ev("stimulus_onset", 40.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("trigger_sent", 40.001, {"code": 1, "is_oddball": False, "stim_index": 0}),
         _ev("base_oddball_sequence_end", 41.0),
     ]
     timelines = build_trial_timelines(events)
@@ -120,8 +120,23 @@ def test_build_trial_timelines_segments_and_relativizes():
     assert t1.onsets[1].time_s == pytest.approx(0.83)
     assert [m.code for m in t1.triggers] == [1, 2]
     assert t1.duration_s == pytest.approx(1.0)
-    # Trial 2 times are relative to ITS start (40.0), never cross-trial.
+    # x-alignment: marks carry the stimulus position, and each trigger shares its onset's index.
+    assert [o.index for o in t1.onsets] == [0, 5]
+    assert [tg.index for tg in t1.triggers] == [0, 5]
+    # Trial 2's stimulus #0 has the SAME index as trial 1's -> same x -> columns align across trials.
+    assert timelines[1].onsets[0].index == t1.onsets[0].index == 0
     assert timelines[1].onsets[0].time_s == pytest.approx(0.0)
+
+
+def test_build_trial_timelines_index_falls_back_to_ordinal_without_stim_index():
+    events = [
+        _ev("base_oddball_sequence_start", 0.0),
+        _ev("stimulus_onset", 0.0, {"is_oddball": False}),  # no stim_index (older log)
+        _ev("stimulus_onset", 0.16, {"is_oddball": False}),
+        _ev("base_oddball_sequence_end", 0.3),
+    ]
+    onsets = build_trial_timelines(events)[0].onsets
+    assert [o.index for o in onsets] == [0, 1]  # ordinal position used
 
 
 def test_build_trial_timelines_empty_without_sequence_markers():

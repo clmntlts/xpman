@@ -7,9 +7,9 @@ from xpman.gui.dialogs.timeline_view import TimelineView
 
 
 def _trial(index, n_base=3, n_oddball=1):
-    onsets = [TimelineMark(i * 0.166, False, None) for i in range(n_base)]
-    onsets += [TimelineMark(0.83, True, None) for _ in range(n_oddball)]
-    triggers = [TimelineMark(o.time_s, o.is_oddball, 2 if o.is_oddball else 1) for o in onsets]
+    onsets = [TimelineMark(i * 0.166, False, None, i) for i in range(n_base)]
+    onsets += [TimelineMark(0.83, True, None, n_base + j) for j in range(n_oddball)]
+    triggers = [TimelineMark(o.time_s, o.is_oddball, 2 if o.is_oddball else 1, o.index) for o in onsets]
     return TrialTimeline(index=index, duration_s=1.0, onsets=onsets, triggers=triggers)
 
 
@@ -22,6 +22,28 @@ def test_timeline_view_draws_items_for_each_trial(qtbot):
     n_onsets = sum(len(t.onsets) for t in timelines)
     n_triggers = sum(len(t.triggers) for t in timelines)
     assert len(view._scene.items()) >= n_onsets + n_triggers
+
+
+def test_onset_ticks_align_across_trials(qtbot):
+    """The k-th stimulus must be at the same x in every trial (x = stimulus position, not measured
+    time), so trials can be compared column-for-column."""
+    from PySide6.QtWidgets import QGraphicsLineItem
+
+    view = TimelineView([_trial(1), _trial(2)])
+    qtbot.addWidget(view)
+
+    verticals = [
+        it
+        for it in view._scene.items()
+        if isinstance(it, QGraphicsLineItem) and it.line().x1() == it.line().x2()
+    ]
+    xs_by_row: dict[float, list[float]] = {}
+    for it in verticals:
+        xs_by_row.setdefault(round(it.line().y2(), 1), []).append(round(it.line().x1(), 3))
+    # Each trial row has 4 onset ticks (3 base + 1 oddball); the axis row has 5.
+    trial_rows = [sorted(xs) for xs in xs_by_row.values() if len(xs) == 4]
+    assert len(trial_rows) == 2
+    assert trial_rows[0] == trial_rows[1]  # identical x positions -> perfectly aligned
 
 
 def test_timeline_view_empty_shows_note_not_crash(qtbot):
