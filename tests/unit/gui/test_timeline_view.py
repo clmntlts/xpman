@@ -46,6 +46,29 @@ def test_onset_ticks_align_across_trials(qtbot):
     assert trial_rows[0] == trial_rows[1]  # identical x positions -> perfectly aligned
 
 
+def test_timeline_view_draws_familiarization_and_responses(qtbot):
+    trial = _trial(1)
+    trial_with_resp = TrialTimeline(
+        index=2,
+        duration_s=1.0,
+        onsets=[TimelineMark(0.0, False, None, 0)],
+        triggers=[TimelineMark(0.0, False, 1, 0)],
+        responses=[TimelineMark(0.5, None, None, 0)],
+    )
+    fam = TrialTimeline(
+        index=3,
+        duration_s=1.0,
+        onsets=[TimelineMark(i * 0.166, False, None, i) for i in range(5)],
+        triggers=[],
+        kind="familiarization",
+        label="Familiarization",
+    )
+    view = TimelineView([trial, trial_with_resp, fam])
+    qtbot.addWidget(view)
+    # Renders without crashing and includes the response mark + the familiarization row.
+    assert len(view._scene.items()) > len(trial.onsets)
+
+
 def test_timeline_view_empty_shows_note_not_crash(qtbot):
     view = TimelineView([])
     qtbot.addWidget(view)
