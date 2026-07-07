@@ -780,9 +780,10 @@ def test_run_trial_jitter_reaches_image_stim_pos(mock_window, stim_root, event_s
     assert all(math.hypot(p[0], p[1]) <= 120.0 + 1e-9 for p in recorder.positions)
 
 
-def test_run_trial_jitter_disabled_leaves_image_centered(mock_window, stim_root, event_sink):
-    """Disabled jitter (the default) must never touch ImageStim.pos -- the centered path is
-    byte-for-byte the current behavior."""
+def test_run_trial_jitter_disabled_recenters_image(mock_window, stim_root, event_sink):
+    """Disabled jitter (the default): every stimulus is actively re-centered to (0,0), so a stale
+    offset from a prior jitter trial on the same cached ImageStim can never leak into a centered
+    trial (the onset log would otherwise say pos=None while the pixels stayed displaced)."""
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
@@ -802,7 +803,69 @@ def test_run_trial_jitter_disabled_leaves_image_centered(mock_window, stim_root,
     ):
         task.run_trial(ctx, params.model_dump(), trial_index=0)
 
-    assert recorder.positions == []  # .pos never assigned -> stays centered
+    assert recorder.positions  # set_position IS called on the centered path...
+    assert all(p == (0.0, 0.0) for p in recorder.positions)  # ...always to (0, 0)
+
+
+def test_select_pool_unset_variant_includes_all_variants():
+    """Regression: StimulusSelector.variant=None means 'any variant' -- it must NOT drop
+    negated/no_point images (the bug: None was passed straight to filter_entries, which reads it
+    as 'only plain, variant-None images')."""
+    from pathlib import Path
+
+    from xpman.tasks.fpvs.image_set import Category, ImageEntry
+
+    def _entry(name, variant):
+        return ImageEntry(
+            path=Path(name), recognized=True, category=Category.FACE, index=1,
+            angle_deg=0, eccentricity_deg=0.0, is_fs=False, variant=variant,
+        )
+
+    entries = [_entry("a.bmp", None), _entry("b.bmp", "negated"), _entry("c.bmp", "no_point")]
+    # Unset variant -> all three included.
+    assert len(_select_pool(entries, StimulusSelector(category="face"))) == 3
+    # An explicit variant still filters to exactly that one.
+    only_neg = _select_pool(entries, StimulusSelector(category="face", variant="negated"))
+    assert [e.variant for e in only_neg] == ["negated"]
+
+
+def test_run_trial_jitter_does_not_leak_offset_into_next_centered_trial(
+    mock_window, stim_root, event_sink
+):
+    """The cached ImageStim must not carry a jitter offset from one trial into a later centered
+    trial: trial 1 jitters, trial 2 is centered -> trial 2 re-centers the shared stim to (0,0)."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    jittered = FPVSConditionParams()
+    jittered.base.trial_duration_seconds = 0.3
+    jittered.position_jitter.enabled = True
+    jittered.position_jitter.radius_pix = 100.0
+    jittered.position_jitter.region = "disk"
+
+    centered = FPVSConditionParams()
+    centered.base.trial_duration_seconds = 0.3  # jitter disabled (default)
+
+    recorder = _PosRecorder()
+    with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, jittered.model_dump(), trial_index=0)
+        task.run_trial(ctx, centered.model_dump(), trial_index=1)
+
+    # The final position assigned (by the centered trial) is the origin, not a leaked offset.
+    assert recorder.positions[-1] == (0.0, 0.0)
+
+
+def test_check_triggers_warns_when_jitter_enabled_but_zero_extent():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.position_jitter.enabled = True  # rectangle default, ranges (0,0) -> no displacement
+    warnings = task.check_triggers(params.model_dump())
+    assert any("zero extent" in w for w in warnings)
 
 
 def test_run_trial_jitter_onsets_log_pos(mock_window, stim_root, event_sink):

@@ -123,7 +123,11 @@ def _select_pool(entries: list[ImageEntry], selector: StimulusSelector) -> list[
         angle_deg=selector.angle_deg,
         eccentricity_deg=selector.eccentricity_deg,
         is_fs=selector.is_fs,
-        variant=selector.variant,
+        # StimulusSelector uses None to mean "any variant" (its documented semantics), but
+        # filter_entries reads variant=None as "only plain (variant-None) images" and uses the
+        # "__unset__" sentinel for "don't filter". Translate here, or an unset variant would
+        # silently drop every negated/no_point image from the pool.
+        variant=selector.variant if selector.variant is not None else "__unset__",
         filename_pattern=selector.filename_pattern,
     )
 
@@ -699,6 +703,12 @@ class FPVSTask(TaskModule):
         # past the screen edge before even accounting for the image's own half-width. Advisory
         # only, never blocks; the definitive off-screen check is a visual/lab confirmation.
         jitter = params.position_jitter
+        if jitter.enabled and jitter.has_zero_extent():
+            warnings.append(
+                f"position_jitter is enabled but the '{jitter.region}' region has zero extent "
+                "(radius/ranges are 0) -- every stimulus will be centered, so the jitter does "
+                "nothing. Set the region's radius/ranges, or disable position_jitter."
+            )
         if jitter.enabled:
             if jitter.region == "disk":
                 max_offset = jitter.radius_pix

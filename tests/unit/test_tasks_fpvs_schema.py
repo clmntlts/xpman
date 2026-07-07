@@ -109,6 +109,22 @@ def test_position_jitter_rejects_unknown_region():
         PositionJitterParams(region="triangle")
 
 
+def test_position_jitter_rejects_reversed_range():
+    """Regression: a reversed range (min > max) would silently collapse to a fixed offset (zero
+    jitter) in sample_position -- reject it instead of producing an undetectable no-jitter run."""
+    with pytest.raises(ValidationError):
+        PositionJitterParams(enabled=True, x_range_pix=(50.0, -50.0))
+    with pytest.raises(ValidationError):
+        PositionJitterParams(enabled=True, y_range_pix=(10.0, 5.0))
+
+
+def test_position_jitter_has_zero_extent():
+    assert PositionJitterParams(region="rectangle").has_zero_extent() is True
+    assert PositionJitterParams(region="disk").has_zero_extent() is True
+    assert PositionJitterParams(region="disk", radius_pix=50.0).has_zero_extent() is False
+    assert PositionJitterParams(region="rectangle", x_range_pix=(-10.0, 10.0)).has_zero_extent() is False
+
+
 def test_migrate_v1_to_v2_passes_data_through():
     """v1 -> v2 is additive: old data passes straight through, and the new version is returned."""
     schema = FPVSSchema()
