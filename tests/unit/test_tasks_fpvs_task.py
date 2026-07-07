@@ -20,6 +20,7 @@ from xpman.hardware.trigger_null import NullTrigger
 from xpman.runtime.logging_sink import EventSink
 from xpman.tasks.base import SubjectInfo, TaskContext
 from xpman.tasks.fpvs.image_set import scan_directory
+from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.schema import (
     FPVSConditionParams,
     PositionJitterParams,
@@ -1182,6 +1183,29 @@ def test_check_triggers_no_fade_warning_when_one_fade_set():
     params.timing.fade_in_seconds = 1.0
     params.timing.fade_out_seconds = 0.0
     assert not any("fade" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_warns_on_flat_contrast_modulation():
+    """A sinusoidal/square modulation with contrast_min == contrast_max has zero amplitude, so
+    there is no contrast signal to tag at the base frequency -- warn."""
+    task = FPVSTask()
+    params = _clean_condition()
+    params.modulation.waveform = Waveform.SINUSOIDAL
+    params.modulation.contrast_min = 0.5
+    params.modulation.contrast_max = 0.5
+    warnings = task.check_triggers(params.model_dump())
+    assert any("zero" in w and "amplitude" in w for w in warnings)
+
+
+def test_check_triggers_no_flat_contrast_warning_for_waveform_none():
+    """waveform='none' intentionally shows full opacity and tags via image on/off, so equal
+    contrast bounds are irrelevant there -- no warning."""
+    task = FPVSTask()
+    params = _clean_condition()
+    params.modulation.waveform = Waveform.NONE
+    params.modulation.contrast_min = 0.5
+    params.modulation.contrast_max = 0.5
+    assert not any("amplitude" in w for w in task.check_triggers(params.model_dump()))
 
 
 def test_check_triggers_invalid_params_returns_skip_message_not_exception():
