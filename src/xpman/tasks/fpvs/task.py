@@ -35,10 +35,16 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
+from xpman.tasks.fpvs.distractor import (
+    DistractorController,
+    build_distractor_stimulus,
+    schedule_distractor_events,
+    score_distractor_responses,
+)
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
-from xpman.tasks.fpvs.response import ResponseCollector, score_responses
+from xpman.tasks.fpvs.response import ResponseCollector, ResponseKeyParams, score_responses
 from xpman.tasks.fpvs.schema import (
     FamiliarizationParams,
     FPVSConditionParams,
@@ -479,6 +485,32 @@ class FPVSTask(TaskModule):
             position_rng = ctx.rng.spawn(1)[0]
             position_provider = _build_position_provider(params.position_jitter, position_rng)
 
+        # Distractor (attention-control) task. Same decoupled-RNG discipline as position jitter: a
+        # dedicated ctx.rng.spawn(1) sub-stream so the event schedule is reproducible per
+        # (Instance, Subject) yet enabling the distractor never perturbs the stimulus order. Built
+        # only when enabled -> disabled path is byte-for-byte unchanged. Its keys are collected by a
+        # SEPARATE keyboard collector (distinct from the oddball-response collector) scored against
+        # distractor events, not stimulus onsets. See distractor.py.
+        distractor_controller = None
+        distractor_collector = None
+        if params.distractor.enabled:
+            distractor_rng = ctx.rng.spawn(1)[0]
+            n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
+            total_seq_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
+            n_stimuli = max(total_seq_frames // base_frames_per_cycle, 1)
+            effective_frames = n_stimuli * base_frames_per_cycle
+            events = schedule_distractor_events(
+                effective_frames, base_frames_per_cycle, params.distractor, distractor_rng, refresh
+            )
+            distractor_stim = build_distractor_stimulus(ctx.window, params.distractor, params.fixation)
+            distractor_controller = DistractorController(
+                events, distractor_stim, params.distractor.trigger_code
+            )
+            distractor_collector = ResponseCollector(
+                ResponseKeyParams(enabled=True, keys=params.distractor.keys)
+            )
+            distractor_collector.clear()
+
         self._response_collector = ResponseCollector(params.response)
         self._response_collector.clear()
         trial_start_time = ctx.clock.get_time()
@@ -519,6 +551,7 @@ class FPVSTask(TaskModule):
             n_fade_out_frames=n_fade_out_frames,
             rng=ctx.rng,
             position_provider=position_provider,
+            distractor=distractor_controller,
         )
 
         # Fixation-only post-stimulus interval.
@@ -550,6 +583,28 @@ class FPVSTask(TaskModule):
             )
 
         valid_rts = [s.rt_seconds for s in scored_responses if s.is_valid and s.rt_seconds is not None]
+
+        # Distractor task scoring (signal detection), if it ran. Collected on its OWN keyboard
+        # collector and scored against the distractor events (not stimulus onsets). Only fired
+        # events count, so an aborted trial doesn't inflate the miss count. See distractor.py.
+        distractor_score = None
+        if distractor_controller is not None and distractor_collector is not None:
+            distractor_responses = distractor_collector.collect()
+            distractor_score = score_distractor_responses(
+                distractor_responses, distractor_controller.events, params.distractor
+            )
+            ctx.event_sink.log(
+                "distractor_scored",
+                {
+                    "n_events": distractor_score.n_events,
+                    "n_hits": distractor_score.n_hits,
+                    "n_misses": distractor_score.n_misses,
+                    "n_false_alarms": distractor_score.n_false_alarms,
+                    "hit_rate": distractor_score.hit_rate,
+                    "mean_rt_seconds": distractor_score.mean_rt_seconds,
+                    "median_rt_seconds": distractor_score.median_rt_seconds,
+                },
+            )
 
         # Frequency sanity check against the *real* refresh rate (only known now, at run time).
         requested = sequence_result.requested_base_freq_hz
@@ -611,6 +666,17 @@ class FPVSTask(TaskModule):
                 "n_responses": len(scored_responses),
                 "n_valid_responses": len(valid_rts),
                 "mean_rt_seconds": (sum(valid_rts) / len(valid_rts)) if valid_rts else None,
+                "distractor_enabled": params.distractor.enabled,
+                "distractor_n_events": distractor_score.n_events if distractor_score else None,
+                "distractor_n_hits": distractor_score.n_hits if distractor_score else None,
+                "distractor_n_misses": distractor_score.n_misses if distractor_score else None,
+                "distractor_n_false_alarms": (
+                    distractor_score.n_false_alarms if distractor_score else None
+                ),
+                "distractor_hit_rate": distractor_score.hit_rate if distractor_score else None,
+                "distractor_mean_rt_seconds": (
+                    distractor_score.mean_rt_seconds if distractor_score else None
+                ),
             }
         )
 
@@ -770,6 +836,43 @@ class FPVSTask(TaskModule):
                     "threshold) -- combined with the image's own size this can push a stimulus "
                     "partly or fully off the display. Confirm the region fits your monitor "
                     "(the fixation marker stays centered regardless)."
+                )
+
+        # Distractor (attention-control) advisories.
+        distractor = params.distractor
+        if distractor.enabled:
+            # Response window wider than the minimum inter-event gap: a key press could fall inside
+            # two events' windows, so hits can't be attributed to one event unambiguously.
+            if distractor.response_window_seconds >= distractor.min_interval_seconds:
+                warnings.append(
+                    f"distractor.response_window_seconds ({distractor.response_window_seconds:g}) is "
+                    f">= min_interval_seconds ({distractor.min_interval_seconds:g}) -- a response "
+                    "could fall in two events' windows, making hit attribution ambiguous. Keep the "
+                    "window shorter than the minimum gap between events."
+                )
+            # Same key scores two tasks: the oddball-response collector and the distractor collector
+            # both consume it, so a press is attributed to whichever collects first.
+            if params.response.enabled:
+                shared = set(distractor.keys) & set(params.response.keys)
+                if shared:
+                    warnings.append(
+                        f"distractor and response tasks share key(s) {sorted(shared)} -- the same "
+                        "press would be scored by both. Give the distractor its own key(s), or "
+                        "disable the oddball-response task when using the distractor."
+                    )
+            # Guard bands consume the whole plateau: no event can be placed.
+            if 2 * distractor.guard_seconds >= params.base.trial_duration_seconds:
+                warnings.append(
+                    f"distractor guard bands (2 x {distractor.guard_seconds:g}s) span the whole "
+                    f"trial ({params.base.trial_duration_seconds:g}s) -- no distractor event can be "
+                    "scheduled. Reduce guard_seconds or lengthen the trial."
+                )
+            # Distractor trigger equal to a stimulus trigger: markers become indistinguishable.
+            if distractor.trigger_code is not None and distractor.trigger_code in (base_code, oddball_code):
+                warnings.append(
+                    f"distractor.trigger_code ({distractor.trigger_code}) equals a base/oddball "
+                    "trigger code -- distractor and stimulus events would be indistinguishable in "
+                    "the EEG. Use a distinct code."
                 )
 
         return warnings

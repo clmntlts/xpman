@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.fpvs.distractor import DistractorParams
 from xpman.tasks.fpvs.fixation import FixationParams
 from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
@@ -163,6 +164,7 @@ class FPVSConditionParams(BaseModel):
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
     position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
+    distractor: DistractorParams = Field(default_factory=DistractorParams)
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -196,11 +198,11 @@ class FPVSConditionParams(BaseModel):
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
-    #: v2 (WP-B) adds the optional ``position_jitter`` block to Condition params. The bump is
-    #: purely additive: a v1 Condition dict has no ``position_jitter`` key, and the pydantic
-    #: default (``PositionJitterParams()`` with ``enabled=False``) fills it in on validation, so
-    #: old frozen Instances still validate and run centered exactly as before.
-    SCHEMA_VERSION = "2"
+    #: v2 (WP-B) added the optional ``position_jitter`` block; v3 adds the optional ``distractor``
+    #: block. Both bumps are purely additive: an older Condition dict lacks the new key, and its
+    #: pydantic default (disabled) fills it in on validation, so old frozen Instances still
+    #: validate and run exactly as before (centered, no distractor).
+    SCHEMA_VERSION = "3"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -217,9 +219,9 @@ class FPVSSchema:
         # See ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version == "1":
-            # v1 -> v2 is additive: the only new field (``position_jitter``) is optional with a
-            # disabled default, so old data passes straight through and the missing key is filled
-            # by the pydantic default at validation time. No data transformation needed.
+        if old_version in ("1", "2"):
+            # v1 -> v3 is additive: the new fields (``position_jitter`` at v2, ``distractor`` at v3)
+            # are optional with disabled defaults, so old data passes straight through and each
+            # missing key is filled by the pydantic default at validation time. No transformation.
             return self.SCHEMA_VERSION, data
         raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")

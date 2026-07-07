@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from xpman.hardware.clock import Clock
 from xpman.hardware.trigger_null import NullTrigger
 from xpman.runtime.logging_sink import EventSink
+from xpman.tasks.fpvs.distractor import DistractorController, DistractorEvent
 from xpman.tasks.fpvs.modulation import ModulationParams, Waveform
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
@@ -1076,6 +1078,66 @@ def test_provider_missing_set_position_does_not_break(mock_window, event_sink, t
     )
     assert result.aborted is False
     assert plain.draw.called
+
+
+# ---------------------------------------------------------------------------
+# distractor overlay + trigger wiring
+# ---------------------------------------------------------------------------
+
+
+def test_distractor_overlay_drawn_on_active_frames_and_onsets_logged(
+    mock_window, event_sink, trigger, clock
+):
+    overlay = MagicMock(name="distractor_overlay")
+    # Two events, hand-placed on non-base-onset frames: 3 active frames each (5..8, 15..18).
+    events = [
+        DistractorEvent(index=0, onset_frame=5, offset_frame=8),
+        DistractorEvent(index=1, onset_frame=15, offset_frame=18),
+    ]
+    controller = DistractorController(events, overlay, trigger_code=None)
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[MagicMock(name="base")],
+        oddball_stimuli=[MagicMock(name="odd")],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),  # 6 stimuli, 60 frames
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        distractor=controller,
+    )
+    event_sink.close()
+    # Overlay drawn exactly on the active frames (3 + 3), not otherwise.
+    assert overlay.draw.call_count == 6
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    onsets = [r for r in rows if r["event_type"] == "distractor_onset"]
+    assert [json.loads(r["payload_json"])["index"] for r in onsets] == [0, 1]
+    # onset_time was written back onto each event (for later RT scoring).
+    assert all(e.onset_time is not None for e in events)
+
+
+def test_distractor_trigger_sent_on_event_onset(mock_window, event_sink, clock):
+    rec = _RecordingTrigger()
+    events = [DistractorEvent(index=0, onset_frame=5, offset_frame=8)]
+    controller = DistractorController(events, MagicMock(name="overlay"), trigger_code=99)
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=[MagicMock(name="base")],
+        oddball_stimuli=[MagicMock(name="odd")],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+        refresh_rate_hz=60.0,
+        trigger=rec,
+        clock=clock,
+        event_sink=event_sink,
+        distractor=controller,
+    )
+    # The distractor code fired exactly once (its single event onset), alongside the base/oddball
+    # codes -- proving the distractor pulse coexists with the stimulus triggers.
+    assert rec.ops.count(("set", 99)) == 1
+    assert ("set", 1) in rec.ops  # base onsets still fire
 
 
 # ---------------------------------------------------------------------------

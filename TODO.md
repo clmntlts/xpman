@@ -162,13 +162,21 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
       stream (reuses `run_base_sequence`) framed by start/stop triggers and a post-blank, before
       the main sequence. Enabled off by default. (Implemented on the core-realism foundation, not
       the originally sketched separate `familiarization.py`.)
+- [x] **Distractor (attention-control) task (2026-07-07).** `tasks/fpvs/distractor.py`: a
+      fixation-change detection task during the stimulation (change_type color/dot/size,
+      configurable timing/keys). "Better than legacy": signal-detection scoring
+      (`score_distractor_responses` -> hits/misses/false-alarms/hit-rate/RT), a reproducible seeded
+      schedule on a decoupled `ctx.rng.spawn(1)` sub-stream (enabling it never perturbs stimulus
+      order), an optional per-event EEG trigger scheduled off base-onset frames (no callOnFlip
+      collision), full event-log + GUI-timeline integration (purple markers), and design-time
+      `check_triggers` advisories. Additive schema bump v2 -> v3; disabled by default.
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; baseline stimulus period; oddball-proportion patterns (BBBBO) +
-      image-ordering options; missing-oddball; double-base; sweep; distractor
-      (`paradigm_distractor.py`); periodic frequency-changing; per-image transforms
-      (scale/rotate/flip/position); luminance equalization; second oddball directory; inter-trial
-      sound/animation. Plus a dedicated familiarization stimulus selector (currently reuses
-      `base_selector`).
+      image-ordering options; missing-oddball; double-base; sweep; periodic frequency-changing;
+      per-image transforms (scale/rotate/flip/position); luminance equalization; second oddball
+      directory; inter-trial sound/animation. Plus a dedicated familiarization stimulus selector
+      (currently reuses `base_selector`), and extending the distractor across the pre/post/
+      familiarization phases (currently the main sequence only).
 - [ ] **Hardware validation of modulation** (rides on the lab visit below): with the photodiode
       + `core/verification_report.py`, confirm no dropped frames with modulation on, and that the
       measured contrast waveform matches the intended sine and fades toward mid-gray, not black.
