@@ -87,6 +87,11 @@ class SerialTrigger(TriggerSender):
 
         On an ``auto_pulse`` device this is the whole trigger: the device pulses in hardware and
         returns to 0 on its own, so no clear follows.
+
+        A write failure (device unplugged mid-run, driver error) is deliberately **not** swallowed
+        -- it propagates, so the engine marks the Run CRASHED and the experimenter learns
+        immediately. Silently continuing would leave the EEG with missing/wrong trigger markers,
+        invisible until analysis, which is far worse for the science than a loud, timestamped stop.
         """
         self._serial.write(bytes([code & 0xFF]))
 

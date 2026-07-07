@@ -212,6 +212,9 @@ class FPVSSchema:
         return FPVSConditionParams
 
     def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
+        # NOTE: this hook is NOT yet on the load path -- frozen dicts are read via
+        # model_validate() directly. It stays correct only while migrations are additive.
+        # See ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
         if old_version == "1":

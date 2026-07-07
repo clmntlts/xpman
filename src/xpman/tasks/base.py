@@ -104,6 +104,23 @@ class ParameterSchema(Protocol):
         Returns the new version string (normally ``self.SCHEMA_VERSION``) paired with the
         migrated data. Implementations should raise if ``old_version`` is unrecognized
         rather than silently passing data through unchanged.
+
+        CONTRACT / current status (read before bumping ``SCHEMA_VERSION``): this hook is the
+        designated forward-migration point, but it is **not yet wired into the load path**.
+        Frozen parameter dicts are read back at run time via ``<Model>.model_validate(data)``
+        directly (see ``tasks/fpvs/task.py``), which never consults the stored
+        ``task_schema_version`` nor calls ``migrate()``. That is safe **only because every
+        schema change so far has been ADDITIVE** -- new optional fields with defaults, which
+        old dicts satisfy automatically (a v1 Condition with no ``position_jitter`` key still
+        validates under v2, defaulting to disabled). Therefore:
+
+        * Keep schema evolution additive (add optional fields with defaults; never rename or
+          remove a field, never change a field's meaning). Additive changes need no migration.
+        * A genuinely BREAKING change (rename/remove/re-interpret a field) MUST first wire this
+          ``migrate()`` into the read boundary (freeze and/or ``run_trial``, threading the
+          stored ``task_schema_version`` through) -- otherwise old Instances would be silently
+          mis-read. Do not ship the breaking change and this hook in the same step assuming it
+          runs; confirm the call site exists.
         """
         ...
 
