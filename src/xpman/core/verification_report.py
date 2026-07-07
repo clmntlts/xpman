@@ -8,13 +8,16 @@ hardware" pattern as ``core/export.py``. Callers (see
 ``tests/manual_hardware/analyze_verification_run.py``) read ``events.csv``, parse each row's
 ``payload_json`` into a ``payload`` dict, and pass already-parsed rows in here.
 
-Trigger-to-onset latency pairs each ``trigger_sent`` with the most recent onset *at or before it
-in time* and reports the signed ``trigger_time - onset_time`` -- how long after the visual onset
-the trigger fired. Pairing is by timestamp, deliberately **not** by ``stim_index`` (which restarts
-at 0 every trial, so matching on it collides across a multi-trial run). Flip-interval stats are
-likewise segmented per stimulation stream, so the long gaps between trials (fixation intervals +
-the between-trials gate) never count as frame intervals. See ``_compute_trigger_latency`` /
-``_flip_segments``.
+The trigger-vs-onset delta pairs each ``trigger_sent`` with the most recent onset *at or before it
+in time* and reports the signed ``trigger_time - onset_time``. Because the send is bound to the
+onset flip (``window.callOnFlip``) and both events are timestamped with the *same* ``flip_time``,
+this delta is ~0 by construction: it is a **sanity check** that the trigger and onset are logged
+against the same flip, NOT a measurement of the command->physical-pulse latency (which needs an
+oscilloscope/logic-analyzer trace against a photodiode -- the event log has no visibility into it).
+Pairing is by timestamp, deliberately **not** by ``stim_index`` (which restarts at 0 every trial,
+so matching on it collides across a multi-trial run). Flip-interval stats are likewise segmented
+per stimulation stream, so the long gaps between trials (fixation intervals + the between-trials
+gate) never count as frame intervals. See ``_compute_trigger_latency`` / ``_flip_segments``.
 
 Two things this does NOT compute, on purpose, because the event log alone can't tell you:
 trigger pulse width/voltage (a physical property of the port signal -- needs an oscilloscope),
@@ -108,8 +111,12 @@ class VerificationReport:
 
         lines += [
             "",
-            "Trigger-to-onset latency (item 2 -- xpman's own command latency vs. the stimulus "
-            "onset flip, not port I/O time; a negative mean means a trigger fired before its onset):",
+            "Trigger-vs-onset log delta (item 2 -- SANITY CHECK ONLY, not the real latency):",
+            "  Since the trigger send is bound to the onset flip (window.callOnFlip) and BOTH the "
+            "trigger_sent and onset events are timestamped with the same flip_time, this delta is "
+            "~0 by construction. It confirms the two are logged against the same flip; it does NOT "
+            "measure the command->physical-pulse latency. For the real number, read the "
+            "oscilloscope/logic-analyzer trace of the port line against the photodiode.",
         ]
         if self.trigger_latency.mean_latency_s is None:
             lines.append("  No trigger_sent events found (or none could be paired to an onset/flip).")
@@ -117,7 +124,8 @@ class VerificationReport:
             tl = self.trigger_latency
             lines.append(
                 f"  n_triggers={tl.n_triggers}  mean={tl.mean_latency_s * 1000:.2f}ms  "
-                f"stddev={tl.stddev_latency_s * 1000:.2f}ms"
+                f"stddev={tl.stddev_latency_s * 1000:.2f}ms  (expected ~0; a large value means a "
+                "logging/pairing bug, not a hardware latency)"
             )
 
         lines += [

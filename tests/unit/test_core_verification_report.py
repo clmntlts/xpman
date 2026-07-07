@@ -267,7 +267,7 @@ def test_format_does_not_crash_and_mentions_all_sections_with_full_data():
     ]
     text = build_verification_report(events, nominal_frame_period_s=0.1).format()
 
-    for expected in ("Inter-flip interval", "Trigger-to-onset latency", "Trigger codes sent", "Frequency check", "Response/RT summary"):
+    for expected in ("Inter-flip interval", "Trigger-vs-onset log delta", "Trigger codes sent", "Frequency check", "Response/RT summary"):
         assert expected in text
 
 

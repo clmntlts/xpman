@@ -578,6 +578,34 @@ def test_stdout_ignores_unrelated_lines(qtbot, db_path, tmp_path):
     assert not dialog._progress_timer.isActive()
 
 
+def test_relaunch_resets_run_id_so_new_worker_is_tracked(qtbot, db_path, tmp_path):
+    """Regression: after a first run, ``_run_id`` holds the previous run's id. Because
+    ``_on_stdout`` only latches ``RUN_ID:`` when ``_run_id is None``, a *second* launch would
+    ignore the new worker's RUN_ID line and poll progress against the OLD run forever, freezing
+    the new run's progress bar. ``_on_launch`` must reset ``_run_id`` to None each time."""
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    # First launch: worker announces run 42.
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+    dialog._process.readAllStandardOutput.return_value = QByteArray(b"RUN_ID:42\n")
+    dialog._on_stdout()
+    assert dialog._run_id == 42
+    dialog._process.readAllStandardError.return_value = QByteArray(b"")
+    dialog._on_finished(EXIT_COMPLETED, None)
+
+    # Second launch must clear the stale id...
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=MagicMock()):
+        dialog._on_launch()
+    assert dialog._run_id is None
+    # ...so the new worker's RUN_ID is accepted, not ignored.
+    dialog._process.readAllStandardOutput.return_value = QByteArray(b"RUN_ID:99\n")
+    dialog._on_stdout()
+    assert dialog._run_id == 99
+
+
 # ---------------------------------------------------------------------------
 # Progress polling against a real DB
 # ---------------------------------------------------------------------------

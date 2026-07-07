@@ -270,6 +270,11 @@ class LaunchDialog(QDialog):
             self._status_label.setText(f"Cannot launch: {exc}")
             return
 
+        # Reset per-run state: this dialog stays open for "launch another subject", so a stale
+        # _run_id from the previous run would make _on_stdout's `self._run_id is None` guard reject
+        # the new worker's RUN_ID line, freezing the progress bar on the new run.
+        self._run_id = None
+
         self._control_dir = Path(tempfile.mkdtemp(prefix="xpman_launch_"))
         self._abort_file = self._control_dir / "abort.flag"
 

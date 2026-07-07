@@ -19,7 +19,7 @@ rig:
 | # | Quantity | Pass criterion |
 |---|---|---|
 | 1 | Inter-flip interval (screen) | mean ≈ 1/refresh; **0 dropped frames** over a 60 s run; SD ≲ 1 ms |
-| 2 | Trigger-to-onset latency **and jitter** | consistent; **jitter (SD) ≪ base period** (target ≲ 1–2 ms) |
+| 2 | Trigger-to-onset latency **and jitter** | consistent; **jitter (SD) ≪ base period** (target ≲ 1–2 ms) — **measure with the oscilloscope/photodiode (§2.3), NOT the Summary "delta"** |
 | 3 | Trigger pulse width / levels | device's fixed **~8 ms** pulse; clean TTL |
 | 4 | Trigger codes | base code on base onsets, oddball code on oddballs; counts match |
 | 5 | Frequency (requested vs achieved) | achieved = requested rounded to whole frames (expected) |
@@ -161,9 +161,15 @@ Optional extras in the same session:
 xpman computes the whole statistics table from the event log; compare these to your physical capture.
 
 **In the GUI (offline, no rig needed):** open the app, select the Run, click **"Trigger / Event
-Log…"** → the **Summary** tab gives inter-flip mean/SD/dropped-frames, trigger-to-onset latency,
-code breakdown, and achieved frequencies; the **Timeline** tab shows the aligned onset/trigger raster
-per trial (spot a missing or mistimed trigger at a glance).
+Log…"** → the **Summary** tab gives inter-flip mean/SD/dropped-frames, code breakdown, and achieved
+frequencies; the **Timeline** tab shows the aligned onset/trigger raster per trial (spot a missing or
+mistimed trigger at a glance).
+
+> ⚠️ **Do not use the Summary "trigger-vs-onset delta" for item 2.** The trigger send is bound to the
+> onset flip (`window.callOnFlip`) and both events are logged with the *same* flip timestamp, so that
+> delta is ~0 **by construction** — it only confirms the two are logged against the same flip, it is
+> **not** the electrical latency. The real trigger-to-onset latency and its jitter come from the
+> oscilloscope/photodiode capture in §2.3.
 
 **From the CLI** on the `events.csv` the manual scripts printed:
 ```powershell
