@@ -77,6 +77,9 @@ class TrialTimeline:
     kind: str = "trial"
     label: str = ""
     responses: list[TimelineMark] = field(default_factory=list)
+    #: Distractor (attention-control) event onsets in this stream, if the distractor task ran.
+    #: ``code`` carries the optional distractor trigger code (None when behaviour-only).
+    distractors: list[TimelineMark] = field(default_factory=list)
 
     @property
     def n_base(self) -> int:
@@ -117,7 +120,8 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 cur["end"] = cur["last"]
                 windows.append(cur)
             cur = {
-                "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [], "responses": [],
+                "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [],
+                "responses": [], "distractors": [],
                 "kind": "familiarization" if event_type == "base_sequence_start" else "trial",
             }
         elif event_type in _SEQUENCE_END_EVENTS:
@@ -134,6 +138,14 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 index = _mark_index(payload, len(cur["triggers"]))
                 cur["triggers"].append(
                     TimelineMark(ts - cur["start"], payload.get("is_oddball"), payload.get("code"), index)
+                )
+                cur["last"] = ts
+            elif event_type == "distractor_onset":
+                # Logged inline during the stream (like onsets); code carries the optional trigger.
+                cur["distractors"].append(
+                    TimelineMark(
+                        ts - cur["start"], None, payload.get("trigger_code"), payload.get("index", 0)
+                    )
                 )
                 cur["last"] = ts
     if cur is not None:
@@ -176,6 +188,7 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 kind=w["kind"],
                 label=label,
                 responses=w["responses"],
+                distractors=w["distractors"],
             )
         )
     return timelines

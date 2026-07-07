@@ -169,6 +169,33 @@ def test_build_trial_timelines_places_responses_in_their_stream():
     assert resp.time_s == pytest.approx(0.9)  # 10.9 - 10.0
 
 
+def test_build_trial_timelines_captures_distractor_onsets():
+    """distractor_onset events are logged inline during the stream and land on the timeline's
+    ``distractors`` layer, carrying their index and optional trigger code."""
+    events = [
+        _ev("base_oddball_sequence_start", 10.0),
+        _ev("stimulus_onset", 10.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("distractor_onset", 10.5, {"index": 0, "frame_index": 30, "trigger_code": 99}),
+        _ev("distractor_onset", 12.0, {"index": 1, "frame_index": 120, "trigger_code": 99}),
+        _ev("base_oddball_sequence_end", 13.0),
+    ]
+    timelines = build_trial_timelines(events)
+
+    marks = timelines[0].distractors
+    assert [m.index for m in marks] == [0, 1]
+    assert [m.time_s for m in marks] == pytest.approx([0.5, 2.0])
+    assert [m.code for m in marks] == [99, 99]
+
+
+def test_build_trial_timelines_no_distractors_when_absent():
+    events = [
+        _ev("base_oddball_sequence_start", 0.0),
+        _ev("stimulus_onset", 0.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("base_oddball_sequence_end", 1.0),
+    ]
+    assert build_trial_timelines(events)[0].distractors == []
+
+
 def test_build_trial_timelines_index_falls_back_to_ordinal_without_stim_index():
     events = [
         _ev("base_oddball_sequence_start", 0.0),

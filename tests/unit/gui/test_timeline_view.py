@@ -69,6 +69,30 @@ def test_timeline_view_draws_familiarization_and_responses(qtbot):
     assert len(view._scene.items()) > len(trial.onsets)
 
 
+def test_timeline_view_draws_distractor_markers(qtbot):
+    """Distractor events render as purple vertical marker lines, placed by time proportion."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QGraphicsLineItem
+
+    trial = TrialTimeline(
+        index=1,
+        duration_s=2.0,
+        onsets=[TimelineMark(0.0, False, None, 0)],
+        triggers=[],
+        distractors=[TimelineMark(0.5, None, 99, 0), TimelineMark(1.5, None, 99, 1)],
+    )
+    view = TimelineView([trial])
+    qtbot.addWidget(view)
+
+    purple = QColor("#a855f7")
+    purple_lines = [
+        it
+        for it in view._scene.items()
+        if isinstance(it, QGraphicsLineItem) and it.pen().color() == purple
+    ]
+    assert len(purple_lines) == 2
+
+
 def test_timeline_view_empty_shows_note_not_crash(qtbot):
     view = TimelineView([])
     qtbot.addWidget(view)

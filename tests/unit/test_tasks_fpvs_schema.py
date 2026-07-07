@@ -44,13 +44,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "2"
+    assert FPVSSchema.SCHEMA_VERSION == "3"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("2", {"x": 1})
-    assert version == "2"
+    version, data = schema.migrate("3", {"x": 1})
+    assert version == "3"
     assert data == {"x": 1}
 
 
@@ -125,13 +125,37 @@ def test_position_jitter_has_zero_extent():
     assert PositionJitterParams(region="rectangle", x_range_pix=(-10.0, 10.0)).has_zero_extent() is False
 
 
-def test_migrate_v1_to_v2_passes_data_through():
-    """v1 -> v2 is additive: old data passes straight through, and the new version is returned."""
+def test_migrate_v1_to_current_passes_data_through():
+    """v1 -> current is additive: old data passes straight through, and the new version is returned."""
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "2"
-    assert data == v1_data  # no transformation -- the missing key is filled by the pydantic default
+    assert version == "3"
+    assert data == v1_data  # no transformation -- the missing keys are filled by pydantic defaults
+
+
+def test_migrate_v2_to_v3_passes_data_through():
+    """v2 -> v3 is additive: the only new field (``distractor``) is optional with a disabled default,
+    so an old v2 Condition dict validates under v3 unchanged."""
+    schema = FPVSSchema()
+    v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
+    version, data = schema.migrate("2", v2_data)
+    assert version == "3"
+    assert data == v2_data
+
+
+def test_condition_params_have_distractor_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.distractor.enabled is False
+
+
+def test_v2_condition_without_distractor_still_validates_disabled():
+    """A frozen v2 Condition dict has NO distractor key -- it must validate under v3 with the
+    distractor defaulting to disabled, so old Instances keep running unchanged."""
+    v2_condition = FPVSConditionParams().model_dump()
+    v2_condition.pop("distractor")
+    params = FPVSConditionParams.model_validate(v2_condition)
+    assert params.distractor.enabled is False
 
 
 def test_v1_condition_without_position_jitter_still_validates_disabled():

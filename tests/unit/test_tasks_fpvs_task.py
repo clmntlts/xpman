@@ -1208,6 +1208,58 @@ def test_check_triggers_no_flat_contrast_warning_for_waveform_none():
     assert not any("amplitude" in w for w in task.check_triggers(params.model_dump()))
 
 
+def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.distractor.enabled = True
+    params.distractor.min_interval_seconds = 1.0
+    params.distractor.response_window_seconds = 1.5  # wider than the min gap -> ambiguous
+    assert any("response_window_seconds" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_warns_when_distractor_shares_response_key():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.response.enabled = True
+    params.response.keys = ["space"]
+    params.distractor.enabled = True
+    params.distractor.response_window_seconds = 0.5  # keep the window advisory quiet
+    params.distractor.keys = ["space"]  # collides with the oddball-response key
+    assert any("share key" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_warns_when_distractor_guard_spans_whole_trial():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.base.trial_duration_seconds = 1.0
+    params.distractor.enabled = True
+    params.distractor.response_window_seconds = 0.5
+    params.distractor.guard_seconds = 1.0  # 2 x 1.0 >= 1.0 s trial -> no room
+    assert any("guard" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_warns_when_distractor_trigger_equals_stimulus_code():
+    task = FPVSTask()
+    params = _clean_condition()  # base_trigger_code=1, oddball_trigger_code=2
+    params.distractor.enabled = True
+    params.distractor.response_window_seconds = 0.5
+    params.distractor.trigger_code = 2  # same as oddball -> indistinguishable markers
+    assert any("distractor.trigger_code" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_clean_when_distractor_well_configured():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.base.trial_duration_seconds = 60.0
+    params.distractor.enabled = True
+    params.distractor.min_interval_seconds = 2.0
+    params.distractor.response_window_seconds = 1.0
+    params.distractor.guard_seconds = 1.0
+    params.distractor.keys = ["p"]  # distinct from the response task's ["space"]
+    params.distractor.trigger_code = 9  # distinct from base(1)/oddball(2)
+    assert task.check_triggers(params.model_dump()) == []
+
+
 def test_check_triggers_invalid_params_returns_skip_message_not_exception():
     task = FPVSTask()
     warnings = task.check_triggers({"base": {"base_freq_hz": -1.0}})
@@ -1272,6 +1324,58 @@ def test_runtime_no_frequency_warning_for_normal_base(mock_window, stim_root, ev
     assert summary["base_freq_precision_warning"] is False
     rows = _read_events(event_sink)
     assert not any(r["event_type"] == "base_frequency_clamped" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# distractor task (attention control)
+# ---------------------------------------------------------------------------
+
+
+def test_run_trial_with_distractor_populates_outcome_and_logs_events(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.trial_duration_seconds = 5.0  # long enough to schedule several distractor events
+    params.distractor.enabled = True
+    params.distractor.min_interval_seconds = 1.0
+    params.distractor.max_interval_seconds = 1.0
+    params.distractor.guard_seconds = 0.5
+
+    summary = _run_trial_outcome(task, ctx, params)
+    assert summary["distractor_enabled"] is True
+    assert summary["distractor_n_events"] >= 1
+    # No key presses in the mocked keyboard -> every event is a miss, no hits, no false alarms.
+    assert summary["distractor_n_hits"] == 0
+    assert summary["distractor_n_misses"] == summary["distractor_n_events"]
+    assert summary["distractor_n_false_alarms"] == 0
+
+    rows = _read_events(event_sink)
+    assert any(r["event_type"] == "distractor_onset" for r in rows)
+    assert any(r["event_type"] == "distractor_scored" for r in rows)
+
+
+def test_run_trial_without_distractor_leaves_metrics_none(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.trial_duration_seconds = 1.0  # distractor disabled by default
+
+    summary = _run_trial_outcome(task, ctx, params)
+    assert summary["distractor_enabled"] is False
+    assert summary["distractor_n_events"] is None
+    assert summary["distractor_hit_rate"] is None
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "distractor_onset" for r in rows)
 
 
 # ---------------------------------------------------------------------------

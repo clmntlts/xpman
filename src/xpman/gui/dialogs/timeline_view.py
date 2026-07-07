@@ -7,7 +7,8 @@ stimulus lands at the same x in every trial: trials stack into an aligned raster
 column-for-column (the periodic oddballs form clean vertical lines; a deviating trial jumps out).
 Onsets are ticks (oddballs taller + accented); triggers are marks on the row just below, so
 vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious; scored
-responses (blue) sit below the triggers. The base-only familiarization stream is labelled as such
+responses (blue) sit below the triggers. Distractor (attention-control) events, when present, are
+drawn as purple time-placed marker lines across the strip. The base-only familiarization stream is labelled as such
 (base ticks, no triggers -- not an "empty trial"). Rendered with ``QGraphicsScene`` so it's cheap
 for thousands of marks and its items are inspectable in tests.
 """
@@ -34,6 +35,7 @@ _ODDBALL = QColor("#e0662b")  # orange accent
 _TRIGGER = QColor("#2f855a")  # green
 _TRIGGER_ODDBALL = QColor("#c0392b")  # red
 _RESPONSE = QColor("#3b82f6")  # blue
+_DISTRACTOR = QColor("#a855f7")  # purple
 _AXIS = QColor("#9aa0a6")
 _TEXT = QColor("#d0d0d0")
 
@@ -109,6 +111,19 @@ class TimelineView(QGraphicsView):
                 where = f"stimulus #{resp.index}" if resp.index is not None else "no matched stimulus"
                 mark.setToolTip(f"response · {where} @ {resp.time_s:.3f}s")
 
+            # Distractor events are TIME-based (not tied to a stimulus position), so they're placed
+            # by time proportion of the trial. Because the base rate is constant, time-proportion and
+            # stimulus-position land at the same x, so a distractor still aligns with the onset ticks.
+            # Drawn as a full-strip purple line so it reads as an event marker, distinct from onsets.
+            for dist in trial.distractors:
+                x = _LABEL_W + (dist.time_s / trial.duration_s) * _PLOT_W if trial.duration_s > 0 else _LABEL_W
+                pen = QPen(_DISTRACTOR)
+                pen.setWidth(1)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, resp_y, pen)
+                line.setZValue(-0.5)
+                code = f" · code {dist.code}" if dist.code is not None else ""
+                line.setToolTip(f"distractor #{dist.index}{code} @ {dist.time_s:.3f}s")
+
         scene.setSceneRect(scene.itemsBoundingRect().adjusted(-8, -8, 8, 8))
 
     def _draw_legend(self, scene: QGraphicsScene) -> None:
@@ -117,6 +132,7 @@ class TimelineView(QGraphicsView):
             ("oddball onset", _ODDBALL),
             ("trigger", _TRIGGER),
             ("response", _RESPONSE),
+            ("distractor", _DISTRACTOR),
         ]
         x = _LABEL_W
         for text, color in entries:

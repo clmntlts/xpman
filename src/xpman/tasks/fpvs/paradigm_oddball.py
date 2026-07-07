@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from xpman.hardware.clock import Clock
     from xpman.hardware.trigger import TriggerSender
     from xpman.runtime.logging_sink import EventSink
+    from xpman.tasks.fpvs.distractor import DistractorController
     from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 
 
@@ -251,6 +252,7 @@ def _present_stimulus(
     modulation_fn: Callable[[int, int], float] | None = None,
     flip_log: "list[tuple[str, dict, float]] | None" = None,
     position: "tuple[float, float] | None" = None,
+    distractor: "DistractorController | None" = None,
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
     ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
@@ -292,8 +294,17 @@ def _present_stimulus(
         # giving a ~1-frame pulse; it's idempotent (setData(0) on an already-0 port), so it is safe
         # every non-onset frame. The sequence's final onset (no following frame to clear it) is
         # reset by the trailing clear_code in the caller. See TriggerSender.set_code/clear_code.
+        distractor_event = (
+            distractor.event_starting_at(global_frame_index) if distractor is not None else None
+        )
         if is_onset and trigger_code is not None:
             window.callOnFlip(trigger.set_code, trigger_code)
+        elif distractor_event is not None and distractor.trigger_code is not None:
+            # A distractor onset lands on a NON-base-onset frame (guaranteed by the scheduler when a
+            # distractor trigger is configured), so it never fights the base/oddball set_code above.
+            # Send its code on this flip instead of the routine clear; the next frame's clear_code
+            # resets the port, giving the same ~1-frame pulse as the base/oddball triggers.
+            window.callOnFlip(trigger.set_code, distractor.trigger_code)
         else:
             window.callOnFlip(trigger.clear_code)
 
@@ -313,6 +324,10 @@ def _present_stimulus(
         stim.draw()
         if photodiode is not None:
             photodiode.draw()
+        # Distractor overlay drawn LAST, on top of image + photodiode, only while an event is active
+        # (attention-control task -- see distractor.py). Touches only the fixation region.
+        if distractor is not None and distractor.is_active(global_frame_index):
+            distractor.draw()
 
         flip_time = window.flip()
         if flip_time is None:
@@ -344,6 +359,20 @@ def _present_stimulus(
                     # centered (jitter off) -- so onsets record position provenance the same way
                     # they record image identity (WP-B).
                     "pos": [position[0], position[1]] if position is not None else None,
+                },
+                timestamp=flip_time,
+            )
+        # A distractor event onset can land on ANY frame (not just a stimulus onset), so it is
+        # logged separately here, stamped with flip_time on the SAME timeline as stimulus onsets.
+        # Its onset_time is written back onto the event for later RT scoring in task.py.
+        if distractor_event is not None:
+            distractor_event.onset_time = flip_time
+            event_sink.log(
+                "distractor_onset",
+                {
+                    "index": distractor_event.index,
+                    "frame_index": global_frame_index,
+                    "trigger_code": distractor.trigger_code,
                 },
                 timestamp=flip_time,
             )
@@ -603,6 +632,7 @@ def run_base_oddball_sequence(
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
     position_provider: Callable[[], tuple[float, float]] | None = None,
+    distractor: "DistractorController | None" = None,
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -617,6 +647,11 @@ def run_base_oddball_sequence(
     ``position_provider`` (WP-B, per C3): called **once per stimulus** (both base and oddball
     positions) to get the ``(x, y)`` pixel offset applied via ``stim.set_position`` before that
     stimulus's frames; each onset logs the position. ``None`` leaves every stimulus centered.
+
+    ``distractor`` (attention-control task): when given, its overlay is drawn on top of the stream
+    during active frames, each event onset is logged (``distractor_onset``), and an optional
+    per-event trigger is sent (on non-base-onset frames, so it never collides with the base/oddball
+    trigger). ``None`` runs no distractor. See ``distractor.py``.
 
     Raises:
         ValueError: either ``base_stimuli`` or ``oddball_stimuli`` is empty, or
@@ -706,6 +741,7 @@ def run_base_oddball_sequence(
             modulation_fn=modulation_fn,
             flip_log=flip_log,
             position=stim_position,
+            distractor=distractor,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim

@@ -521,6 +521,29 @@ oddball images — useful for marking just the oddball events on an EEG channel)
 shown last), `most_recent_oddball_onset` (only counts from oddball images), `trial_start`
 (from the very start of the trial).
 
+**Distractor task** (`distractor`) — an optional *attention-control* task: at pseudo-random
+moments during the stimulation, a brief change appears **at the fixation point** and the subject
+presses a key when they detect it. This keeps attention on fixation (orthogonal to the category
+being frequency-tagged) and gives a behavioural vigilance measure. Off by default; when on, you
+typically turn the oddball-**response** task off (or give the two tasks different keys).
+
+| Field | Type | Default | Constraints | Meaning |
+|---|---|---|---|---|
+| `enabled` | checkbox | off | — | Show the fixation-change detection task during stimulation. |
+| `change_type` | dropdown | `color` | `color` / `dot` / `size` | Recolour the fixation, show a small disc, or briefly enlarge it. |
+| `event_duration_seconds` | number | 0.2 | > 0 | How long each change stays on screen. |
+| `min_interval_seconds` / `max_interval_seconds` | number | 1.0 / 3.0 | max ≥ min | Random gap between events (drawn uniformly). |
+| `guard_seconds` | number | 1.0 | ≥ 0 | No event within this of the stimulation's start/end. |
+| `response_window_seconds` | number | 1.0 | > 0 | A key press within this after an event = hit (keep it < min interval). |
+| `keys` | comma-separated list | `space` | — | Key(s) counted as a distractor response. |
+| `color` / `dot_radius_pix` / `dot_color` / `size_scale` | — | red / 10 / red / 1.5 | — | Appearance for the chosen `change_type`. |
+| `trigger_code` | integer, optional | not set | 1–255 | Optional EEG marker per event (sent off base-onset frames so it never collides with the base/oddball trigger). |
+
+Scoring is **signal-detection**: the Run's results record hits, misses, false alarms, hit-rate,
+and mean RT; the **Trigger / Event Log… → Timeline** tab shows each distractor event as a purple
+marker line. Its schedule is reproducible per (Instance, Subject) and — like position jitter —
+enabling it never changes the stimulus order.
+
 ## 7. Troubleshooting
 
 ### 7.1 The app won't start / `python -m xpman.gui.app` fails immediately
