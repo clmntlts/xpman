@@ -977,7 +977,9 @@ def test_position_provider_called_once_per_stimulus_with_in_range_values(
     assert spy.positions == [(10.0, -5.0), (20.0, -5.0), (30.0, -5.0), (40.0, -5.0), (50.0, -5.0), (60.0, -5.0)]
 
 
-def test_no_position_provider_never_calls_set_position(mock_window, event_sink, trigger, clock):
+def test_no_position_provider_recenters_each_stimulus(mock_window, event_sink, trigger, clock):
+    # With no jitter, each stimulus is actively re-centered to (0,0) -- NOT left untouched -- so a
+    # stale offset from a prior jitter trial on the same cached ImageStim can never leak in.
     spy = _PositionSpyStim()
     run_base_sequence(
         window=mock_window,
@@ -989,7 +991,7 @@ def test_no_position_provider_never_calls_set_position(mock_window, event_sink, 
         event_sink=event_sink,
         position_provider=None,
     )
-    assert spy.positions == []  # disabled path: image stays centered, set_position never called
+    assert spy.positions == [(0.0, 0.0)] * 6  # one re-center per stimulus onset
     assert spy.draw_count == 60
 
 

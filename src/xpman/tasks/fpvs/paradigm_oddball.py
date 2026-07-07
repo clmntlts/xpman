@@ -264,14 +264,16 @@ def _present_stimulus(
     aborted = False
     onset_time: float | None = None
 
-    # Apply the per-stimulus position once, before any of its frames draw. Only the image moves
-    # (the wrapper's set_position touches the image stim, not the fixation marker). getattr guard:
-    # plain drawables/mocks used in some tests have no set_position -- a None position skips this
-    # entirely, so the centered path never requires the method.
-    if position is not None:
-        set_position = getattr(stim, "set_position", None)
-        if set_position is not None:
-            set_position(position)
+    # Apply the position once, before any of its frames draw. Only the image moves (the wrapper's
+    # set_position touches the image stim, not the fixation marker). Crucially we re-center on the
+    # NO-jitter path too (position is None -> (0, 0)): the ImageStim is cached for the whole Run,
+    # so a prior jitter trial could have left a stale offset on this exact stim -- a centered trial
+    # must actively reset it, or the image silently stays displaced while the onset log records
+    # pos=None (provenance would lie). getattr guard: plain drawables/mocks have no set_position.
+    effective_position = position if position is not None else (0.0, 0.0)
+    set_position = getattr(stim, "set_position", None)
+    if set_position is not None:
+        set_position(effective_position)
 
     for frame_in_stim in range(n_frames):
         if abort_check():

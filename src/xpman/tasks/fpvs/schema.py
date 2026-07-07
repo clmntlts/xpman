@@ -119,6 +119,27 @@ class PositionJitterParams(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _check_ranges(self) -> "PositionJitterParams":
+        # Reject reversed ranges (min > max): sample_position would silently fall back to a FIXED
+        # offset (min) with zero jitter, so a "±50 px" typo like (50, -50) would pin every image
+        # 50 px off-center instead of jittering -- undetectable from the data. (radius_pix >= 0 is
+        # already enforced by its field constraint.)
+        for name, (lo, hi) in (
+            ("x_range_pix", self.x_range_pix),
+            ("y_range_pix", self.y_range_pix),
+        ):
+            if lo > hi:
+                raise ValueError(f"{name} min ({lo!r}) must be <= max ({hi!r})")
+        return self
+
+    def has_zero_extent(self) -> bool:
+        """True when the *active* region can produce no displacement (so enabling jitter would be a
+        silent no-op) -- surfaced as a ``check_triggers`` advisory, not a hard error."""
+        if self.region == "disk":
+            return self.radius_pix == 0.0
+        return self.x_range_pix == (0.0, 0.0) and self.y_range_pix == (0.0, 0.0)
+
 
 class FPVSProgramParams(BaseModel):
     """No program-level parameters needed yet."""
