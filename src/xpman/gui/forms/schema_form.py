@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import enum
 import types
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 from PySide6.QtCore import Qt, Signal
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidg
 
 from xpman.gui.forms.widgets import (
     BoolFieldWidget,
+    ChoiceFieldWidget,
     EnumFieldWidget,
     FloatFieldWidget,
     FloatPairFieldWidget,
@@ -119,6 +120,13 @@ def _is_optional(annotation: Any) -> tuple[bool, Any]:
 
 def _is_enum(annotation: Any) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
+
+
+def _literal_choices(annotation: Any) -> tuple[Any, ...] | None:
+    """If ``annotation`` is ``Literal[...]``, return its choices; otherwise ``None``."""
+    if get_origin(annotation) is Literal:
+        return get_args(annotation)
+    return None
 
 
 def _is_model(annotation: Any) -> bool:
@@ -251,6 +259,9 @@ class SchemaForm(QWidget):
 
         if _is_enum(annotation):
             return EnumFieldWidget(annotation)
+        literal_choices = _literal_choices(annotation)
+        if literal_choices is not None:
+            return ChoiceFieldWidget(literal_choices)
         if annotation is bool:
             return BoolFieldWidget()
         if annotation is int:

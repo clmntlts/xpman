@@ -90,6 +90,16 @@ def test_set_then_clear_auto_pulse_writes_only_the_code():
         assert ctx.mock_serial_instance.write.call_args_list == [call(bytes([5]))]
 
 
+def test_set_code_propagates_write_failure_not_swallowed():
+    """A mid-run write failure (device unplugged, driver error) must propagate, not be silently
+    swallowed -- otherwise the EEG would keep recording with missing trigger markers, invisible
+    until analysis. The engine turns the propagated error into a CRASHED run the operator sees."""
+    with _MockedSerial(port="COM4") as ctx:
+        ctx.mock_serial_instance.write.side_effect = OSError("device disconnected")
+        with pytest.raises(OSError, match="device disconnected"):
+            ctx.trigger.set_code(7)
+
+
 def test_close_closes_the_port():
     with _MockedSerial(port="COM4") as ctx:
         ctx.trigger.close()

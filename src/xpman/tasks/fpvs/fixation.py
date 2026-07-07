@@ -18,7 +18,7 @@ product direction that nothing about experimental settings should be hardcoded. 
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -44,7 +44,7 @@ class FixationParams(BaseModel):
     bar_gap_pix: float = Field(
         default=10.0, ge=0, description="Bars only: gap between the two bars (e.g. above/below the stimulus)."
     )
-    bar_orientation: str = Field(
+    bar_orientation: Literal["horizontal", "vertical"] = Field(
         default="horizontal",
         description='Bars only: "horizontal" (two horizontal bars, one above/one below position_pix) '
         'or "vertical" (two vertical bars, one left/one right of position_pix).',

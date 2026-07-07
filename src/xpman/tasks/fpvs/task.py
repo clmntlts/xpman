@@ -30,6 +30,7 @@ from xpman.tasks.fpvs.fixation import build_fixation_stimulus
 from xpman.tasks.fpvs.image_set import Category, ImageEntry, filter_entries, scan_directory
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
+    frames_per_cycle,
     present_fixation_only,
     run_base_oddball_sequence,
     run_base_sequence,
@@ -70,6 +71,15 @@ NOMINAL_REFRESH_HZ = 60.0
 #: the drift check alone would miss it) with no inter-stimulus gap.
 BASE_FREQ_PRECISION_THRESHOLD = 0.05
 MIN_FRAMES_PER_CYCLE_WARN = 3
+
+#: Absolute floor, checked at run time against the REAL refresh rate: with fewer than 2 frames
+#: per cycle the stimulus is drawn every single frame with no off-frame, so no contrast
+#: modulation exists at all -- the run would be scientifically meaningless (not merely coarse).
+#: Unlike ``MIN_FRAMES_PER_CYCLE_WARN`` (advisory), this HARD-FAILS the trial before any stimulus
+#: is shown, converting the classic "typed 60 instead of 6 Hz on a 60 Hz monitor" mistake from a
+#: full run of garbage into an immediate, explained crash. Monitor-independent truth: 2 frames/
+#: cycle is the Nyquist floor for representing any periodic modulation.
+MIN_FRAMES_PER_CYCLE_ERROR = 2
 
 #: Environment variable that, when set truthy (``"1"``/``"true"``/``"yes"``), lets
 #: ``FPVSTask.prepare`` fall back to ``FALLBACK_REFRESH_RATE_HZ`` when the monitor's refresh rate
@@ -435,6 +445,19 @@ class FPVSTask(TaskModule):
         photodiode = PhotodiodePatch(ctx.window, params.photodiode) if params.photodiode.enabled else None
 
         refresh = self._refresh_rate_hz
+        # Hard floor (real refresh now known): fewer than 2 frames/cycle means the stimulus is
+        # drawn every frame with no off-frame, so there is NO contrast modulation to tag -- fail
+        # loudly here, before presenting anything, rather than recording a full run of
+        # scientifically meaningless data (the classic mistyped 60-for-6-Hz case on a 60 Hz rig).
+        base_frames_per_cycle = frames_per_cycle(refresh, params.base.base_freq_hz)
+        if base_frames_per_cycle < MIN_FRAMES_PER_CYCLE_ERROR:
+            raise ValueError(
+                f"trial {trial_index}: base_freq_hz ({params.base.base_freq_hz} Hz) is too high "
+                f"for this monitor's {refresh:.1f} Hz refresh -- it resolves to "
+                f"{base_frames_per_cycle} frame(s) per cycle, so no contrast modulation is "
+                "possible (need at least 2 frames/cycle). Lower base_freq_hz or check for a typo "
+                "(e.g. 60 instead of 6)."
+            )
         pre_frames = _interval_frames(ctx.rng, params.timing.pre_interval_seconds, refresh)
         post_frames = _interval_frames(ctx.rng, params.timing.post_interval_seconds, refresh)
         n_fade_in_frames = round(params.timing.fade_in_seconds * refresh)
@@ -442,12 +465,14 @@ class FPVSTask(TaskModule):
 
         # Position jitter (WP-B) draws from a DEDICATED, decoupled RNG sub-stream, not ctx.rng, so
         # enabling it never perturbs the pool-shuffle / interval draws above -- toggling jitter
-        # can't silently change trial order. The spawn is done ONLY when jitter is enabled: spawn
-        # advances ctx.rng, and ctx.rng is still drawn from later (the pool re-permutes on each
-        # wraparound via rng=ctx.rng), so spawning on the disabled path would change those draws
-        # and break the "disabled == today, byte-for-byte" guarantee. Enabled: spawn happens after
-        # every order-affecting draw above, so those are identical to the disabled run -- only the
-        # later wraparound permutations differ, which is expected when jitter is on.
+        # can't silently change trial order. ctx.rng.spawn(1) derives an independent child stream
+        # from ctx.rng's SeedSequence *without consuming* from ctx.rng's own draw stream: the
+        # parent's later .permutation()/interval draws (the pool re-permutes on each wraparound via
+        # rng=ctx.rng) are byte-for-byte identical whether or not we spawn -- spawn only bumps the
+        # SeedSequence's child counter, it does NOT advance the bit generator. So the
+        # "disabled == today, byte-for-byte" guarantee holds regardless. We still spawn ONLY when
+        # jitter is enabled, purely to avoid deriving an unused child stream on the disabled path --
+        # NOT because spawning would perturb the parent's order (it provably doesn't).
         position_provider = None
         if params.position_jitter.enabled:
             position_rng = ctx.rng.spawn(1)[0]

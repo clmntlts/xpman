@@ -201,6 +201,31 @@ def test_editing_enum_combobox_reflected_in_get_values(qtbot):
     assert form.get_values()["toggle_strategy"] == ToggleStrategy.ODDBALL_ONSET_ONLY.value
 
 
+def test_literal_field_renders_as_choice_combo_not_free_text(qtbot):
+    """A ``Literal[...]`` field (FixationParams.bar_orientation) must get a fixed-choice combo,
+    not the free-text 'unsupported type' fallback that would let a typo through."""
+    from xpman.gui.forms.widgets import ChoiceFieldWidget
+
+    form = SchemaForm(FixationParams)
+    qtbot.addWidget(form)
+    widget = form._field_widgets["bar_orientation"]
+    assert isinstance(widget, ChoiceFieldWidget)
+    # Defaults to the model's default literal, and offers exactly the two valid choices.
+    assert form.get_values()["bar_orientation"] == "horizontal"
+    assert widget._combo.count() == 2
+
+
+def test_editing_literal_combobox_round_trips_raw_value(qtbot):
+    form = SchemaForm(FixationParams)
+    qtbot.addWidget(form)
+
+    widget = form._field_widgets["bar_orientation"]
+    widget.set_value("vertical")
+    assert form.get_values()["bar_orientation"] == "vertical"
+    # The whole model still validates with the edited literal.
+    assert form.get_validated_model().bar_orientation == "vertical"
+
+
 def test_valuesChanged_signal_fires_on_edit(qtbot):
     form = SchemaForm(DummyConditionParams)
     qtbot.addWidget(form)

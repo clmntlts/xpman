@@ -238,6 +238,46 @@ class EnumFieldWidget(_ErrorLabelMixin):
         self._combo.setCurrentIndex(index)
 
 
+class ChoiceFieldWidget(_ErrorLabelMixin):
+    """A ``Literal[...]`` field (a fixed set of string choices, e.g.
+    ``Literal["horizontal", "vertical"]``), shown as a QComboBox.
+
+    Like :class:`EnumFieldWidget` but for bare ``Literal`` values rather than an ``enum.Enum``:
+    displays a prettified label ("Horizontal") while ``get_value``/``set_value`` round-trip the
+    raw literal ("horizontal") that ``model_validate`` expects. Values are kept in a plain
+    Python list indexed the same as the combo rows, so nothing depends on Qt's QVariant storage.
+    """
+
+    def __init__(self, choices: tuple[Any, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._choices = list(choices)
+        self._combo = QComboBox()
+        for choice in self._choices:
+            self._combo.addItem(_prettify_choice(choice))
+        self._combo.currentIndexChanged.connect(lambda _: self.valueEdited.emit())
+        self._content_layout.addWidget(self._combo)
+        self._register_styleable(self._combo)
+
+    def get_value(self) -> Any:
+        index = self._combo.currentIndex()
+        if index < 0:
+            return None
+        return self._choices[index]
+
+    def set_value(self, value: Any) -> None:
+        # Unknown/legacy values simply leave the selection unchanged rather than raising, matching
+        # SchemaForm.set_values' lenient "ignore what we can't place" contract.
+        if value in self._choices:
+            self._combo.setCurrentIndex(self._choices.index(value))
+
+
+def _prettify_choice(choice: Any) -> str:
+    """``"every_n_frames"`` -> ``"Every n frames"``; non-strings shown verbatim."""
+    if isinstance(choice, str):
+        return choice.replace("_", " ").capitalize()
+    return str(choice)
+
+
 class FloatPairFieldWidget(_ErrorLabelMixin):
     """A ``tuple[float, float]`` field (e.g. ``position_pix``), as two QDoubleSpinBoxes."""
 

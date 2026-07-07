@@ -280,6 +280,32 @@ def test_run_trial_selects_correct_pools_and_runs_sequence(mock_window, stim_roo
     assert result.outcome_summary["refresh_measured_successfully"] is True
 
 
+def test_run_trial_hard_fails_when_base_freq_too_high_for_refresh(mock_window, stim_root, event_sink):
+    """A base_freq_hz that resolves to <2 frames/cycle on the real refresh (e.g. mistyped 60 for
+    6 Hz on a 60 Hz monitor) must raise BEFORE anything is presented -- a full run of
+    unmodulated garbage is worse than an immediate, explained crash."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz refresh
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(category="object"),
+        oddball_selector=StimulusSelector(category="face"),
+    )
+    params.base.base_freq_hz = 60.0  # 60/60 -> 1 frame/cycle: no modulation possible
+    params.oddball.oddball_freq_hz = 12.0  # still < base, so the model validates
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        with pytest.raises(ValueError, match="frame.*per cycle|too high"):
+            task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    # Nothing was presented: the window was never flipped for a stimulus sequence.
+    assert mock_window.flip.call_count == 0
+
+
 def test_run_trial_flags_background_luminance_divergence(mock_window, real_stim_root, event_sink):
     task = FPVSTask()
     ctx = _make_ctx(mock_window, real_stim_root, event_sink)
