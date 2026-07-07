@@ -155,6 +155,17 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     event_types = {r["event_type"] for r in rows}
     assert {"run_started", "prepare", "trial_start", "flip", "trigger_sent", "trial_end", "cleanup"} <= event_types
 
+    # run_started records the actual RNG seed used, matching derive_seed -- so a Run is
+    # self-documenting and reproducible even without recomputing the seed by hand.
+    import json
+
+    from xpman.core.rng import derive_seed
+
+    run_started = next(r for r in rows if r["event_type"] == "run_started")
+    logged_seed = json.loads(run_started["payload_json"])["rng_seed"]
+    instance = get_instance(session, instance_id)
+    assert logged_seed == derive_seed(instance, subject_id)
+
 
 def test_trigger_provenance_recorded_from_describe(session, registry, mock_window, tmp_path):
     """launch_run records the trigger backend (and, where the backend exposes one, its port) from

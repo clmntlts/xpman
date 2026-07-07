@@ -20,7 +20,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from xpman.core.models import Result, Run, RunStatus, Subject
-from xpman.core.rng import get_rng
+from xpman.core.rng import derive_seed, get_rng
 from xpman.tasks.base import SubjectInfo, TaskContext
 
 if TYPE_CHECKING:
@@ -157,6 +157,10 @@ def execute_run(
     """
     frozen_program = instance.frozen_json["program"]
     rng = get_rng(instance, subject.id)
+    # The seed is a pure function of (instance.id, instance.checksum, subject.id) -- all on the Run
+    # row -- so it's already recomputable. We still record the actual integer used so a Run is
+    # self-documenting and stays reproducible even if derive_seed's derivation ever changes.
+    rng_seed = derive_seed(instance, subject.id)
 
     ctx = TaskContext(
         window=window,
@@ -172,7 +176,12 @@ def execute_run(
     trial_sequence = _build_trial_sequence(frozen_program, rng, experiment_id=experiment_id)
     event_sink.log(
         "run_started",
-        {"run_id": run.id, "n_trials": len(trial_sequence), "experiment_id": experiment_id},
+        {
+            "run_id": run.id,
+            "n_trials": len(trial_sequence),
+            "experiment_id": experiment_id,
+            "rng_seed": rng_seed,
+        },
     )
 
     # Store the event-log path relative to data_dir when we know it, so the DB stays portable if

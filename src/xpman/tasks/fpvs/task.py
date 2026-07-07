@@ -35,6 +35,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
+from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
 from xpman.tasks.fpvs.response import ResponseCollector, score_responses
@@ -706,6 +707,20 @@ class FPVSTask(TaskModule):
                 "onset/offset transient response can contaminate the periodic FPVS signal. "
                 "Standard FPVS ramps contrast over ~1-2 s; set timing.fade_in_seconds / "
                 "timing.fade_out_seconds unless an abrupt onset is intended."
+            )
+
+        # Flat contrast: a sinusoidal/square modulation with contrast_min == contrast_max has zero
+        # amplitude, so every frame shows the image at the same opacity -- there is no per-cycle
+        # contrast change to tag at the base frequency. (waveform='none' is exempt: it intentionally
+        # shows full opacity and tags via the image appearing/disappearing, not via a contrast fade.)
+        modulation = params.modulation
+        if modulation.waveform != Waveform.NONE and modulation.contrast_min == modulation.contrast_max:
+            warnings.append(
+                f"modulation.contrast_min == contrast_max ({modulation.contrast_min:g}) with "
+                f"waveform='{modulation.waveform.value}' -- the contrast modulation has zero "
+                "amplitude, so the image opacity never changes within a cycle and there is no "
+                "contrast signal to tag at the base frequency. Set contrast_min < contrast_max "
+                "(standard FPVS fades 0 -> 1), or use waveform='none' for a hard on/off design."
             )
 
         # Base-frequency ceiling: the real refresh rate isn't known until run time, so warn
