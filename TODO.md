@@ -46,6 +46,41 @@ as contrast. See the Hardware section; the analysis tooling is ready, only the l
 and plausibility-band constants; whether per-base-onset triggering at 6 Hz is desired vs. a single
 sequence-sync trigger; the deferred paradigm-breadth items below.
 
+## Triggers/position expert-panel review corrections (2026-07-06)
+
+Ran the expert panel over the USB-trigger + random-position (WP-A/B/C) work and fixed every
+software-correctable finding across four commits (853 tests green, ruff clean). Hardware-/
+research-gated items are unchanged (see the Hardware section).
+
+- [x] **Data-validity highs.** Variant selector no longer silently drops negated/no-point images
+      (`_select_pool` treats an unset `variant` as "match all"); position jitter re-centers on the
+      no-jitter path so an offset can't leak into the next centered trial (`_present_stimulus`);
+      `PositionJitterParams` gained a range validator (rejects reversed min>max) + `has_zero_extent`
+      with a "jitter enabled but region has zero extent" advisory.
+- [x] **Relaunch progress freeze.** `LaunchDialog._on_launch` resets `_run_id` each launch, so a
+      second run's `RUN_ID:` line is latched instead of being ignored (progress bar no longer
+      freezes on the previous run). Parallel-port I/O address now recorded in Run provenance
+      (`describe()["port"] or ["address"]`).
+- [x] **Honest latency metric.** The verification report relabels "trigger-to-onset latency" as a
+      "trigger-vs-onset log delta" and states it is ~0 by construction (send bound to the onset
+      flip via `callOnFlip`, both events stamped with the same `flip_time`) — a same-flip sanity
+      check, NOT the electrical latency. Lab tutorial says use the scope/photodiode for item 2.
+- [x] **Frames-per-cycle hard floor.** `run_trial` raises before presenting anything when the real
+      refresh resolves `base_freq_hz` to <2 frames/cycle (no contrast modulation possible) — turns
+      the mistyped-60-for-6-Hz case into an immediate crash instead of a run of garbage.
+- [x] **Literal fields + `bar_orientation`.** `SchemaForm` renders `Literal[...]` as a fixed-choice
+      combo (`ChoiceFieldWidget`); `FixationParams.bar_orientation` is now
+      `Literal["horizontal","vertical"]` (typo rejected at validation, not silently → horizontal).
+- [x] **RNG comment + migrate() contract + reproducibility.** Corrected the false "spawn advances
+      ctx.rng" comment (spawn is side-effect-free on the parent — verified); documented that
+      `migrate()` is not yet on the load path so schema changes must stay additive; the actual
+      derived RNG seed is now logged in `run_started` (self-documenting run). Flat-contrast
+      (`contrast_min == contrast_max`) advisory added to `check_triggers`.
+
+**Deliberately not done (derivable / low value):** a dedicated `Run.rng_seed` column — the seed is
+a pure function of `(instance.id, instance.checksum, subject.id)`, all on the Run row, so a
+migration would only duplicate derivable data (logging the integer covers the self-documenting need).
+
 ## Legacy conformance round (2026-07-04)
 
 Reviewed xpman against the legacy Java "XP Man" app (its manual + `FastPeriodicVisualStimulation.xml`
