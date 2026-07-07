@@ -118,9 +118,9 @@ def launch_run(
 
     versions = _resolve_versions()
     # Trigger backend provenance, straight from the sender's own describe(): which backend
-    # (none/parallel/serial) and, where it exposes one, the physical port/address it drove. The
-    # "port" key is only present for serial; parallel reports "address", none reports neither --
-    # so trigger_port stays NULL for those, which is exactly right (additive, nullable columns).
+    # (none/parallel/serial) and the physical port/address it drove. serial reports "port",
+    # parallel reports "address", none reports neither -- capture whichever is present so a
+    # parallel run's I/O address (0x0378 vs 0x0278) is recorded, not silently NULL.
     trigger_info = trigger.describe()
     run = Run(
         instance_id=instance.id,
@@ -131,7 +131,7 @@ def launch_run(
         numpy_version=versions["numpy_version"],
         pyserial_version=versions["pyserial_version"],
         trigger_backend=trigger_info.get("backend"),
-        trigger_port=trigger_info.get("port"),
+        trigger_port=trigger_info.get("port") or trigger_info.get("address"),
         status=RunStatus.ABORTED,  # placeholder until execute_run finalizes it either way
     )
     session.add(run)
