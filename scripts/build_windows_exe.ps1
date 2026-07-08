@@ -127,7 +127,15 @@ $PyInstallerArgs = @(
     # silently discovers zero tasks: no error, no crash, just an empty task registry, which
     # surfaces confusingly far downstream as ProgramCreateDialog's "No task types are
     # registered" (blocking Program creation) rather than as an obvious build problem.
-    "--copy-metadata", "xpman"
+    "--copy-metadata", "xpman",
+    # The app upgrades its SQLite schema on startup via Alembic (core.db.ensure_schema), which
+    # needs the migration scripts + config on disk. Bundle them so the frozen exe can build a
+    # fresh DB and apply pending migrations to an existing one -- without these, ensure_schema
+    # can't find them and falls back to create_all (which can't add columns to an existing DB,
+    # reintroducing the schema-drift crash this whole mechanism exists to prevent). They land at
+    # sys._MEIPASS/{alembic.ini,migrations/}, exactly where _schema_base_dir() looks when frozen.
+    "--add-data", "alembic.ini;.",
+    "--add-data", "migrations;migrations"
 )
 foreach ($m in $ExcludeModules) { $PyInstallerArgs += @("--exclude-module", $m) }
 foreach ($m in $HiddenImports) { $PyInstallerArgs += @("--hidden-import", $m) }

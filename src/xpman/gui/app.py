@@ -14,8 +14,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QDialog
 
-from xpman.core.db import get_engine, get_sessionmaker
-from xpman.core.models import Base
+from xpman.core.db import ensure_schema, get_engine, get_sessionmaker
 from xpman.gui.dialogs.profile_select_dialog import ProfileSelectDialog
 from xpman.gui.main_window import MainWindow
 from xpman.tasks.registry import discover_tasks
@@ -51,8 +50,11 @@ def main(db_path: Path = DEFAULT_DB_PATH, data_dir: Path = DEFAULT_DATA_DIR) -> 
     app = QApplication.instance() or QApplication(sys.argv)
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Bring the database up to the current schema (creates it from scratch if missing, applies any
+    # pending migrations if it already exists) -- NOT a bare create_all, which can't add new columns
+    # to an existing table and so let the DB silently drift behind the models. See core.db.ensure_schema.
+    ensure_schema(str(db_path))
     engine = get_engine(str(db_path))
-    Base.metadata.create_all(engine)
     session = get_sessionmaker(engine)()
 
     registry = discover_tasks()

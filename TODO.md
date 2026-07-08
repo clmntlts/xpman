@@ -366,6 +366,14 @@ reset, live (non-deep-copied) references inside `Instance.frozen_json`, and unva
       Design-time: `FPVSTask.check_triggers` warns (against a nominal 60 Hz monitor) using the
       same frames-per-cycle threshold, surfaced by "Check Triggers..." and the pre-freeze dialog.
       Advisory only — high base frequencies are legitimate on fast monitors.
+- [x] **DB schema self-migrates on startup (2026-07-08).** The app built its schema with a bare
+      `Base.metadata.create_all`, which only creates missing *tables* and never adds *columns* to an
+      existing one -- so an older `xpman.db` silently drifted behind the models and crashed with
+      `no such column: runs.pyserial_version`. Replaced with `core.db.ensure_schema`, which runs
+      `alembic upgrade head`: builds a fresh DB from the initial migration and applies only the delta
+      to an existing (stamped) one. A legacy unstamped DB raises a clear, actionable error rather
+      than guessing its revision. Frozen build bundles `alembic.ini` + `migrations/` (`--add-data`).
+      Integration tests cover fresh / behind→upgraded-with-data-preserved / legacy-drift.
 - [x] **Launch-close no longer orphans the worker (2026-07-04).** `LaunchDialog` now guards
       closing (Close button + window X, via `reject`/`closeEvent`): if a run is active it
       confirms ("Stop the run and close?") and, on Yes, touches the abort file then

@@ -9,12 +9,18 @@ in-memory databases with no monkeypatching required.
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sqlalchemy import Engine, event, create_engine
+from sqlalchemy import Engine, event, create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
+
+from xpman.core.models import Base
+
+logger = logging.getLogger(__name__)
 
 
 def _json_default(obj: Any) -> Any:
@@ -87,3 +93,73 @@ def get_sessionmaker(engine: Engine) -> sessionmaker[Session]:
     Use as ``Session = get_sessionmaker(engine)`` then ``with Session() as session: ...``.
     """
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _schema_base_dir() -> Path:
+    """Directory holding ``alembic.ini`` and ``migrations/``. In a PyInstaller-frozen build they
+    are bundled under ``sys._MEIPASS``; in a source checkout they sit at the repo root (three
+    levels up from ``src/xpman/core/db.py``). Mirrors ``gui.app._default_base_dir``'s frozen check.
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        return Path(meipass) if meipass else Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
+def ensure_schema(db_path: str | Path) -> None:
+    """Bring the file-backed database at ``db_path`` up to the current schema via Alembic.
+
+    This is the app's schema entry point, replacing a bare ``Base.metadata.create_all`` -- which
+    only ever *creates missing tables* and can never *add a column to an existing table*, so an
+    older database silently falls behind the models and crashes with ``no such column`` the moment
+    the ORM selects the new column. ``alembic upgrade head`` instead builds a brand-new database
+    from the initial migration and applies only the delta to an existing (stamped) one.
+
+    Not for in-memory/test databases: unit tests build their schema with ``create_all`` on a
+    ``":memory:"`` engine directly. This is only meaningful for the persistent app DB.
+
+    Raises:
+        RuntimeError: the database has our tables but no Alembic stamp -- a legacy database created
+            by the old ``create_all`` path. Its true revision can't be known, so we refuse to guess
+            (guessing wrong is exactly the drift bug); the message says how to recover.
+    """
+    engine = get_engine(str(db_path))
+    try:
+        base_dir = _schema_base_dir()
+        ini_path = base_dir / "alembic.ini"
+        migrations_dir = base_dir / "migrations"
+        if not ini_path.is_file() or not migrations_dir.is_dir():
+            # Can't locate the migration scripts (e.g. a frozen build that didn't bundle them).
+            # Fall back to create_all so we never regress below the previous behavior.
+            logger.warning(
+                "Alembic scripts not found at %s; falling back to create_all (schema upgrades "
+                "for an existing database will not be applied).",
+                base_dir,
+            )
+            Base.metadata.create_all(engine)
+            return
+
+        from alembic.runtime.migration import MigrationContext
+
+        with engine.connect() as connection:
+            has_runs = inspect(connection).has_table("runs")
+            current_revision = MigrationContext.configure(connection).get_current_revision()
+
+        if has_runs and current_revision is None:
+            raise RuntimeError(
+                f"Database {db_path!r} has xpman tables but no Alembic version stamp -- it was "
+                "created by an older build and its schema revision is unknown, so it can't be "
+                "auto-upgraded safely. Recover by either backing it up and relaunching to recreate "
+                "a fresh database, or (to keep the data) running 'alembic stamp <revision>' at the "
+                "revision matching its columns, then 'alembic upgrade head'."
+            )
+
+        from alembic import command
+        from alembic.config import Config
+
+        config = Config(str(ini_path))
+        config.set_main_option("script_location", str(migrations_dir))
+        config.set_main_option("sqlalchemy.url", f"sqlite:///{Path(db_path).as_posix()}")
+        command.upgrade(config, "head")
+    finally:
+        engine.dispose()
