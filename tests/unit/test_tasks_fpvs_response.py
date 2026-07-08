@@ -160,39 +160,65 @@ def test_params_roundtrip_via_dict():
 
 def test_disabled_collector_never_constructs_real_keyboard():
     with patch("psychopy.hardware.keyboard.Keyboard") as kb_cls:
-        collector = ResponseCollector(ResponseKeyParams(enabled=False))
+        collector = ResponseCollector(enabled=False)
     kb_cls.assert_not_called()
     collector.clear()  # must not raise
     assert collector.collect() == []
+    assert collector.last_source == "disabled"
 
 
 def test_enabled_collector_constructs_keyboard_and_clears():
     mock_kb = MagicMock()
-    with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb):
-        collector = ResponseCollector(ResponseKeyParams(enabled=True))
+    with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb), patch(
+        "psychopy.event.clearEvents"
+    ) as clear_events:
+        collector = ResponseCollector(enabled=True)
         collector.clear()
     mock_kb.clearEvents.assert_called_once()
+    clear_events.assert_called_once()  # both capture paths cleared
 
 
-def test_collect_converts_keypresses_to_response_records():
+def test_collect_captures_all_keys_and_converts_to_records():
+    """Key-agnostic: returns EVERY press (no keyList filter) so the caller can route each to the
+    task that owns its key."""
     mock_kb = MagicMock()
-    kp1 = MagicMock(name="a", tDown=1.234)
+    kp1 = MagicMock(tDown=1.234)
     kp1.name = "a"
-    kp2 = MagicMock(name="space", tDown=1.5)
+    kp2 = MagicMock(tDown=1.5)
     kp2.name = "space"
     mock_kb.getKeys.return_value = [kp1, kp2]
 
     with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb):
-        collector = ResponseCollector(ResponseKeyParams(enabled=True, keys=["a", "space"]))
+        collector = ResponseCollector(enabled=True)
         records = collector.collect()
 
     assert records == [ResponseRecord(key_name="a", time=1.234), ResponseRecord(key_name="space", time=1.5)]
-    mock_kb.getKeys.assert_called_once_with(keyList=["a", "space"], waitRelease=False, clear=True)
+    mock_kb.getKeys.assert_called_once_with(waitRelease=False, clear=True)  # no keyList filter
+    assert collector.last_source == "keyboard"
+
+
+def test_collect_falls_back_to_event_when_keyboard_is_empty():
+    """On a machine where hardware.keyboard.Keyboard captures nothing, psychopy.event (the API the
+    trial gate uses) still works -- the fallback must pick the press up, clock-aligned."""
+    mock_kb = MagicMock()
+    mock_kb.getKeys.return_value = []  # primary captures nothing this trial
+    with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb), patch(
+        "psychopy.event.getKeys", return_value=[("space", 2.0)]
+    ) as event_get_keys:  # timeStamped=True -> (key, time) tuples
+        collector = ResponseCollector(enabled=True)
+        records = collector.collect()
+
+    assert records == [ResponseRecord(key_name="space", time=2.0)]
+    event_get_keys.assert_called_once_with(timeStamped=True)
+    assert collector.last_source == "event"
 
 
 def test_collect_returns_empty_list_when_no_keys_pressed():
     mock_kb = MagicMock()
     mock_kb.getKeys.return_value = []
-    with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb):
-        collector = ResponseCollector(ResponseKeyParams(enabled=True))
+    with patch("psychopy.hardware.keyboard.Keyboard", return_value=mock_kb), patch(
+        "psychopy.event.getKeys", return_value=[]
+    ):
+        collector = ResponseCollector(enabled=True)
         assert collector.collect() == []
+        assert collector.last_source == "none"
