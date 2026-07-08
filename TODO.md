@@ -180,14 +180,39 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
       old SepStim keys are ignored (→ whole set) -- re-freeze any dev-only Instance that relied on
       them. (Also makes the "second oddball directory" idea trivial: just point the oddball
       selector at another folder.)
+- [ ] **Requested paradigm extensions (2026-07-08, from the lab).** Four concrete features to add
+      when a real protocol needs them:
+    - [ ] **Multiple fixations + spatial go/no-go distractor.** Allow N fixation markers at
+          configurable positions (today there's one, position-configurable). Make the distractor
+          *per-fixation*, and add a go/no-go response rule: a fixation turning red is a signal, and
+          the subject responds ONLY on a defined conjunction -- e.g. **both** fixations red at the
+          same time = **go** (respond); a **single** one red = **no-go** (withhold). Scoring becomes
+          go/no-go (hits on go events, false alarms on responses to no-go/single events, correct
+          rejections). Builds on `tasks/fpvs/distractor.py` + `FixationParams` (a list of fixations,
+          a shared event schedule, a conjunction scorer).
+    - [ ] **Flexible base/oddball ordering pattern (BBO, BBBBO, BOBO, …).** Replace the fixed
+          "every Kth stimulus is the oddball" with a configurable repeating B/O token pattern, so
+          the base:oddball ratio and arrangement are explicit (BOBO = 1:1 alternating, BBBBO = 4:1,
+          BBO = 2:1). Validate the pattern's implied oddball frequency against base_freq/oddball_freq.
+          Touches `paradigm_oddball.oddball_period_stimuli` + the sequence loop + schema. (Supersedes
+          the old terse "oddball-proportion patterns (BBBBO)".)
+    - [ ] **Frequency sweep.** Base (and/or oddball) frequency varies progressively across a trial
+          (ramp, e.g. 2→12 Hz, or stepwise) to find the temporal-resolution threshold where the
+          periodic response drops out. Needs a time-varying frames-per-cycle schedule (the current
+          design assumes a constant integer frames/cycle) + provenance of the sweep profile in the
+          outcome/event log. (Supersedes the old terse "sweep"/"periodic frequency-changing".)
+    - [ ] **Dual (bilateral) image streams.** Present two simultaneous FPVS streams at different
+          screen positions (e.g. left and right of the central fixation), each with its own
+          pool/selector, frequency, and trigger codes, sharing one fixation. Needs per-stream
+          position/selector/timing in the schema, a presentation loop that draws two stimuli per
+          frame with independent modulation + onset schedules, and distinct triggers per stream.
+          Interacts with position jitter (per-stream) and the photodiode.
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
-      intra-category oddball; baseline stimulus period; oddball-proportion patterns (BBBBO) +
-      image-ordering options; missing-oddball; double-base; sweep; periodic frequency-changing;
-      per-image transforms (scale/rotate/flip/position); luminance equalization; inter-trial
-      sound/animation. Plus a dedicated familiarization stimulus selector (currently reuses
-      `base_selector`), extending the distractor across the pre/post/familiarization phases
-      (currently the main sequence only), and an optional `subdirectory` dropdown in the GUI
-      (currently free text + preview).
+      intra-category oddball; baseline stimulus period; missing-oddball; double-base; per-image
+      transforms (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
+      Plus a dedicated familiarization stimulus selector (currently reuses `base_selector`),
+      extending the distractor across the pre/post/familiarization phases (currently the main
+      sequence only), and an optional `subdirectory` dropdown in the GUI (currently free text + preview).
 - [ ] **Hardware validation of modulation** (rides on the lab visit below): with the photodiode
       + `core/verification_report.py`, confirm no dropped frames with modulation on, and that the
       measured contrast waveform matches the intended sine and fades toward mid-gray, not black.
