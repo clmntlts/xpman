@@ -347,8 +347,8 @@ exported results.
    minimum, set:
    - `base.base_freq_hz` — e.g. `6.0`.
    - `oddball.oddball_freq_hz` — e.g. `1.2` (must not exceed the base frequency).
-   - `base_selector.category` — e.g. `object` (base stream shows objects).
-   - `oddball_selector.category` — e.g. `face` (oddball stream shows faces).
+   - `base_selector.subdirectory` — e.g. `objects` (base stream draws from the `objects/` folder).
+   - `oddball_selector.subdirectory` — e.g. `faces` (oddball stream draws from the `faces/` folder).
    - Leave everything else at its default to start (fixation cross, photodiode on every
      stimulus onset, response key = space) — see [6.2](#62-fpvs-task) for what every field
      means if you want to customize further.
@@ -458,22 +458,22 @@ setup; leave it unless your images have a non-gray mean.
 
 **Base stimulus filter** (`base_selector`) and **Oddball stimulus filter** (`oddball_selector`)
 — identical fields, applied independently to pick which images from the Program's resource
-directory feed each stream:
+directory feed each stream. **Convention-agnostic**: images are selected by **folder** and/or
+**filename pattern**, so any stimulus set works as long as it's laid out in folders — organize
+your images however you like (e.g. one subfolder per condition) and point each selector at the
+right folder.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `category` | text, optional | not set | `face`, `object`, or unset for either. |
-| `angle_deg` | integer, optional | not set | Filter to a specific angle. |
-| `eccentricity_deg` | number, optional | not set | Filter to a specific eccentricity. |
-| `is_fs` | checkbox, optional | not set | Filter by "full spectrum" (unfiltered) vs. spatial-frequency-filtered variant. |
-| `variant` | text, optional | not set | Filter by variant name, e.g. `negated` (contrast-inverted). |
+| `subdirectory` | text, optional | not set | Subfolder (relative to the Program's resource directory) to draw images from; unset = the whole set. Includes nested subfolders. |
+| `filename_pattern` | text, optional | not set | Glob pattern (e.g. `*happy*.png`) matched against each filename, combined with the subdirectory (AND). |
 
-Leaving all filter fields unset uses the entire image pool for that stream. Your image folder
-doesn't have to follow any particular naming convention — xpman auto-detects the bundled
-dataset's `Category_angle (eccentricity°)` / `..._fs` naming and extracts these fields
-automatically when present, but any other image files are still fully usable (just without
-auto-filled category/angle/etc. — filter on `category`/`variant` etc. won't match them, so
-leave those filters unset for an unstructured folder).
+Leaving both unset uses the entire image pool for that stream. Typical FPVS setup: put base and
+oddball images in separate folders (e.g. `objects/` and `faces/`) and set
+`base_selector.subdirectory = objects`, `oddball_selector.subdirectory = faces`. Use
+`filename_pattern` to narrow within a folder (e.g. a subset of items). The **"Preview Stimuli…"**
+button lists the available subfolder names and shows how many images each selector matches, so you
+can confirm before freezing.
 
 **Fixation marker** (`fixation`)
 

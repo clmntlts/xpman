@@ -1,79 +1,19 @@
-"""Tests for tasks.fpvs.image_set.
-
-Builds a small synthetic stimulus tree mirroring the real SepStim/ convention (verified
-2026-07-02 against the actual legacy stimulus directory) rather than depending on that
-external, non-repo directory -- keeps this test portable/CI-safe.
-"""
+"""Tests for tasks.fpvs.image_set -- the convention-agnostic image scan + folder/glob filter."""
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
 from xpman.tasks.fpvs.image_set import (
-    Category,
+    ImageEntry,
     filter_entries,
-    parse_directory_name,
-    parse_filename,
     scan_directory,
 )
 
 
-# ---------------------------------------------------------------------------
-# parse_directory_name
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name,category,angle,eccentricity,variant",
-    [
-        ("Face_0 (21.5°)", Category.FACE, 0, 21.5, None),
-        ("Face_135 (28°)", Category.FACE, 135, 28.0, None),
-        ("Obj_90 (32.5°)", Category.OBJECT, 90, 32.5, None),
-        ("Face_fs", Category.FACE, None, None, None),
-        ("Face_fs (no_point)", Category.FACE, None, None, "no_point"),
-        ("Face_fs_negated", Category.FACE, None, None, "negated"),
-        ("Obj_fs (no_point)", Category.OBJECT, None, None, "no_point"),
-        ("Obj_fs_negated", Category.OBJECT, None, None, "negated"),
-    ],
-)
-def test_parse_directory_name_recognized(name, category, angle, eccentricity, variant):
-    info = parse_directory_name(name)
-    assert info is not None
-    assert info.category is category
-    assert info.angle_deg == angle
-    assert info.eccentricity_deg == eccentricity
-    assert info.variant == variant
-
-
-@pytest.mark.parametrize("name", ["Random_folder", "Face_0", "Face_0 21.5", "readme.txt"])
-def test_parse_directory_name_unrecognized_returns_none(name):
-    assert parse_directory_name(name) is None
-
-
-# ---------------------------------------------------------------------------
-# parse_filename
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name,category,index,is_fs,angle",
-    [
-        ("Face_001_ori0.bmp", Category.FACE, 1, False, 0),
-        ("Face_006_ori135.bmp", Category.FACE, 6, False, 135),
-        ("Object_200_ori90.bmp", Category.OBJECT, 200, False, 90),
-        ("Face_001fs_ori0.bmp", Category.FACE, 1, True, 0),
-        ("Face_001fs.bmp", Category.FACE, 1, True, None),
-        ("Object_112fs.bmp", Category.OBJECT, 112, True, None),
-    ],
-)
-def test_parse_filename_recognized(name, category, index, is_fs, angle):
-    parsed = parse_filename(name)
-    assert parsed == (category, index, is_fs, angle)
-
-
-@pytest.mark.parametrize("name", ["Face_1_ori0.bmp", "Thumbs.db", "Face_001.png", "notes.txt"])
-def test_parse_filename_unrecognized_returns_none(name):
-    assert parse_filename(name) is None
+def _touch(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
 
 
 # ---------------------------------------------------------------------------
@@ -81,135 +21,50 @@ def test_parse_filename_unrecognized_returns_none(name):
 # ---------------------------------------------------------------------------
 
 
-def _touch(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
-
-
-@pytest.fixture()
-def stim_root(tmp_path):
-    root = tmp_path / "SepStim"
-    # Mirrors the real dataset's asymmetry: angle 0 has 3 eccentricities, angle 45 has 2.
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "Face_0 (28°)" / "Face_001_ori0.bmp")
-    _touch(root / "Face_0 (32.5°)" / "Face_001fs_ori0.bmp")
-    _touch(root / "Face_45 (21.5°)" / "Face_001_ori45.bmp")
-    _touch(root / "Face_45 (28°)" / "Face_001_ori45.bmp")
-    _touch(root / "Face_fs" / "Face_001fs.bmp")
-    _touch(root / "Face_fs (no_point)" / "Face_001fs.bmp")
-    _touch(root / "Face_fs_negated" / "Face_001fs.bmp")
-    _touch(root / "Obj_0 (21.5°)" / "Object_001_ori0.bmp")
-    _touch(root / "Obj_fs" / "Object_001fs.bmp")
-    return root
-
-
-def test_scan_directory_finds_all_entries(stim_root):
-    result = scan_directory(stim_root)
-    assert len(result.entries) == 10
+def test_scan_finds_images_in_subdirectories_with_relative_dir(tmp_path):
+    _touch(tmp_path / "faces" / "a.png")
+    _touch(tmp_path / "objects" / "b.bmp")
+    result = scan_directory(tmp_path)
+    by_name = {e.path.name: e.relative_dir for e in result.entries}
+    assert by_name == {"a.png": "faces", "b.bmp": "objects"}
     assert result.warnings == []
-    assert all(e.recognized for e in result.entries)
 
 
-def test_scan_directory_angle_eccentricity_entries(stim_root):
-    result = scan_directory(stim_root)
-    face_0_215 = [
-        e
-        for e in result.entries
-        if e.category is Category.FACE and e.angle_deg == 0 and e.eccentricity_deg == 21.5
-    ]
-    assert len(face_0_215) == 1
-    entry = face_0_215[0]
-    assert entry.category is Category.FACE
-    assert entry.index == 1
-    assert entry.is_fs is False
-    assert entry.variant is None
+def test_scan_includes_root_level_files(tmp_path):
+    """Regression vs the old one-level scan: a flat folder of images (files at the root) must be
+    found, not silently ignored -- with relative_dir ''."""
+    _touch(tmp_path / "flat1.png")
+    _touch(tmp_path / "flat2.jpg")
+    result = scan_directory(tmp_path)
+    assert {e.path.name for e in result.entries} == {"flat1.png", "flat2.jpg"}
+    assert all(e.relative_dir == "" for e in result.entries)
 
 
-def test_scan_directory_fs_entry_at_eccentricity_has_is_fs_true(stim_root):
-    result = scan_directory(stim_root)
-    entry = next(e for e in result.entries if e.angle_deg == 0 and e.eccentricity_deg == 32.5)
-    assert entry.is_fs is True
-
-
-def test_scan_directory_fs_variant_entries(stim_root):
-    result = scan_directory(stim_root)
-    fs_entries = [e for e in result.entries if e.angle_deg is None and e.category is Category.FACE]
-    variants = {e.variant for e in fs_entries}
-    assert variants == {None, "no_point", "negated"}
-    for e in fs_entries:
-        assert e.is_fs is True
-        assert e.eccentricity_deg is None
-
-
-def test_scan_directory_unrecognized_subdirectory_images_still_included(tmp_path):
-    """Custom/imported stimuli in a directory that doesn't follow the SepStim naming
-    convention must still show up as usable (if bare) entries -- never silently dropped."""
-    root = tmp_path / "SepStim"
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "my_own_stimuli" / "photo1.jpg")
-    _touch(root / "my_own_stimuli" / "photo2.png")
-
-    result = scan_directory(root)
-    assert len(result.entries) == 3
-    generic = [e for e in result.entries if not e.recognized]
-    assert len(generic) == 2
-    assert {e.path.name for e in generic} == {"photo1.jpg", "photo2.png"}
-    assert all(e.category is None and e.index is None for e in generic)
-    assert any("my_own_stimuli" in w for w in result.warnings)
-
-
-def test_scan_directory_skips_non_image_files(tmp_path):
-    root = tmp_path / "SepStim"
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "Face_0 (21.5°)" / "Thumbs.db")
-    _touch(root / "unrecognized_dir" / "readme.txt")
-
-    result = scan_directory(root)
-    assert len(result.entries) == 1  # only the one real image; Thumbs.db and readme.txt excluded
-    assert any("Thumbs.db" in w for w in result.warnings)
-    assert any("readme.txt" in w for w in result.warnings)
-
-
-def test_scan_directory_unrecognized_filename_in_recognized_dir_included_as_generic(tmp_path):
-    root = tmp_path / "SepStim"
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "Face_0 (21.5°)" / "some_custom_image.bmp")
-
-    result = scan_directory(root)
-    assert len(result.entries) == 2
-    generic = next(e for e in result.entries if e.path.name == "some_custom_image.bmp")
-    assert generic.recognized is False
-    assert generic.category is None
-    assert any("unrecognized filename" in w and "some_custom_image.bmp" in w for w in result.warnings)
-
-
-def test_scan_directory_category_mismatch_included_as_generic(tmp_path):
-    root = tmp_path / "SepStim"
-    # Object-prefixed filename inside a Face directory -- a real misfiling scenario. Still
-    # included (as a bare/generic entry), just flagged, per the "never silently drop" rule.
-    _touch(root / "Face_0 (21.5°)" / "Object_001_ori0.bmp")
-
-    result = scan_directory(root)
+def test_scan_recurses_to_any_depth(tmp_path):
+    _touch(tmp_path / "a" / "b" / "c" / "deep.png")
+    result = scan_directory(tmp_path)
     assert len(result.entries) == 1
-    assert result.entries[0].recognized is False
-    assert any("category mismatch" in w for w in result.warnings)
+    assert result.entries[0].relative_dir == "a/b/c"  # POSIX-relative, forward slashes
 
 
-def test_scan_directory_angle_mismatch_included_as_generic(tmp_path):
-    root = tmp_path / "SepStim"
-    # Filename says ori90 but it's sitting in the ori0 directory.
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori90.bmp")
-
-    result = scan_directory(root)
-    assert len(result.entries) == 1
-    assert result.entries[0].recognized is False
-    assert any("angle mismatch" in w for w in result.warnings)
+def test_scan_skips_and_warns_non_image_files(tmp_path):
+    _touch(tmp_path / "faces" / "a.png")
+    _touch(tmp_path / "faces" / "notes.txt")
+    result = scan_directory(tmp_path)
+    assert {e.path.name for e in result.entries} == {"a.png"}  # the .txt is not an entry
+    assert any("skipped non-image file" in w and "notes.txt" in w for w in result.warnings)
 
 
-def test_scan_directory_empty_root(tmp_path):
-    root = tmp_path / "SepStim"
-    root.mkdir()
-    result = scan_directory(root)
+def test_scan_recognizes_all_image_extensions(tmp_path):
+    for ext in (".bmp", ".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff"):
+        _touch(tmp_path / "imgs" / f"x{ext}")
+    result = scan_directory(tmp_path)
+    assert len(result.entries) == 7
+    assert result.warnings == []
+
+
+def test_scan_empty_directory_returns_nothing(tmp_path):
+    result = scan_directory(tmp_path)
     assert result.entries == []
     assert result.warnings == []
 
@@ -219,65 +74,60 @@ def test_scan_directory_empty_root(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_filter_entries_by_category(stim_root):
-    result = scan_directory(stim_root)
-    faces = filter_entries(result.entries, category=Category.FACE)
-    assert all(e.category is Category.FACE for e in faces)
-    assert len(faces) == 8  # 10 total - 2 object entries
+def _entries(*specs: tuple[str, str]) -> list[ImageEntry]:
+    """Build entries from (filename, relative_dir) pairs."""
+    return [ImageEntry(path=Path(name), relative_dir=rel) for name, rel in specs]
 
 
-def test_filter_entries_by_variant_none_excludes_named_variants(stim_root):
-    result = scan_directory(stim_root)
-    plain_fs = filter_entries(result.entries, category=Category.FACE, is_fs=True, variant=None)
-    # angle=0/ecc=32.5 (is_fs, variant=None) + Face_fs plain (variant=None) = 2
-    assert len(plain_fs) == 2
-    assert all(e.variant is None for e in plain_fs)
+def test_filter_no_criteria_returns_everything():
+    entries = _entries(("a.png", "faces"), ("b.png", "objects"), ("c.png", ""))
+    assert filter_entries(entries) == entries
 
 
-def test_filter_entries_by_variant_unset_does_not_filter(stim_root):
-    result = scan_directory(stim_root)
-    all_fs = filter_entries(result.entries, category=Category.FACE, is_fs=True)
-    assert len(all_fs) == 4  # ecc=32.5, Face_fs, Face_fs(no_point), Face_fs_negated
+def test_filter_by_subdirectory_exact():
+    entries = _entries(("a.png", "faces"), ("b.png", "objects"))
+    pool = filter_entries(entries, subdirectory="faces")
+    assert [e.path.name for e in pool] == ["a.png"]
 
 
-def test_filter_entries_combined(stim_root):
-    result = scan_directory(stim_root)
-    matches = filter_entries(result.entries, category=Category.FACE, angle_deg=45, eccentricity_deg=28.0)
-    assert len(matches) == 1
-    assert matches[0].index == 1
+def test_filter_by_subdirectory_includes_descendants():
+    entries = _entries(("a.png", "faces"), ("b.png", "faces/happy"), ("c.png", "objects"))
+    pool = filter_entries(entries, subdirectory="faces")
+    assert {e.path.name for e in pool} == {"a.png", "b.png"}  # 'faces' and its 'happy' subfolder
 
 
-def test_filter_entries_by_filename_pattern_matches(stim_root):
-    result = scan_directory(stim_root)
-    matches = filter_entries(result.entries, filename_pattern="*fs*.bmp")
-    # Face_001fs_ori0.bmp, Face_001fs.bmp x3 (Face_fs/Face_fs(no_point)/Face_fs_negated), Object_001fs.bmp
-    assert len(matches) == 5
-    assert all("fs" in e.path.name for e in matches)
+def test_filter_subdirectory_does_not_match_sibling_prefix():
+    """'face' must not match 'faces' (prefix guard uses a path separator)."""
+    entries = _entries(("a.png", "faces"), ("b.png", "face"))
+    pool = filter_entries(entries, subdirectory="face")
+    assert [e.path.name for e in pool] == ["b.png"]
 
 
-def test_filter_entries_by_filename_pattern_no_matches(stim_root):
-    result = scan_directory(stim_root)
-    matches = filter_entries(result.entries, filename_pattern="*.png")
-    assert matches == []
+def test_filter_subdirectory_normalizes_separators_and_slashes():
+    entries = _entries(("a.png", "a/b"))
+    assert filter_entries(entries, subdirectory="a\\b")[0].path.name == "a.png"
+    assert filter_entries(entries, subdirectory="a/b/")[0].path.name == "a.png"
+    # Empty subdirectory -> no folder filter (everything passes).
+    assert len(filter_entries(entries, subdirectory="")) == 1
 
 
-def test_filter_entries_by_filename_pattern_combined_with_other_filters(stim_root):
-    result = scan_directory(stim_root)
-    # AND semantics: category=FACE excludes the one matching Object_001fs.bmp.
-    matches = filter_entries(result.entries, category=Category.FACE, filename_pattern="*fs*.bmp")
-    assert len(matches) == 4
-    assert all(e.category is Category.FACE for e in matches)
+def test_filter_by_filename_pattern():
+    entries = _entries(("happy_01.png", "faces"), ("sad_01.png", "faces"))
+    pool = filter_entries(entries, filename_pattern="*happy*")
+    assert [e.path.name for e in pool] == ["happy_01.png"]
 
 
-def test_filter_entries_by_filename_pattern_matches_unrecognized_entries(tmp_path):
-    root = tmp_path / "SepStim"
-    _touch(root / "Face_0 (21.5°)" / "Face_001_ori0.bmp")
-    _touch(root / "my_own_stimuli" / "happy_face_01.jpg")
-    _touch(root / "my_own_stimuli" / "sad_face_02.jpg")
-    _touch(root / "my_own_stimuli" / "neutral_object_01.jpg")
+def test_filter_combines_subdirectory_and_pattern_with_and():
+    entries = _entries(
+        ("happy_01.png", "faces"),
+        ("happy_02.png", "objects"),  # right pattern, wrong folder
+        ("sad_01.png", "faces"),  # right folder, wrong pattern
+    )
+    pool = filter_entries(entries, subdirectory="faces", filename_pattern="*happy*")
+    assert [e.path.name for e in pool] == ["happy_01.png"]
 
-    result = scan_directory(root)
-    matches = filter_entries(result.entries, filename_pattern="*happy*")
-    assert len(matches) == 1
-    assert matches[0].recognized is False
-    assert matches[0].path.name == "happy_face_01.jpg"
+
+def test_filter_no_match_returns_empty():
+    entries = _entries(("a.png", "faces"))
+    assert filter_entries(entries, subdirectory="nope") == []
+    assert filter_entries(entries, filename_pattern="*zzz*") == []
