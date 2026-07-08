@@ -170,13 +170,24 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
       order), an optional per-event EEG trigger scheduled off base-onset frames (no callOnFlip
       collision), full event-log + GUI-timeline integration (purple markers), and design-time
       `check_triggers` advisories. Additive schema bump v2 -> v3; disabled by default.
+- [x] **Convention-agnostic image selection (2026-07-08).** Replaced the 5 SepStim-specific
+      `StimulusSelector` filters (category/angle/eccentricity/is_fs/variant, which only worked on
+      one experiment's naming convention) with a versatile `subdirectory` + `filename_pattern`
+      pair -- any stimulus set works if laid out in folders. `image_set.scan_directory` is now
+      recursive (finds images at any depth, **including root-level files** -- fixes the old
+      "flat folder = 0 images" trap) and tags each `ImageEntry` with its `relative_dir`; the
+      preview lists available subfolders. **Breaking** schema bump v3 -> v4: a frozen selector's
+      old SepStim keys are ignored (→ whole set) -- re-freeze any dev-only Instance that relied on
+      them. (Also makes the "second oddball directory" idea trivial: just point the oddball
+      selector at another folder.)
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; baseline stimulus period; oddball-proportion patterns (BBBBO) +
       image-ordering options; missing-oddball; double-base; sweep; periodic frequency-changing;
-      per-image transforms (scale/rotate/flip/position); luminance equalization; second oddball
-      directory; inter-trial sound/animation. Plus a dedicated familiarization stimulus selector
-      (currently reuses `base_selector`), and extending the distractor across the pre/post/
-      familiarization phases (currently the main sequence only).
+      per-image transforms (scale/rotate/flip/position); luminance equalization; inter-trial
+      sound/animation. Plus a dedicated familiarization stimulus selector (currently reuses
+      `base_selector`), extending the distractor across the pre/post/familiarization phases
+      (currently the main sequence only), and an optional `subdirectory` dropdown in the GUI
+      (currently free text + preview).
 - [ ] **Hardware validation of modulation** (rides on the lab visit below): with the photodiode
       + `core/verification_report.py`, confirm no dropped frames with modulation on, and that the
       measured contrast waveform matches the intended sine and fades toward mid-gray, not black.

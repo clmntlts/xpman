@@ -27,7 +27,7 @@ from pydantic import ValidationError
 
 from xpman.tasks.base import TaskContext, TaskModule, TrialResult
 from xpman.tasks.fpvs.fixation import build_fixation_stimulus
-from xpman.tasks.fpvs.image_set import Category, ImageEntry, filter_entries, scan_directory
+from xpman.tasks.fpvs.image_set import ImageEntry, filter_entries, scan_directory
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
     frames_per_cycle,
@@ -133,18 +133,9 @@ def _refresh_fallback_allowed() -> bool:
 
 
 def _select_pool(entries: list[ImageEntry], selector: StimulusSelector) -> list[ImageEntry]:
-    category = Category(selector.category) if selector.category is not None else None
     return filter_entries(
         entries,
-        category=category,
-        angle_deg=selector.angle_deg,
-        eccentricity_deg=selector.eccentricity_deg,
-        is_fs=selector.is_fs,
-        # StimulusSelector uses None to mean "any variant" (its documented semantics), but
-        # filter_entries reads variant=None as "only plain (variant-None) images" and uses the
-        # "__unset__" sentinel for "don't filter". Translate here, or an unset variant would
-        # silently drop every negated/no_point image from the pool.
-        variant=selector.variant if selector.variant is not None else "__unset__",
+        subdirectory=selector.subdirectory,
         filename_pattern=selector.filename_pattern,
     )
 
@@ -711,6 +702,16 @@ class FPVSTask(TaskModule):
 
         scan_result = scan_directory(root)
         lines = [f"{len(scan_result.entries)} image(s) found in {resource_dir}", ""]
+
+        # List the subdirectories available to type into a selector's 'subdirectory' field (plus
+        # "(root)" when images sit directly in the resource directory), so the folder names are
+        # discoverable without leaving the preview.
+        subdirs = sorted({e.relative_dir for e in scan_result.entries if e.relative_dir})
+        has_root_images = any(e.relative_dir == "" for e in scan_result.entries)
+        if subdirs or has_root_images:
+            available = (["(root)"] if has_root_images else []) + subdirs
+            lines.append("Available subdirectories: " + ", ".join(available))
+            lines.append("")
 
         for label, selector in (("Base", params.base_selector), ("Oddball", params.oddball_selector)):
             pool = _select_pool(scan_result.entries, selector)

@@ -24,30 +24,24 @@ from xpman.tasks.fpvs.response import ResponseKeyParams
 
 
 class StimulusSelector(BaseModel):
-    """Filter criteria selecting a subset of the Program's ``resource_main_directory`` as an
-    image pool -- maps onto ``tasks.fpvs.image_set.filter_entries``. Unset (``None``) fields
-    don't filter on that dimension.
-
-    This is a v1 simplification of ``filter_entries``' variant-sentinel semantics: this schema
-    can express "any variant" (``variant=None``) or "exactly this variant"
-    (``variant="negated"``), but not filter_entries' third case of "only images with
-    variant explicitly None (i.e. no fs-variant at all)" -- acceptable since that's a rarer,
-    more advanced case not needed for a first working version.
+    """Selects a subset of the Program's ``resource_main_directory`` as an image pool -- maps onto
+    ``tasks.fpvs.image_set.filter_entries``. Convention-agnostic: pick images by **subdirectory**
+    and/or **filename glob**, so any stimulus set works as long as it is laid out in folders. Both
+    fields optional; leaving both unset selects the whole set.
     """
 
-    category: str | None = Field(default=None, description='"face", "object", or None for either.')
-    angle_deg: int | None = None
-    eccentricity_deg: float | None = None
-    is_fs: bool | None = None
-    variant: str | None = None
+    subdirectory: str | None = Field(
+        default=None,
+        description=(
+            "Subdirectory (relative to the Program's resource directory) to draw images from; "
+            "empty = the whole set. Includes nested subfolders."
+        ),
+    )
     filename_pattern: str | None = Field(
         default=None,
         description=(
             "Optional glob pattern (e.g. '*happy*.png') matched against each image's bare "
-            "filename. Combines with any filters above -- every set filter must match. This is "
-            "the main way to select a subset from a stimulus set that doesn't follow the "
-            "built-in SepStim naming convention, where the other filters above have nothing "
-            "recognized to match against."
+            "filename, combined with the subdirectory (AND)."
         ),
     )
 
@@ -198,11 +192,13 @@ class FPVSConditionParams(BaseModel):
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
-    #: v2 (WP-B) added the optional ``position_jitter`` block; v3 adds the optional ``distractor``
-    #: block. Both bumps are purely additive: an older Condition dict lacks the new key, and its
-    #: pydantic default (disabled) fills it in on validation, so old frozen Instances still
-    #: validate and run exactly as before (centered, no distractor).
-    SCHEMA_VERSION = "3"
+    #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor`` (both additive). v4 **replaces**
+    #: the SepStim-specific StimulusSelector filters (category/angle/eccentricity/is_fs/variant) with
+    #: a convention-agnostic ``subdirectory`` + ``filename_pattern`` pair. This one is NOT purely
+    #: additive: an old selector's SepStim keys are dropped (ignored) on validation, so a Condition
+    #: that relied on them now selects the whole set -- re-freeze such (dev-only) Instances. See
+    #: ``migrate``.
+    SCHEMA_VERSION = "4"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -213,15 +209,25 @@ class FPVSSchema:
     def condition_params_model(self) -> type:
         return FPVSConditionParams
 
+    #: SepStim-specific selector keys removed at v4. Purged from old selector dicts by ``migrate``.
+    _LEGACY_SELECTOR_KEYS = ("category", "angle_deg", "eccentricity_deg", "is_fs", "variant")
+
     def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
         # NOTE: this hook is NOT yet on the load path -- frozen dicts are read via
-        # model_validate() directly. It stays correct only while migrations are additive.
-        # See ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
+        # model_validate() directly (which simply ignores the removed keys). See
+        # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version in ("1", "2"):
-            # v1 -> v3 is additive: the new fields (``position_jitter`` at v2, ``distractor`` at v3)
-            # are optional with disabled defaults, so old data passes straight through and each
-            # missing key is filled by the pydantic default at validation time. No transformation.
-            return self.SCHEMA_VERSION, data
-        raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
+        if old_version not in ("1", "2", "3"):
+            raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
+        # v1->v2 and v2->v3 are additive (position_jitter, distractor: disabled defaults fill in).
+        # v3->v4 drops the SepStim selector filters: strip them from base/oddball selectors so the
+        # migrated dict carries only the convention-agnostic subdirectory/filename_pattern fields.
+        migrated = dict(data)
+        for selector_key in ("base_selector", "oddball_selector"):
+            selector = migrated.get(selector_key)
+            if isinstance(selector, dict):
+                migrated[selector_key] = {
+                    k: v for k, v in selector.items() if k not in self._LEGACY_SELECTOR_KEYS
+                }
+        return self.SCHEMA_VERSION, migrated

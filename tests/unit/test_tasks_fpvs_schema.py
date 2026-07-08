@@ -18,19 +18,19 @@ def test_condition_params_have_defaults_for_every_sub_model():
     params = FPVSConditionParams()
     assert params.base.base_freq_hz == 6.0
     assert params.oddball.oddball_freq_hz == 1.2
-    assert params.base_selector.category is None
-    assert params.oddball_selector.category is None
+    assert params.base_selector.subdirectory is None
+    assert params.oddball_selector.subdirectory is None
 
 
 def test_condition_params_roundtrip_via_dict():
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     restored = FPVSConditionParams.model_validate(params.model_dump())
     assert restored == params
-    assert restored.base_selector.category == "object"
-    assert restored.oddball_selector.category == "face"
+    assert restored.base_selector.subdirectory == "objects"
+    assert restored.oddball_selector.subdirectory == "faces"
 
 
 def test_schema_exposes_expected_models():
@@ -44,14 +44,28 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "3"
+    assert FPVSSchema.SCHEMA_VERSION == "4"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("3", {"x": 1})
-    assert version == "3"
+    version, data = schema.migrate("4", {"x": 1})
+    assert version == "4"
     assert data == {"x": 1}
+
+
+def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
+    """v3 -> v4 replaces the SepStim selector filters with subdirectory/filename_pattern. The
+    migrated dict strips the removed keys from base/oddball selectors."""
+    schema = FPVSSchema()
+    v3 = {
+        "base_selector": {"category": "object", "angle_deg": 0, "filename_pattern": "*a*"},
+        "oddball_selector": {"category": "face", "variant": "negated"},
+    }
+    version, data = schema.migrate("3", v3)
+    assert version == "4"
+    assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
+    assert data["oddball_selector"] == {}
 
 
 def test_migrate_unknown_version_raises():
@@ -130,17 +144,17 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "3"
-    assert data == v1_data  # no transformation -- the missing keys are filled by pydantic defaults
+    assert version == "4"
+    assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
 
 
-def test_migrate_v2_to_v3_passes_data_through():
-    """v2 -> v3 is additive: the only new field (``distractor``) is optional with a disabled default,
-    so an old v2 Condition dict validates under v3 unchanged."""
+def test_migrate_v2_to_current_passes_data_through():
+    """v2 -> current: no SepStim selector keys present here, so the payload passes through and the
+    current version is returned."""
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "3"
+    assert version == "4"
     assert data == v2_data
 
 
@@ -182,21 +196,26 @@ def test_migrated_v1_condition_validates_under_v2_model():
     assert params.position_jitter.enabled is False
 
 
-def test_stimulus_selector_all_fields_optional():
+def test_stimulus_selector_defaults_to_whole_set():
     selector = StimulusSelector()
-    assert selector.category is None
-    assert selector.angle_deg is None
-    assert selector.eccentricity_deg is None
-    assert selector.is_fs is None
-    assert selector.variant is None
+    assert selector.subdirectory is None
     assert selector.filename_pattern is None
 
 
-def test_stimulus_selector_filename_pattern_roundtrips_via_dict():
-    selector = StimulusSelector(filename_pattern="*happy*.png")
+def test_stimulus_selector_roundtrips_via_dict():
+    selector = StimulusSelector(subdirectory="faces/happy", filename_pattern="*happy*.png")
     restored = StimulusSelector.model_validate(selector.model_dump())
     assert restored == selector
+    assert restored.subdirectory == "faces/happy"
     assert restored.filename_pattern == "*happy*.png"
+
+
+def test_stimulus_selector_ignores_legacy_sepstim_keys():
+    """A frozen v3 selector dict may carry the removed SepStim keys; they're ignored (extra=ignore),
+    leaving a whole-set selector -- old dev Instances still validate, just without those filters."""
+    restored = StimulusSelector.model_validate({"category": "face", "angle_deg": 0, "variant": "negated"})
+    assert restored.subdirectory is None
+    assert restored.filename_pattern is None
 
 
 # ---------------------------------------------------------------------------

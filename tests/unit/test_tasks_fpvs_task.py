@@ -44,9 +44,9 @@ def _touch(path):
 def stim_root(tmp_path):
     root = tmp_path / "stim"
     for i in range(1, 4):
-        _touch(root / "Obj_0 (21.5°)" / f"Object_{i:03d}_ori0.bmp")
+        _touch(root / "objects" / f"object_{i:03d}.bmp")
     for i in range(1, 4):
-        _touch(root / "Face_0 (21.5°)" / f"Face_{i:03d}_ori0.bmp")
+        _touch(root / "faces" / f"face_{i:03d}.bmp")
     return root
 
 
@@ -232,8 +232,8 @@ def test_prepare_pool_luminance_none_for_unreadable_images(mock_window, stim_roo
 
 def test_prepare_logs_scan_warnings(mock_window, tmp_path, event_sink):
     root = tmp_path / "stim"
-    _touch(root / "Obj_0 (21.5°)" / "Object_001_ori0.bmp")
-    _touch(root / "not_a_convention_dir" / "custom.jpg")
+    _touch(root / "objects" / "object_001.bmp")
+    _touch(root / "objects" / "readme.txt")  # non-image file -> scan warning
 
     task = FPVSTask()
     ctx = _make_ctx(mock_window, root, event_sink)
@@ -245,7 +245,7 @@ def test_prepare_logs_scan_warnings(mock_window, tmp_path, event_sink):
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert any(r["event_type"] == "image_scan_warning" for r in rows)
-    assert len(task._image_entries) == 2  # both the recognized and the generic-imported one
+    assert len(task._image_entries) == 1  # the image is kept; the .txt is skipped (warned)
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +259,8 @@ def test_run_trial_selects_correct_pools_and_runs_sequence(mock_window, stim_roo
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     params.base.base_freq_hz = 6.0
@@ -290,8 +290,8 @@ def test_run_trial_hard_fails_when_base_freq_too_high_for_refresh(mock_window, s
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.base_freq_hz = 60.0  # 60/60 -> 1 frame/cycle: no modulation possible
     params.oddball.oddball_freq_hz = 12.0  # still < base, so the model validates
@@ -424,8 +424,8 @@ def test_run_trial_applies_sinusoidal_modulation_to_image(mock_window, stim_root
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
 
@@ -449,8 +449,8 @@ def test_run_trial_none_waveform_keeps_full_opacity(mock_window, stim_root, even
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     params.modulation.waveform = params.modulation.waveform.NONE
@@ -473,8 +473,8 @@ def test_run_trial_runs_pre_and_post_fixation_intervals(mock_window, stim_root, 
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 0.5
     params.timing.pre_interval_seconds = (0.5, 0.5)   # 30 frames @ 60 Hz
@@ -504,8 +504,8 @@ def test_run_trial_fade_frames_reported_in_outcome(mock_window, stim_root, event
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     params.timing.fade_in_seconds = 0.5   # 30 frames @ 60 Hz
@@ -527,8 +527,8 @@ def test_run_trial_sets_mid_gray_background(mock_window, stim_root, event_sink):
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 0.2
 
@@ -548,8 +548,8 @@ def test_run_trial_runs_familiarization_before_main_when_enabled(mock_window, st
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 0.5
     params.familiarization.enabled = True
@@ -588,8 +588,8 @@ def test_run_trial_skips_familiarization_by_default(mock_window, stim_root, even
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 0.3
 
@@ -606,18 +606,28 @@ def test_run_trial_skips_familiarization_by_default(mock_window, stim_root, even
 
 def test_select_pool_passes_filename_pattern_through_to_filter_entries(stim_root):
     entries = scan_directory(stim_root).entries
-    selector = StimulusSelector(filename_pattern="*_001_*")
+    selector = StimulusSelector(filename_pattern="*_001.bmp")
     pool = _select_pool(entries, selector)
-    assert len(pool) == 2  # Face_001_ori0.bmp + Object_001_ori0.bmp, excludes _002/_003
-    assert all("_001_" in e.path.name for e in pool)
+    assert len(pool) == 2  # face_001.bmp + object_001.bmp, excludes _002/_003
+    assert all("_001" in e.path.name for e in pool)
 
 
-def test_select_pool_combines_filename_pattern_with_category(stim_root):
+def test_select_pool_combines_filename_pattern_with_subdirectory(stim_root):
     entries = scan_directory(stim_root).entries
-    selector = StimulusSelector(category="face", filename_pattern="*_001_*")
+    selector = StimulusSelector(subdirectory="faces", filename_pattern="*_001.bmp")
     pool = _select_pool(entries, selector)
     assert len(pool) == 1
-    assert pool[0].path.name == "Face_001_ori0.bmp"
+    assert pool[0].path.name == "face_001.bmp"
+
+
+def test_select_pool_selects_by_subdirectory(stim_root):
+    entries = scan_directory(stim_root).entries
+    faces = _select_pool(entries, StimulusSelector(subdirectory="faces"))
+    objects = _select_pool(entries, StimulusSelector(subdirectory="objects"))
+    assert {e.path.name for e in faces} == {"face_001.bmp", "face_002.bmp", "face_003.bmp"}
+    assert {e.path.name for e in objects} == {"object_001.bmp", "object_002.bmp", "object_003.bmp"}
+    # No selector -> the whole set.
+    assert len(_select_pool(entries, StimulusSelector())) == 6
 
 
 def test_run_trial_raises_clear_error_when_base_selector_matches_nothing(mock_window, stim_root, event_sink):
@@ -625,7 +635,7 @@ def test_run_trial_raises_clear_error_when_base_selector_matches_nothing(mock_wi
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(base_selector=StimulusSelector(category="object", angle_deg=999))
+    params = FPVSConditionParams(base_selector=StimulusSelector(subdirectory="does_not_exist"))
     with pytest.raises(ValueError, match="base_selector"):
         task.run_trial(ctx, params.model_dump(), trial_index=0)
 
@@ -635,7 +645,7 @@ def test_run_trial_raises_clear_error_when_oddball_selector_matches_nothing(mock
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(oddball_selector=StimulusSelector(category="object", angle_deg=999))
+    params = FPVSConditionParams(oddball_selector=StimulusSelector(subdirectory="does_not_exist"))
     with pytest.raises(ValueError, match="oddball_selector"):
         task.run_trial(ctx, params.model_dump(), trial_index=0)
 
@@ -773,8 +783,8 @@ class _PosRecorder:
 
 def _jitter_condition(radius_pix: float = 120.0) -> FPVSConditionParams:
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     params.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=radius_pix)
@@ -816,8 +826,8 @@ def test_run_trial_jitter_disabled_recenters_image(mock_window, stim_root, event
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     assert params.position_jitter.enabled is False  # default
@@ -834,26 +844,20 @@ def test_run_trial_jitter_disabled_recenters_image(mock_window, stim_root, event
     assert all(p == (0.0, 0.0) for p in recorder.positions)  # ...always to (0, 0)
 
 
-def test_select_pool_unset_variant_includes_all_variants():
-    """Regression: StimulusSelector.variant=None means 'any variant' -- it must NOT drop
-    negated/no_point images (the bug: None was passed straight to filter_entries, which reads it
-    as 'only plain, variant-None images')."""
+def test_select_pool_subdirectory_includes_nested_subfolders():
+    """A subdirectory selector matches that folder AND its descendants, so a nested layout still
+    resolves under one parent folder."""
     from pathlib import Path
 
-    from xpman.tasks.fpvs.image_set import Category, ImageEntry
+    from xpman.tasks.fpvs.image_set import ImageEntry
 
-    def _entry(name, variant):
-        return ImageEntry(
-            path=Path(name), recognized=True, category=Category.FACE, index=1,
-            angle_deg=0, eccentricity_deg=0.0, is_fs=False, variant=variant,
-        )
-
-    entries = [_entry("a.bmp", None), _entry("b.bmp", "negated"), _entry("c.bmp", "no_point")]
-    # Unset variant -> all three included.
-    assert len(_select_pool(entries, StimulusSelector(category="face"))) == 3
-    # An explicit variant still filters to exactly that one.
-    only_neg = _select_pool(entries, StimulusSelector(category="face", variant="negated"))
-    assert [e.variant for e in only_neg] == ["negated"]
+    entries = [
+        ImageEntry(path=Path("a.bmp"), relative_dir="faces"),
+        ImageEntry(path=Path("b.bmp"), relative_dir="faces/happy"),
+        ImageEntry(path=Path("c.bmp"), relative_dir="objects"),
+    ]
+    pool = _select_pool(entries, StimulusSelector(subdirectory="faces"))
+    assert {e.path.name for e in pool} == {"a.bmp", "b.bmp"}  # includes the nested 'happy' subfolder
 
 
 def test_run_trial_jitter_does_not_leak_offset_into_next_centered_trial(
@@ -925,8 +929,8 @@ def test_run_trial_no_jitter_onsets_log_pos_none(mock_window, stim_root, event_s
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0
     _run_trial_outcome(task, ctx, params)
@@ -979,8 +983,8 @@ def test_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_ro
         )
 
     base_params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     base_params.base.trial_duration_seconds = 2.0
 
@@ -1051,23 +1055,24 @@ def test_check_triggers_no_position_warning_when_disabled():
 def test_describe_condition_resources_reports_counts_per_selector(stim_root):
     task = FPVSTask()
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
 
     lines = task.describe_condition_resources(params.model_dump(), str(stim_root))
     text = "\n".join(lines)
     assert "6 image(s) found" in text
+    assert "Available subdirectories: faces, objects" in text  # discoverable folder names
     assert "Base selector: 3 matching image(s)" in text
     assert "Oddball selector: 3 matching image(s)" in text
-    assert "Object_001_ori0.bmp" in text  # sample filenames listed
+    assert "object_001.bmp" in text  # sample filenames listed
     assert "0 MATCHES" not in text
 
 
 def test_describe_condition_resources_flags_zero_match_selector(stim_root):
     task = FPVSTask()
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
+        base_selector=StimulusSelector(subdirectory="objects"),
         oddball_selector=StimulusSelector(filename_pattern="*no_such_image*"),
     )
 
@@ -1107,8 +1112,8 @@ def test_describe_condition_resources_invalid_params_returns_message_not_excepti
 
 def test_describe_condition_resources_includes_scan_warnings(tmp_path):
     root = tmp_path / "stim"
-    _touch(root / "Obj_0 (21.5°)" / "Object_001_ori0.bmp")
-    _touch(root / "not_a_convention_dir" / "custom.jpg")
+    _touch(root / "objects" / "object_001.bmp")
+    _touch(root / "objects" / "readme.txt")  # non-image file -> scan warning
 
     task = FPVSTask()
     lines = task.describe_condition_resources(FPVSConditionParams().model_dump(), str(root))
@@ -1296,8 +1301,8 @@ def test_runtime_flags_base_frequency_precision_when_near_refresh(mock_window, s
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.base_freq_hz = 30.0  # 60/30 = 2 frames/cycle -> below the 3-frame warn threshold
     params.base.trial_duration_seconds = 1.0
@@ -1314,8 +1319,8 @@ def test_runtime_no_frequency_warning_for_normal_base(mock_window, stim_root, ev
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.base_freq_hz = 6.0  # 60/6 = 10 frames/cycle, clean
     params.base.trial_duration_seconds = 1.0
@@ -1337,8 +1342,8 @@ def test_run_trial_with_distractor_populates_outcome_and_logs_events(mock_window
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 5.0  # long enough to schedule several distractor events
     params.distractor.enabled = True
@@ -1365,8 +1370,8 @@ def test_run_trial_without_distractor_leaves_metrics_none(mock_window, stim_root
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(category="object"),
-        oddball_selector=StimulusSelector(category="face"),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
     )
     params.base.trial_duration_seconds = 1.0  # distractor disabled by default
 
