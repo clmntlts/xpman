@@ -552,6 +552,14 @@ Confirm the virtual environment is activated (`.venv\Scripts\Activate.ps1`) and 
 running from the repo root, so it's using Python 3.11 with xpman actually installed
 (`pip install -e .[dev]`).
 
+**`no such column: runs....` / database schema errors:** the app now upgrades its database schema
+automatically on startup (Alembic migrations), so a database from an older build is migrated in
+place — this error shouldn't occur anymore. If you see a message that the database "has xpman tables
+but no Alembic version stamp", it's a *legacy* database created before auto-migration existed and
+its schema revision is unknown. Simplest fix: rename `data\xpman.db` (e.g. to `xpman.db.bak`) and
+relaunch to get a fresh database; or, to keep the data, run `alembic stamp <revision>` at the
+revision matching its columns, then `alembic upgrade head`.
+
 ### 7.2 EEG triggers aren't arriving / parallel port errors
 
 Run `scripts\install_parallel_port_driver.ps1` **as Administrator** — Windows 11 has a known
