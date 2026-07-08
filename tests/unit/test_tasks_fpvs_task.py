@@ -1383,6 +1383,65 @@ def test_run_trial_without_distractor_leaves_metrics_none(mock_window, stim_root
     assert not any(r["event_type"] == "distractor_onset" for r in rows)
 
 
+class _SharedBufferKeyboard:
+    """Stateful fake mimicking PsychoPy's Keyboard: every instance shares one device buffer, and
+    getKeys(clear=True) drains it for ALL instances. So a second collector that reads first would
+    leave nothing for the next -- exactly the bug that lost distractor presses. clearEvents is a
+    no-op (the trial-start clear must not wipe presses that 'arrive during' the sequence)."""
+
+    shared: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def clearEvents(self, *args, **kwargs):
+        pass
+
+    def getKeys(self, keyList=None, waitRelease=True, clear=True):
+        matched = [p for p in _SharedBufferKeyboard.shared if keyList is None or p.name in keyList]
+        if clear:
+            _SharedBufferKeyboard.shared = []  # drains the shared device buffer, as PsychoPy does
+        return matched
+
+
+def test_run_trial_distractor_responses_are_collected_even_with_response_task_on(
+    mock_window, stim_root, event_sink
+):
+    """Regression: two Keyboard instances share PsychoPy's device buffer, so the oddball-response
+    collector's getKeys(clear=True) used to drain the distractor presses before they were read --
+    every distractor response was silently lost. With the oddball-response task ALSO enabled (the
+    default), a key press must still be scored as a distractor hit."""
+    from types import SimpleNamespace
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 5.0
+    params.response.enabled = True  # the collector that used to drain the buffer first
+    params.distractor.enabled = True
+    params.distractor.min_interval_seconds = 1.0
+    params.distractor.max_interval_seconds = 1.0
+    params.distractor.guard_seconds = 0.5
+    params.distractor.response_window_seconds = 1e9  # any press after an onset counts as a hit
+
+    # One buffered press; huge tDown so it lands after the first event onset regardless of exact
+    # flip timing (scoring is a pure time comparison).
+    _SharedBufferKeyboard.shared = [SimpleNamespace(name="space", tDown=1e6)]
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", _SharedBufferKeyboard
+    ):
+        summary = task.run_trial(ctx, params.model_dump(), trial_index=0).outcome_summary
+
+    assert summary["distractor_n_events"] >= 1
+    assert summary["distractor_n_hits"] >= 1  # was 0 before the fix (buffer drained by response task)
+
+
 # ---------------------------------------------------------------------------
 # cleanup()
 # ---------------------------------------------------------------------------

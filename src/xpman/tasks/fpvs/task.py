@@ -483,7 +483,6 @@ class FPVSTask(TaskModule):
         # SEPARATE keyboard collector (distinct from the oddball-response collector) scored against
         # distractor events, not stimulus onsets. See distractor.py.
         distractor_controller = None
-        distractor_collector = None
         if params.distractor.enabled:
             distractor_rng = ctx.rng.spawn(1)[0]
             n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
@@ -497,12 +496,18 @@ class FPVSTask(TaskModule):
             distractor_controller = DistractorController(
                 events, distractor_stim, params.distractor.trigger_code
             )
-            distractor_collector = ResponseCollector(
-                ResponseKeyParams(enabled=True, keys=params.distractor.keys)
-            )
-            distractor_collector.clear()
 
-        self._response_collector = ResponseCollector(params.response)
+        # ONE keyboard collector for the whole trial, over the union of the oddball-response and
+        # distractor keys. Two separate Keyboard instances would share PsychoPy's single underlying
+        # device buffer, so the first getKeys(clear=True) would drain the other task's presses too
+        # (that bug silently lost every distractor response). Collected once after the sequence,
+        # then partitioned by key name below.
+        response_keys = list(params.response.keys) if params.response.enabled else []
+        distractor_keys = list(params.distractor.keys) if params.distractor.enabled else []
+        collected_keys = list(dict.fromkeys(response_keys + distractor_keys))  # union, order-preserving
+        self._response_collector = ResponseCollector(
+            ResponseKeyParams(enabled=bool(collected_keys), keys=collected_keys or ["space"])
+        )
         self._response_collector.clear()
         trial_start_time = ctx.clock.get_time()
 
@@ -556,7 +561,13 @@ class FPVSTask(TaskModule):
             event_label="post_stimulus_interval",
         )
 
-        responses = self._response_collector.collect()
+        # Collect every buffered press once, then route each to the task(s) that own its key.
+        all_presses = self._response_collector.collect()
+        responses = (
+            [r for r in all_presses if r.key_name in set(response_keys)]
+            if params.response.enabled
+            else []
+        )
         scored_responses = score_responses(
             responses, sequence_result.onsets, params=params.response, trial_start_time=trial_start_time
         )
@@ -575,12 +586,13 @@ class FPVSTask(TaskModule):
 
         valid_rts = [s.rt_seconds for s in scored_responses if s.is_valid and s.rt_seconds is not None]
 
-        # Distractor task scoring (signal detection), if it ran. Collected on its OWN keyboard
-        # collector and scored against the distractor events (not stimulus onsets). Only fired
-        # events count, so an aborted trial doesn't inflate the miss count. See distractor.py.
+        # Distractor task scoring (signal detection), if it ran. Its presses come from the SAME
+        # single collector (partitioned by key), and are scored against the distractor events (not
+        # stimulus onsets). Only fired events count, so an aborted trial doesn't inflate the miss
+        # count. See distractor.py.
         distractor_score = None
-        if distractor_controller is not None and distractor_collector is not None:
-            distractor_responses = distractor_collector.collect()
+        if distractor_controller is not None:
+            distractor_responses = [r for r in all_presses if r.key_name in set(distractor_keys)]
             distractor_score = score_distractor_responses(
                 distractor_responses, distractor_controller.events, params.distractor
             )
