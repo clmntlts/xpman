@@ -616,6 +616,21 @@ error above the button — it silently refuses to save invalid data rather than 
 A Trial must point at a Condition. If the parent Experiment has zero Conditions yet, the New
 Trial dialog tells you this and disables Ok — create a Condition on that Experiment first.
 
+### 7.7 Key responses (oddball task or distractor) aren't recorded
+
+Open the Run's **Trigger / Event Log… → Summary** tab and read the **Keyboard capture** line (the
+diagnostic added for exactly this). It reports, independently of scoring:
+- **`total_presses=0`** → the keyboard isn't being read at all. Make sure the fullscreen stimulus
+  window has focus (click it / don't alt-tab away), and that the response keys are pressed *during*
+  a trial's stimulation (not during the "Press SPACE to start" gate between trials). xpman captures
+  via two keyboard backends and falls back automatically, so 0 here usually means a focus problem.
+- **presses captured but `n_responses=0`** → the keys you pressed don't match the Condition's
+  configured keys. The line lists the actual `distinct_keys` seen; set `response.keys` (and/or
+  `distractor.keys`) to match, or press the configured key.
+
+Both the oddball-**response** task and the **distractor** task can be answered from the same
+keyboard; if they share a key, a press counts for both (`Check Triggers…` warns about that).
+
 ## 8. FAQ
 
 **Can I edit a Program after freezing an Instance from it?**

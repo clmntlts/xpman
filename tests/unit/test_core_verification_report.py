@@ -275,3 +275,37 @@ def test_format_does_not_crash_with_zero_events():
     text = build_verification_report([], nominal_frame_period_s=0.1).format()
     assert "No trigger_sent events found" in text
     assert "No response_scored events found" in text
+
+
+def test_keyboard_capture_summary_counts_presses_and_keys():
+    events = [
+        _event("keyboard_captured", 1.0, {"n": 2, "source": "keyboard", "backend": "ptb",
+                                          "keys": [{"name": "space", "time": 0.5}, {"name": "f", "time": 0.9}]}),
+        _event("keyboard_captured", 2.0, {"n": 1, "source": "event", "backend": "ptb",
+                                          "keys": [{"name": "space", "time": 1.2}]}),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+    kc = report.keyboard_capture
+    assert kc.total_presses == 3
+    assert set(kc.distinct_keys) == {"space", "f"}
+    assert kc.sources == {"keyboard": 1, "event": 1}
+
+
+def test_format_explains_no_responses_when_keys_captured_but_unmatched():
+    """The user's exact case: presses WERE captured but none scored -> the report must say the
+    pressed keys didn't match the configured keys, not just 'no responses'."""
+    events = [
+        _event("keyboard_captured", 1.0, {"n": 1, "source": "keyboard", "backend": "ptb",
+                                          "keys": [{"name": "f", "time": 0.5}]}),
+        # no response_scored events
+    ]
+    text = build_verification_report(events, nominal_frame_period_s=0.1).format()
+    assert "Keyboard capture" in text
+    assert "total_presses=1" in text
+    assert "none were scored" in text  # the actionable hint
+
+
+def test_format_flags_zero_keyboard_captures():
+    events = [_event("keyboard_captured", 1.0, {"n": 0, "source": "none", "backend": "ptb", "keys": []})]
+    text = build_verification_report(events, nominal_frame_period_s=0.1).format()
+    assert "0 presses captured" in text  # points at focus / backend, not at key config

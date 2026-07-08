@@ -84,6 +84,19 @@ class ResponseSummary:
 
 
 @dataclass(frozen=True)
+class KeyboardCaptureSummary:
+    """What the keyboard actually captured across the Run, from ``keyboard_captured`` events --
+    independent of whether any press matched a configured response key. Lets "no responses" be
+    diagnosed as either "no keys captured at all" (keyboard/focus/backend problem) or "keys
+    captured but none matched the configured response/distractor keys" (a config/key mismatch)."""
+
+    total_presses: int
+    distinct_keys: list[str]  # the key names actually captured, e.g. ["space", "f"]
+    backends: list[str]  # keyboard backend(s) seen, e.g. ["ptb"]
+    sources: dict[str, int]  # count of trials per capture source: keyboard / event / none
+
+
+@dataclass(frozen=True)
 class VerificationReport:
     event_counts: dict[str, int]
     flip_interval: FlipIntervalStats
@@ -91,6 +104,7 @@ class VerificationReport:
     trigger_codes: list[TriggerCodeCount]
     frequency_checks: list[FrequencyCheck]
     response_summary: ResponseSummary | None
+    keyboard_capture: "KeyboardCaptureSummary | None" = None
 
     def format(self) -> str:
         lines = ["=== xpman hardware-verification report ===", "", "Event counts:"]
@@ -156,6 +170,29 @@ class VerificationReport:
             rs = self.response_summary
             mean_str = f"{rs.mean_rt_s * 1000:.2f}ms" if rs.mean_rt_s is not None else "n/a"
             lines.append(f"  n_responses={rs.n_responses}  n_valid={rs.n_valid}  mean_rt={mean_str}")
+
+        # Keyboard capture diagnostic: what the keyboard actually saw, regardless of scoring. This
+        # is what tells you WHY there are no scored responses -- nothing captured vs. wrong key.
+        kc = self.keyboard_capture
+        if kc is not None:
+            lines += ["", "Keyboard capture (diagnostic -- what was pressed, before key matching):"]
+            backends = ", ".join(kc.backends) or "unknown"
+            sources = ", ".join(f"{k}={v}" for k, v in sorted(kc.sources.items())) or "none"
+            lines.append(
+                f"  total_presses={kc.total_presses}  distinct_keys={kc.distinct_keys or '[]'}  "
+                f"backend(s)={backends}  per-trial source: {sources}"
+            )
+            if kc.total_presses == 0:
+                lines.append(
+                    "  -> 0 presses captured: the keyboard isn't being read (window not focused, or "
+                    "the keyboard backend can't capture on this machine). Check the fullscreen window "
+                    "has focus; the 'event' fallback source count above should be >0 if any path worked."
+                )
+            elif self.response_summary is None:
+                lines.append(
+                    "  -> presses WERE captured but none were scored: the pressed key(s) above don't "
+                    "match this Condition's response/distractor keys. Fix the configured keys."
+                )
 
         return "\n".join(lines)
 
@@ -293,6 +330,34 @@ def _summarize_responses(events_sorted: list[dict[str, Any]]) -> ResponseSummary
     )
 
 
+def _summarize_keyboard_capture(events_sorted: list[dict[str, Any]]) -> "KeyboardCaptureSummary | None":
+    captured = [e for e in events_sorted if e["event_type"] == "keyboard_captured"]
+    if not captured:
+        return None  # older runs (before capture logging) simply have no diagnostic
+    total = 0
+    distinct: dict[str, None] = {}  # ordered set of key names
+    backends: dict[str, None] = {}
+    sources: dict[str, int] = {}
+    for e in captured:
+        payload = e.get("payload") or {}
+        total += int(payload.get("n") or 0)
+        for press in payload.get("keys") or []:
+            name = press.get("name")
+            if name is not None:
+                distinct[name] = None
+        backend = payload.get("backend")
+        if backend:
+            backends[backend] = None
+        source = payload.get("source") or "unknown"
+        sources[source] = sources.get(source, 0) + 1
+    return KeyboardCaptureSummary(
+        total_presses=total,
+        distinct_keys=list(distinct),
+        backends=list(backends),
+        sources=sources,
+    )
+
+
 def build_verification_report(events: list[dict[str, Any]], *, nominal_frame_period_s: float) -> VerificationReport:
     """Build a :class:`VerificationReport` from a Run's raw event rows.
 
@@ -317,4 +382,5 @@ def build_verification_report(events: list[dict[str, Any]], *, nominal_frame_per
         trigger_codes=_summarize_trigger_codes(events_sorted),
         frequency_checks=_extract_frequency_checks(events_sorted),
         response_summary=_summarize_responses(events_sorted),
+        keyboard_capture=_summarize_keyboard_capture(events_sorted),
     )

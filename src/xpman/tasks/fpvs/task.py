@@ -44,7 +44,7 @@ from xpman.tasks.fpvs.distractor import (
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
-from xpman.tasks.fpvs.response import ResponseCollector, ResponseKeyParams, score_responses
+from xpman.tasks.fpvs.response import ResponseCollector, score_responses
 from xpman.tasks.fpvs.schema import (
     FamiliarizationParams,
     FPVSConditionParams,
@@ -497,17 +497,16 @@ class FPVSTask(TaskModule):
                 events, distractor_stim, params.distractor.trigger_code
             )
 
-        # ONE keyboard collector for the whole trial, over the union of the oddball-response and
-        # distractor keys. Two separate Keyboard instances would share PsychoPy's single underlying
-        # device buffer, so the first getKeys(clear=True) would drain the other task's presses too
-        # (that bug silently lost every distractor response). Collected once after the sequence,
-        # then partitioned by key name below.
+        # ONE keyboard collector for the whole Run (created on the first trial, reused after --
+        # PsychoPy's key buffer attaches more reliably than a fresh Keyboard per trial). It captures
+        # EVERY key; the oddball-response and distractor tasks are then scored by partitioning the
+        # presses by key name below (two Keyboard instances would fight over PsychoPy's single shared
+        # device buffer, silently losing one task's presses). See ResponseCollector.
         response_keys = list(params.response.keys) if params.response.enabled else []
         distractor_keys = list(params.distractor.keys) if params.distractor.enabled else []
-        collected_keys = list(dict.fromkeys(response_keys + distractor_keys))  # union, order-preserving
-        self._response_collector = ResponseCollector(
-            ResponseKeyParams(enabled=bool(collected_keys), keys=collected_keys or ["space"])
-        )
+        if self._response_collector is None:
+            self._response_collector = ResponseCollector(enabled=True)
+            ctx.event_sink.log("keyboard_ready", {"backend": self._response_collector.backend})
         self._response_collector.clear()
         trial_start_time = ctx.clock.get_time()
 
@@ -563,6 +562,18 @@ class FPVSTask(TaskModule):
 
         # Collect every buffered press once, then route each to the task(s) that own its key.
         all_presses = self._response_collector.collect()
+        # Diagnostic (logged every trial, even when empty): exactly what the keyboard captured and
+        # via which backend -- so "no responses" can be told apart from "captured, but the wrong key
+        # / not scored" without a lab session. See ResponseCollector.
+        ctx.event_sink.log(
+            "keyboard_captured",
+            {
+                "n": len(all_presses),
+                "source": self._response_collector.last_source,
+                "backend": self._response_collector.backend,
+                "keys": [{"name": r.key_name, "time": r.time} for r in all_presses],
+            },
+        )
         responses = (
             [r for r in all_presses if r.key_name in set(response_keys)]
             if params.response.enabled
