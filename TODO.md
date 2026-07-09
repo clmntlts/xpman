@@ -200,11 +200,15 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           trial-global contrast envelope, per-segment `sweep_segment_*` provenance for per-segment
           FFT); `check_triggers` warns on steps too short to resolve their oddball; a validator rejects
           *triggered* overlays under a sweep (v1).
-    - [ ] **Dual (bilateral) image streams.** Two simultaneous streams (left/right), each own
-          pool/frequency/position/triggers, shared central fixation; per-frame draws both; coincident
-          onsets send one **combined reserved code** on the single 8-bit port (`trigger_combine.py`
-          built); per-stream onset logging; validate distinct non-harmonic + non-intermodulating
-          frequencies. Needs the **frame-driven per-frame body** (Step 4) — the last hot-loop change.
+    - [x] **Dual (bilateral) image streams (2026-07-09).** Done end-to-end. `trigger_combine.py`
+          (8-bit reserved-code combiner), `streams.py` (harmonic/intermodulation separability),
+          `_run_dual_stream` (frame-driven engine: two streams onset at their own cadence, drawn at
+          their own `position_pix`, ONE combined port code per frame, per-stream onset logging,
+          photodiode tracks stream 0); `StreamParams`/`second_stream`/`stream_position_pix` schema
+          (v6) with validators rejecting harmonic/identical-position/sweep pairings; `task.run_trial`
+          builds the 2nd stream's pools + runs the engine; `check_triggers` separability advisories.
+          v1: single segment (no per-stream sweep), fixed positions (no jitter), no per-stream
+          stimulus triggers (frequency-domain analysis). The single-stream path stays byte-for-byte.
     - [x] **Per-trial baseline period (2026-07-09).** Done: `BaselineParams` (before/after/both,
           duration, own start/stop triggers) on `FPVSConditionParams` (v6); `run_trial` runs a
           base-only `_run_baseline` segment (Condition base freq + modulation + base pool) before
