@@ -115,6 +115,33 @@ def test_timeline_view_draws_go_nogo_markers(qtbot):
     assert any(it.pen().color() == amber for it in lines)  # a NO-GO marker
 
 
+def test_timeline_view_draws_sweep_segment_dividers(qtbot):
+    """Frequency-sweep segment boundaries render as sky-blue vertical dividers, tagged by frequency."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QGraphicsLineItem
+
+    trial = TrialTimeline(
+        index=1,
+        duration_s=2.0,
+        onsets=[TimelineMark(0.0, False, None, 0)],
+        triggers=[],
+        segments=[
+            TimelineMark(0.0, None, None, 0, label="6 Hz"),
+            TimelineMark(1.0, None, None, 1, label="12 Hz"),
+        ],
+    )
+    view = TimelineView([trial])
+    qtbot.addWidget(view)
+
+    sky = QColor("#38bdf8")
+    seg_lines = [
+        it
+        for it in view._scene.items()
+        if isinstance(it, QGraphicsLineItem) and it.pen().color() == sky
+    ]
+    assert len(seg_lines) == 2  # one divider per segment
+
+
 def test_timeline_view_empty_shows_note_not_crash(qtbot):
     view = TimelineView([])
     qtbot.addWidget(view)

@@ -83,6 +83,9 @@ class TrialTimeline:
     distractors: list[TimelineMark] = field(default_factory=list)
     #: Go/no-go event onsets, if that task ran. ``label`` is "go" or "nogo"; ``code`` the trigger.
     go_nogo: list[TimelineMark] = field(default_factory=list)
+    #: Frequency-sweep segment boundaries within this trial (empty unless a sweep ran). ``label`` is
+    #: the segment's achieved base frequency (e.g. "6 Hz"); ``time_s`` is where the segment started.
+    segments: list[TimelineMark] = field(default_factory=list)
 
     @property
     def n_base(self) -> int:
@@ -114,18 +117,35 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
     # First pass: raw windows with their time bounds and marks.
     windows: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
+    pending: tuple[str, str | None] | None = None  # kind + phase tagging the NEXT base-only stream
     for e in events_sorted:
         event_type = e["event_type"]
         ts = e["timestamp"]
         payload = e.get("payload") or {}
+        # A base-only stream (base_sequence_*) is wrapped by EITHER familiarization_start or
+        # baseline_start (both reuse run_base_sequence). Capture which so it's labelled correctly
+        # instead of every base-only stream being called "familiarization".
+        if event_type == "familiarization_start":
+            pending = ("familiarization", None)
+            continue
+        if event_type == "baseline_start":
+            pending = ("baseline", payload.get("phase"))
+            continue
         if event_type in _SEQUENCE_START_EVENTS:
             if cur is not None:
                 cur["end"] = cur["last"]
                 windows.append(cur)
+            if event_type == "base_oddball_sequence_start":
+                kind, phase = "trial", None
+            elif pending is not None:
+                kind, phase = pending
+            else:
+                kind, phase = "familiarization", None
+            pending = None
             cur = {
                 "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [],
-                "responses": [], "distractors": [], "go_nogo": [],
-                "kind": "familiarization" if event_type == "base_sequence_start" else "trial",
+                "responses": [], "distractors": [], "go_nogo": [], "segments": [],
+                "kind": kind, "phase": phase,
             }
         elif event_type in _SEQUENCE_END_EVENTS:
             if cur is not None:
@@ -135,12 +155,28 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
         elif cur is not None:
             if event_type in _ONSET_EVENTS:
                 index = _mark_index(payload, len(cur["onsets"]))
-                cur["onsets"].append(TimelineMark(ts - cur["start"], payload.get("is_oddball"), None, index))
+                stream = payload.get("stream")  # dual-stream: which stream this onset belongs to
+                label = f"stream {stream}" if stream is not None else None
+                cur["onsets"].append(
+                    TimelineMark(ts - cur["start"], payload.get("is_oddball"), None, index, label=label)
+                )
                 cur["last"] = ts
             elif event_type == "trigger_sent":
                 index = _mark_index(payload, len(cur["triggers"]))
                 cur["triggers"].append(
                     TimelineMark(ts - cur["start"], payload.get("is_oddball"), payload.get("code"), index)
+                )
+                cur["last"] = ts
+            elif event_type == "sweep_segment_start":
+                freq = payload.get("achieved_base_freq_hz") or payload.get("requested_base_freq_hz")
+                cur["segments"].append(
+                    TimelineMark(
+                        ts - cur["start"],
+                        None,
+                        None,
+                        payload.get("segment_index"),
+                        label=(f"{freq:g} Hz" if freq else None),
+                    )
                 )
                 cur["last"] = ts
             elif event_type == "distractor_onset":
@@ -186,10 +222,15 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
     timelines: list[TrialTimeline] = []
     trial_n = 0
     fam_n = 0
+    baseline_n = 0
     for i, w in enumerate(windows):
         if w["kind"] == "trial":
             trial_n += 1
             label = f"Trial {trial_n}"
+        elif w["kind"] == "baseline":
+            baseline_n += 1
+            phase = w.get("phase")
+            label = f"Baseline ({phase})" if phase else "Baseline"
         else:
             fam_n += 1
             label = "Familiarization" if fam_n == 1 else f"Familiarization {fam_n}"
@@ -205,6 +246,7 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 responses=w["responses"],
                 distractors=w["distractors"],
                 go_nogo=w["go_nogo"],
+                segments=w["segments"],
             )
         )
     return timelines
