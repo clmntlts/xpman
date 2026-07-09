@@ -1231,3 +1231,217 @@ def test_present_fixation_only_aborts_early(mock_window, event_sink, clock):
     )
     assert aborted is True
     assert frames == 3
+
+
+# ---------------------------------------------------------------------------
+# GOLDEN regression net (Step 0 of the Phase-2 presentation-loop refactor).
+# These three tests are ADDITIVE and pin the *current* behavior of
+# run_base_oddball_sequence so a later refactor cannot silently change:
+#   1. the RNG pool-interleaving order across wraparounds,
+#   2. the one-flip-per-frame total flip count, and
+#   3. the event-log types + their order on the default path.
+# They capture reality (values obtained by running once), not an ideal.
+# ---------------------------------------------------------------------------
+
+
+def _identified_stims(names: list[str]) -> list[MagicMock]:
+    """Build MagicMocks whose ``.identity`` is an explicit string (a bare MagicMock returns a
+    truthy child mock for ``.identity``, so onset payloads would log those child mocks instead
+    of a real identity)."""
+    stims = []
+    for name in names:
+        m = MagicMock(name=name)
+        m.identity = name
+        stims.append(m)
+    return stims
+
+
+def _run_oddball_and_read_onset_identities(event_sink, trigger, clock, mock_window, rng):
+    """Run a 6-wraparound oddball sequence and return the interleaved list of onset ``image``
+    identities in log order (base onsets from ``stimulus_onset``, oddball onsets from
+    ``oddball_onset``). Used by the determinism + golden interleaving test."""
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        # base 6 Hz / oddball 1.2 Hz -> period 5, 10 frames/stim @ 60 Hz.
+        # 6 s trial -> 360 frames -> 36 stimuli: 7 oddballs (pos 5..35) => oddball pool (2)
+        # wraps 3x; 29 base => base pool (3) wraps 9x. Both pools wrap >= 2x.
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=6.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        rng=rng,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    identities = []
+    for r in rows:
+        if r["event_type"] in ("stimulus_onset", "oddball_onset"):
+            identities.append(json.loads(r["payload_json"])["image"])
+    return identities
+
+
+def test_golden_pool_interleaving_order_is_stable_across_wraparounds(
+    mock_window, trigger, clock, tmp_path
+):
+    import numpy as np
+
+    # (a) Determinism: two fresh default_rng(0) runs yield the identical identity sequence.
+    sink_a = EventSink(tmp_path / "a.csv", tmp_path / "a.parquet")
+    seq_a = _run_oddball_and_read_onset_identities(
+        sink_a, trigger, clock, mock_window, np.random.default_rng(0)
+    )
+    sink_b = EventSink(tmp_path / "b.csv", tmp_path / "b.parquet")
+    seq_b = _run_oddball_and_read_onset_identities(
+        sink_b, trigger, clock, mock_window, np.random.default_rng(0)
+    )
+    assert seq_a == seq_b  # deterministic under a fixed seed
+
+    # (b) Golden equality: the interleaved identity sequence is pinned.
+    # GOLDEN: pins RNG pool-interleaving order; a Phase-2 refactor must not change this.
+    expected = [
+        "b0", "b1", "b2", "b2", "o0",
+        "b0", "b1", "b2", "b1", "o1",
+        "b0", "b2", "b0", "b1", "o0",
+        "b1", "b2", "b0", "b0", "o1",
+        "b2", "b1", "b0", "b2", "o0",
+        "b1", "b0", "b2", "b1", "o1",
+        "b2", "b1", "b0", "b1", "o1",
+        "b2",
+    ]
+    assert seq_a == expected
+
+    # (c) Sanity: oddball positions (every 5th, 1-indexed) carry o* identities; base positions
+    # carry b* identities; and a later wraparound differs from the first pass (re-permutation
+    # genuinely happened -- it is NOT the naive non-repermuted cycle).
+    for i, ident in enumerate(seq_a):
+        position_1indexed = i + 1
+        if position_1indexed % 5 == 0:
+            assert ident.startswith("o"), f"position {position_1indexed} should be oddball"
+        else:
+            assert ident.startswith("b"), f"position {position_1indexed} should be base"
+    base_only = [ident for ident in seq_a if ident.startswith("b")]
+    first_pass = base_only[:3]
+    assert first_pass == ["b0", "b1", "b2"]  # first pass preserves given order
+    # some later base wraparound is a different permutation than the first pass
+    later_passes = [tuple(base_only[i : i + 3]) for i in range(3, len(base_only) - 2, 3)]
+    assert any(p != ("b0", "b1", "b2") for p in later_passes)
+
+
+def test_golden_oddball_flip_count_equals_total_frames(mock_window, event_sink, trigger, clock):
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    trial_duration = 2.0
+    refresh = 60.0
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=trial_duration),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=refresh,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    frames_per_stim = frames_per_cycle(refresh, 6.0)  # 10
+    n_stimuli_to_show = max(round(trial_duration * refresh) // frames_per_stim, 1)  # 120 // 10 = 12
+    expected_total_frames = n_stimuli_to_show * frames_per_stim  # 12 * 10 = 120
+    # GOLDEN: one window.flip() per frame across the whole oddball sequence.
+    assert mock_window.flip.call_count == expected_total_frames
+
+
+def test_golden_oddball_event_log_order_and_types(mock_window, event_sink, trigger, clock):
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    # base 6 Hz / oddball 1.2 Hz -> period 5, 10 frames/stim @ 60 Hz.
+    # 5/6 s trial -> round(50) = 50 frames -> exactly 5 stimuli: positions 1-4 base, position 5 oddball.
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=5 / 6, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    event_types = [r["event_type"] for r in rows]
+    # GOLDEN: oddball event-log types + order (base_oddball_sequence_start ...
+    # trigger_sent/stimulus_onset/oddball_onset/flip ... base_oddball_sequence_end); a refactor
+    # must not add/reorder event types on the default path.
+    expected = [
+        "base_oddball_sequence_start",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "oddball_onset",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "base_oddball_sequence_end",
+    ]
+    assert event_types == expected
