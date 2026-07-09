@@ -1619,3 +1619,51 @@ def test_run_trial_sweep_presents_steps_as_segments(mock_window, stim_root, even
     assert types.count("base_oddball_sequence_start") == 1  # single trial-level wrapper
     assert "base_oddball_sequence_end" in types
     assert result.outcome_summary["aborted"] is False
+
+
+def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink):
+    """A 'both' baseline runs one base-only reference before the oddball stream and one after, each
+    framed by its own start/stop triggers + baseline_start/end (tagged with its phase)."""
+    import json
+
+    from xpman.tasks.fpvs.schema import BaselineParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        baseline=BaselineParams(
+            enabled=True,
+            position="both",
+            duration_seconds=0.3,
+            blank_seconds=0.0,
+            start_trigger_code=60,
+            stop_trigger_code=61,
+        ),
+    )
+    params.base.trial_duration_seconds = 0.4
+
+    trigger = NullTrigger(reset_after=0.0)
+    ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    types = [r["event_type"] for r in rows]
+    assert types.count("baseline_start") == 2  # one before, one after
+    assert types.count("baseline_end") == 2
+    # phases in order, and the 'before' baseline precedes the main sequence while 'after' follows it.
+    phases = [json.loads(r["payload_json"])["phase"] for r in rows if r["event_type"] == "baseline_start"]
+    assert phases == ["before", "after"]
+    main = types.index("base_oddball_sequence_start")
+    starts = [i for i, t in enumerate(types) if t == "baseline_start"]
+    assert starts[0] < main < starts[1]
+    assert result.outcome_summary["baseline"] == "both"
+    assert 60 in trigger.codes_sent and 61 in trigger.codes_sent
