@@ -192,21 +192,24 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           positions are editable in the GUI via a new `SchemaForm` `list[BaseModel]` editor
           (add/remove inline sub-forms, `min_items` disables Remove at 2); `SchemaForm` also gained a
           reusable `json_schema_extra` `hidden` mechanism (round-trip-safe) for fields it can't render.
-    - [ ] **Frequency sweep (stepped).** Trial = a sequence of constant-frequency segments; each
-          reuses the constant-frequency machinery at its own frequency, continuous global frame
-          index, per-segment provenance (`sweep_segment_*`) for per-segment FFT; warn on too-short
-          steps. Phase 2 (needs the segment×stream loop generalization).
+    - [x] **Frequency sweep (stepped) (2026-07-09).** Done end-to-end on the segments×streams engine
+          (branch `phase2-sweep-dualstream`). `sweep.py` (`SweepStep`/`FrequencySweepParams`/
+          `plan_sweep_segments`/`min_recommended_step_seconds`); `FPVSConditionParams.sweep`, additive
+          v5→v6; `run_trial` runs the steps as back-to-back constant-frequency segments via
+          `_run_oddball_segments` (continuous frame index, one flip-log flush, one trailing clear,
+          trial-global contrast envelope, per-segment `sweep_segment_*` provenance for per-segment
+          FFT); `check_triggers` warns on steps too short to resolve their oddball; a validator rejects
+          *triggered* overlays under a sweep (v1).
     - [ ] **Dual (bilateral) image streams.** Two simultaneous streams (left/right), each own
           pool/frequency/position/triggers, shared central fixation; per-frame draws both; coincident
-          onsets send one **combined bitfield code** on the single port; per-stream onset logging;
-          validate distinct non-harmonic frequencies. Phase 2 (segment×stream loop refactor).
-    - [ ] **Per-trial baseline period (2026-07-09, from the lab).** An optional **base-only
-          (no-oddball)** segment within each trial, as a within-trial reference the oddball response
-          is compared against. Configurable position (before and/or after the oddball stream) and
-          duration, its own start/stop triggers, and its own logged segment (`baseline_*`) so
-          analysis can isolate it. Reuses `run_base_sequence` (base-only) exactly as familiarization
-          already does; composes with the sweep segment structure. Additive, default off. (Supersedes
-          the terse "baseline stimulus period" below.)
+          onsets send one **combined reserved code** on the single 8-bit port (`trigger_combine.py`
+          built); per-stream onset logging; validate distinct non-harmonic + non-intermodulating
+          frequencies. Needs the **frame-driven per-frame body** (Step 4) — the last hot-loop change.
+    - [x] **Per-trial baseline period (2026-07-09).** Done: `BaselineParams` (before/after/both,
+          duration, own start/stop triggers) on `FPVSConditionParams` (v6); `run_trial` runs a
+          base-only `_run_baseline` segment (Condition base freq + modulation + base pool) before
+          and/or after the oddball stream, logged `baseline_start/end` with its phase; docstring flags
+          the before/after adaptation asymmetry. Reuses `run_base_sequence`. Additive, default off.
     - [x] **Familiarization presented once, as the first trial (2026-07-09).** Was a behaviour bug:
           `FPVSTask.run_trial` ran the familiarization stream at the START of **every** trial when
           `familiarization.enabled` (a 10-trial block repeated it 10×), contradicting its own
