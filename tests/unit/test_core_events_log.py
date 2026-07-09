@@ -233,3 +233,82 @@ def test_build_trial_timelines_unterminated_stream_still_emitted():
     timelines = build_trial_timelines(events)
     assert len(timelines) == 1
     assert timelines[0].duration_s == pytest.approx(0.5)
+
+
+def test_baseline_streams_labelled_by_phase_not_familiarization():
+    # A baseline reuses run_base_sequence (base_sequence_*), like familiarization -- it must be
+    # labelled "Baseline (before/after)", not miscounted as familiarization.
+    events = [
+        _ev("baseline_start", 0.0, {"phase": "before"}),
+        _ev("base_sequence_start", 0.1),
+        _ev("stimulus_onset", 0.2, {"stim_index": 0, "is_oddball": False}),
+        _ev("base_sequence_end", 0.3),
+        _ev("baseline_end", 0.31, {"phase": "before"}),
+        _ev("base_oddball_sequence_start", 0.4),
+        _ev("stimulus_onset", 0.5, {"stim_index": 0, "is_oddball": False}),
+        _ev("oddball_onset", 0.6, {"stim_index": 4, "is_oddball": True}),
+        _ev("base_oddball_sequence_end", 0.7),
+        _ev("baseline_start", 0.8, {"phase": "after"}),
+        _ev("base_sequence_start", 0.9),
+        _ev("stimulus_onset", 1.0, {"stim_index": 0, "is_oddball": False}),
+        _ev("base_sequence_end", 1.1),
+        _ev("baseline_end", 1.11, {"phase": "after"}),
+    ]
+    timelines = build_trial_timelines(events)
+    assert [t.kind for t in timelines] == ["baseline", "trial", "baseline"]
+    assert [t.label for t in timelines] == ["Baseline (before)", "Trial 1", "Baseline (after)"]
+
+
+def test_familiarization_still_labelled_correctly():
+    events = [
+        _ev("familiarization_start", 0.0, {"frequency_hz": 6.0, "duration_seconds": 1.0}),
+        _ev("base_sequence_start", 0.1),
+        _ev("stimulus_onset", 0.2, {"stim_index": 0, "is_oddball": False}),
+        _ev("base_sequence_end", 0.3),
+        _ev("familiarization_end", 0.31),
+        _ev("base_oddball_sequence_start", 0.4),
+        _ev("stimulus_onset", 0.5, {"stim_index": 0, "is_oddball": False}),
+        _ev("base_oddball_sequence_end", 0.6),
+    ]
+    timelines = build_trial_timelines(events)
+    assert [t.label for t in timelines] == ["Familiarization", "Trial 1"]
+
+
+def test_bare_base_sequence_defaults_to_familiarization():
+    # An un-wrapped base-only stream (no familiarization/baseline marker) keeps the old default.
+    events = [
+        _ev("base_sequence_start", 0.0),
+        _ev("stimulus_onset", 0.1, {"stim_index": 0, "is_oddball": False}),
+        _ev("base_sequence_end", 0.2),
+    ]
+    timelines = build_trial_timelines(events)
+    assert timelines[0].kind == "familiarization"
+
+
+def test_sweep_segment_boundaries_captured_with_frequency_labels():
+    events = [
+        _ev("base_oddball_sequence_start", 0.0),
+        _ev("sweep_segment_start", 0.05, {"segment_index": 0, "achieved_base_freq_hz": 6.0}),
+        _ev("stimulus_onset", 0.1, {"stim_index": 0, "is_oddball": False}),
+        _ev("sweep_segment_end", 0.5, {"segment_index": 0}),
+        _ev("sweep_segment_start", 0.55, {"segment_index": 1, "achieved_base_freq_hz": 12.0}),
+        _ev("stimulus_onset", 0.6, {"stim_index": 0, "is_oddball": False}),
+        _ev("sweep_segment_end", 1.0, {"segment_index": 1}),
+        _ev("base_oddball_sequence_end", 1.05),
+    ]
+    timelines = build_trial_timelines(events)
+    segs = timelines[0].segments
+    assert [s.label for s in segs] == ["6 Hz", "12 Hz"]
+    assert segs[0].time_s == pytest.approx(0.05)
+
+
+def test_dual_stream_onsets_tagged_with_stream_index():
+    events = [
+        _ev("base_oddball_sequence_start", 0.0, {"n_streams": 2}),
+        _ev("stimulus_onset", 0.1, {"stim_index": 0, "is_oddball": False, "stream": 0}),
+        _ev("stimulus_onset", 0.1, {"stim_index": 0, "is_oddball": False, "stream": 1}),
+        _ev("base_oddball_sequence_end", 0.5),
+    ]
+    timelines = build_trial_timelines(events)
+    labels = {o.label for o in timelines[0].onsets}
+    assert labels == {"stream 0", "stream 1"}

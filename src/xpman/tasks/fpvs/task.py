@@ -30,6 +30,10 @@ from xpman.tasks.fpvs.fixation import build_fixation_stimulus
 from xpman.tasks.fpvs.image_set import ImageEntry, filter_entries, scan_directory
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
+    Segment,
+    Stream,
+    _run_dual_stream,
+    _run_oddball_segments,
     derived_oddball_freq_hz,
     frames_per_cycle,
     oddball_pattern_mask,
@@ -37,6 +41,8 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
+from xpman.tasks.fpvs.streams import stream_separability_warnings
+from xpman.tasks.fpvs.sweep import min_recommended_step_seconds, plan_sweep_segments
 from xpman.tasks.fpvs.distractor import (
     DistractorController,
     build_distractor_stimulus,
@@ -54,6 +60,7 @@ from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
 from xpman.tasks.fpvs.response import ResponseCollector, score_responses
 from xpman.tasks.fpvs.schema import (
+    BaselineParams,
     FamiliarizationParams,
     FPVSConditionParams,
     FPVSSchema,
@@ -229,6 +236,60 @@ def _run_familiarization(
         event_sink=ctx.event_sink,
         abort_check=ctx.abort_check,
         event_label="familiarization_blank",
+    )
+
+
+def _run_baseline(
+    ctx: TaskContext,
+    baseline: BaselineParams,
+    phase: str,
+    stimuli: list,
+    fixation_stim,
+    refresh_rate_hz: float,
+    base_freq_hz: float,
+    modulation,
+    position_provider: "Callable[[], tuple[float, float]] | None" = None,
+) -> None:
+    """Present one base-only (no-oddball) baseline segment -- the within-trial reference. Runs at the
+    Condition's own ``base_freq_hz`` + ``modulation`` + base pool (so it is the main stimulation minus
+    oddballs), framed by its own start/stop triggers and ``baseline_start``/``baseline_end`` events
+    tagged with ``phase`` ('before'/'after'), followed by a fixation-only blank. Reuses
+    ``run_base_sequence`` exactly as ``_run_familiarization`` does."""
+    ctx.event_sink.log(
+        "baseline_start",
+        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds},
+    )
+    if baseline.start_trigger_code is not None:
+        ctx.trigger.send_trigger(baseline.start_trigger_code)
+
+    run_base_sequence(
+        window=ctx.window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(
+            base_freq_hz=base_freq_hz, trial_duration_seconds=baseline.duration_seconds
+        ),
+        refresh_rate_hz=refresh_rate_hz,
+        trigger=ctx.trigger,
+        clock=ctx.clock,
+        event_sink=ctx.event_sink,
+        abort_check=ctx.abort_check,
+        modulation=modulation,
+        rng=ctx.rng,
+        position_provider=position_provider,
+    )
+
+    if baseline.stop_trigger_code is not None:
+        ctx.trigger.send_trigger(baseline.stop_trigger_code)
+    ctx.event_sink.log("baseline_end", {"phase": phase})
+
+    present_fixation_only(
+        window=ctx.window,
+        fixation_stim=fixation_stim,
+        n_frames=round(baseline.blank_seconds * refresh_rate_hz),
+        clock=ctx.clock,
+        event_sink=ctx.event_sink,
+        abort_check=ctx.abort_check,
+        event_label="baseline_blank",
     )
 
 
@@ -491,10 +552,22 @@ class FPVSTask(TaskModule):
         # SEPARATE keyboard collector (distinct from the oddball-response collector) scored against
         # distractor events, not stimulus onsets. See distractor.py.
         # Frames the main sequence will actually present (used to schedule the overlay tasks over the
-        # same span). Matches run_base_oddball_sequence's own n_stimuli_to_show * frames_per_stim.
-        _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
-        _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
-        _effective_frames = max(_total_seq_frames // base_frames_per_cycle, 1) * base_frames_per_cycle
+        # same span). Matches the engine's own per-segment n_stimuli_to_show * frames_per_stim sum
+        # (design invariants #4/#6). A sweep sums over its steps (fades only on the first/last step,
+        # each step floor-divided by its own frames-per-cycle -- mirrors _plan_oddball_segment).
+        if params.sweep.enabled:
+            _last_step = len(params.sweep.steps) - 1
+            _effective_frames = 0
+            for _i, _step in enumerate(params.sweep.steps):
+                _step_fpc = frames_per_cycle(refresh, _step.base_freq_hz)
+                _step_fade_in = n_fade_in_frames if _i == 0 else 0
+                _step_fade_out = n_fade_out_frames if _i == _last_step else 0
+                _step_budget = _step_fade_in + round(_step.duration_seconds * refresh) + _step_fade_out
+                _effective_frames += max(_step_budget // _step_fpc, 1) * _step_fpc
+        else:
+            _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
+            _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
+            _effective_frames = max(_total_seq_frames // base_frames_per_cycle, 1) * base_frames_per_cycle
 
         distractor_controller = None
         if params.distractor.enabled:
@@ -555,27 +628,167 @@ class FPVSTask(TaskModule):
                 ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider
             )
 
-        sequence_result = run_base_oddball_sequence(
-            window=ctx.window,
-            base_stimuli=base_stims,
-            oddball_stimuli=oddball_stims,
-            base_params=params.base,
-            oddball_params=params.oddball,
-            refresh_rate_hz=self._refresh_rate_hz,
-            trigger=ctx.trigger,
-            clock=ctx.clock,
-            event_sink=ctx.event_sink,
-            photodiode=photodiode,
-            photodiode_params=params.photodiode,
-            abort_check=ctx.abort_check,
-            modulation=params.modulation,
-            n_fade_in_frames=n_fade_in_frames,
-            n_fade_out_frames=n_fade_out_frames,
-            rng=ctx.rng,
-            position_provider=position_provider,
-            distractor=distractor_controller,
-            go_nogo=go_nogo_controller,
-        )
+        # Per-trial baseline (base-only reference), 'before' phase: after familiarization and before
+        # the oddball stream, at the Condition's own base freq + modulation + base pool.
+        if params.baseline.enabled and params.baseline.position in ("before", "both"):
+            _run_baseline(
+                ctx,
+                params.baseline,
+                "before",
+                base_stims,
+                fixation_stim,
+                refresh,
+                params.base.base_freq_hz,
+                params.modulation,
+                position_provider,
+            )
+
+        if params.second_stream.enabled:
+            # Dual bilateral streams: two simultaneous frame-driven streams at distinct positions +
+            # non-harmonic frequencies (validated on the Condition). Build the 2nd stream's own image
+            # pools; both share the central fixation, trial duration, and fades. v1 sends no per-stream
+            # stimulus triggers (analysis is frequency-domain), so reserved_codes stays None.
+            s2 = params.second_stream
+            s2_base_entries = _select_pool(self._image_entries, s2.base_selector)
+            s2_oddball_entries = _select_pool(self._image_entries, s2.oddball_selector)
+            if not s2_base_entries:
+                raise ValueError(
+                    f"trial {trial_index}: second_stream.base_selector {s2.base_selector!r} matched no images"
+                )
+            if not s2_oddball_entries:
+                raise ValueError(
+                    f"trial {trial_index}: second_stream.oddball_selector {s2.oddball_selector!r} matched no images"
+                )
+            s2_base_order = ctx.rng.permutation(len(s2_base_entries))
+            s2_oddball_order = ctx.rng.permutation(len(s2_oddball_entries))
+            s2_base_stims = [
+                _ImageWithFixation(
+                    _get_image_stim(self._image_stim_cache, ctx.window, s2_base_entries[i]),
+                    fixation_stim,
+                    s2_base_entries[i].path.name,
+                )
+                for i in s2_base_order
+            ]
+            s2_oddball_stims = [
+                _ImageWithFixation(
+                    _get_image_stim(self._image_stim_cache, ctx.window, s2_oddball_entries[i]),
+                    fixation_stim,
+                    s2_oddball_entries[i].path.name,
+                )
+                for i in s2_oddball_order
+            ]
+            _duration = params.base.trial_duration_seconds
+            sequence_result = _run_dual_stream(
+                window=ctx.window,
+                streams=[
+                    Stream(
+                        base_stimuli=base_stims,
+                        oddball_stimuli=oddball_stims,
+                        position_pix=tuple(params.stream_position_pix),
+                        base_trigger_code=None,
+                        oddball_trigger_code=None,
+                        modulation=params.modulation,
+                    ),
+                    Stream(
+                        base_stimuli=s2_base_stims,
+                        oddball_stimuli=s2_oddball_stims,
+                        position_pix=tuple(s2.position_pix),
+                        base_trigger_code=None,
+                        oddball_trigger_code=None,
+                        modulation=s2.modulation,
+                    ),
+                ],
+                stream_segments=[
+                    Segment(base_freq_hz=params.base.base_freq_hz, duration_seconds=_duration, oddball=params.oddball),
+                    Segment(base_freq_hz=s2.base_freq_hz, duration_seconds=_duration, oddball=s2.oddball),
+                ],
+                refresh_rate_hz=self._refresh_rate_hz,
+                trigger=ctx.trigger,
+                clock=ctx.clock,
+                event_sink=ctx.event_sink,
+                photodiode=photodiode,
+                photodiode_params=params.photodiode,
+                tracked_stream_index=0,
+                reserved_codes=None,
+                abort_check=ctx.abort_check,
+                starting_frame_index=0,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+                rng=ctx.rng,
+                distractor=distractor_controller,
+                go_nogo=go_nogo_controller,
+            )
+        elif params.sweep.enabled:
+            # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
+            # of one central stream (the segments x streams engine). The base/oddball trigger codes +
+            # contrast modulation come from the Condition (all steps share them); each step supplies
+            # its own base/oddball frequency and duration. Per-segment provenance (sweep_segment_*) is
+            # logged for analysis.
+            sweep_stream = Stream(
+                base_stimuli=base_stims,
+                oddball_stimuli=oddball_stims,
+                position_pix=(0.0, 0.0),
+                base_trigger_code=params.base.base_trigger_code,
+                oddball_trigger_code=params.oddball.oddball_trigger_code,
+                modulation=params.modulation,
+            )
+            sequence_result = _run_oddball_segments(
+                window=ctx.window,
+                segments=plan_sweep_segments(params.sweep),
+                stream=sweep_stream,
+                refresh_rate_hz=self._refresh_rate_hz,
+                trigger=ctx.trigger,
+                clock=ctx.clock,
+                event_sink=ctx.event_sink,
+                photodiode=photodiode,
+                photodiode_params=params.photodiode,
+                abort_check=ctx.abort_check,
+                starting_frame_index=0,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+                rng=ctx.rng,
+                position_provider=position_provider,
+                distractor=distractor_controller,
+                go_nogo=go_nogo_controller,
+            )
+        else:
+            sequence_result = run_base_oddball_sequence(
+                window=ctx.window,
+                base_stimuli=base_stims,
+                oddball_stimuli=oddball_stims,
+                base_params=params.base,
+                oddball_params=params.oddball,
+                refresh_rate_hz=self._refresh_rate_hz,
+                trigger=ctx.trigger,
+                clock=ctx.clock,
+                event_sink=ctx.event_sink,
+                photodiode=photodiode,
+                photodiode_params=params.photodiode,
+                abort_check=ctx.abort_check,
+                modulation=params.modulation,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+                rng=ctx.rng,
+                position_provider=position_provider,
+                distractor=distractor_controller,
+                go_nogo=go_nogo_controller,
+            )
+
+        # Per-trial baseline (base-only reference), 'after' phase: after the oddball stream and before
+        # the post-stimulus interval. NB: an 'after' baseline is measured post-adaptation, an 'before'
+        # one un-adapted -- they are not interchangeable (see BaselineParams).
+        if params.baseline.enabled and params.baseline.position in ("after", "both"):
+            _run_baseline(
+                ctx,
+                params.baseline,
+                "after",
+                base_stims,
+                fixation_stim,
+                refresh,
+                params.base.base_freq_hz,
+                params.modulation,
+                position_provider,
+            )
 
         # Fixation-only post-stimulus interval.
         present_fixation_only(
@@ -728,6 +941,7 @@ class FPVSTask(TaskModule):
                 "pre_interval_frames": pre_frames,
                 "post_interval_frames": post_frames,
                 "familiarization": ran_familiarization,
+                "baseline": params.baseline.position if params.baseline.enabled else None,
                 "aborted": sequence_result.aborted,
                 "n_responses": len(scored_responses),
                 "n_valid_responses": len(valid_rts),
@@ -1003,6 +1217,55 @@ class FPVSTask(TaskModule):
                 warnings.append(
                     "a go_nogo trigger code equals a base/oddball trigger code -- go/no-go and "
                     "stimulus events would be indistinguishable in the EEG. Use distinct codes."
+                )
+
+        if params.sweep.enabled:
+            warnings.append(
+                f"a frequency sweep is enabled ({len(params.sweep.steps)} steps) -- it SUPERSEDES the "
+                "single base/oddball frequency and trial_duration for the main sequence. Analyse each "
+                "step on its own (per-segment FFT over its sweep_segment_start/end frame range)."
+            )
+            for i, step in enumerate(params.sweep.steps):
+                # A step's FFT resolution is 1/duration Hz; to resolve its oddball it must run for a
+                # few bins below that frequency (sweep.min_recommended_step_seconds). A pattern step
+                # derives its oddball rate from base * (#O / len).
+                if step.oddball.pattern is not None:
+                    odd_hz = derived_oddball_freq_hz(step.base_freq_hz, step.oddball.pattern)
+                else:
+                    odd_hz = step.oddball.oddball_freq_hz
+                min_s = min_recommended_step_seconds(odd_hz)
+                if step.duration_seconds < min_s:
+                    warnings.append(
+                        f"sweep step {i} is {step.duration_seconds:g}s -- shorter than the ~{min_s:.1f}s "
+                        f"needed to resolve its {odd_hz:g} Hz oddball (FFT bin = 1/duration). Its oddball "
+                        "response may be too smeared to measure; lengthen the step."
+                    )
+
+        if params.second_stream.enabled:
+            s2 = params.second_stream
+            warnings.append(
+                f"dual bilateral streams: main {params.base.base_freq_hz:g} Hz at "
+                f"{tuple(params.stream_position_pix)} px, second {s2.base_freq_hz:g} Hz at "
+                f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
+                "photodiode tracks the MAIN stream only, and v1 sends no per-stream stimulus triggers."
+            )
+            odd1 = (
+                derived_oddball_freq_hz(params.base.base_freq_hz, params.oddball.pattern)
+                if params.oddball.pattern is not None
+                else params.oddball.oddball_freq_hz
+            )
+            odd2 = (
+                derived_oddball_freq_hz(s2.base_freq_hz, s2.oddball.pattern)
+                if s2.oddball.pattern is not None
+                else s2.oddball.oddball_freq_hz
+            )
+            for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
+                warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
+            if params.position_jitter.enabled:
+                warnings.append(
+                    "position_jitter is enabled with a second stream -- dual bilateral streams use "
+                    "FIXED positions in v1, so the jitter is IGNORED for both streams. Disable jitter "
+                    "or the second stream to avoid the surprise."
                 )
 
         return warnings

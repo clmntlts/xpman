@@ -22,6 +22,8 @@ from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
+from xpman.tasks.fpvs.streams import bases_harmonically_related
+from xpman.tasks.fpvs.sweep import FrequencySweepParams
 
 
 class StimulusSelector(BaseModel):
@@ -74,6 +76,40 @@ class FamiliarizationParams(BaseModel):
         default=2.0,
         ge=0,
         description="Fixation-only blank between familiarization and the real sequence.",
+    )
+
+
+class BaselineParams(BaseModel):
+    """Optional per-trial **base-only (no-oddball)** reference segment: the same base stimulation as
+    the main sequence but with no oddballs, so any energy at the oddball frequency in it is pure
+    noise/measurement floor -- the within-trial reference the oddball response is compared against.
+
+    It runs at the Condition's own ``base.base_freq_hz`` with the Condition's ``modulation`` and base
+    pool (so it is the main stimulation *minus* oddballs), framed by its own start/stop triggers and
+    logged as ``baseline_start``/``baseline_end`` (with a ``phase`` of 'before'/'after') so analysis
+    can isolate + exclude it. Disabled by default.
+
+    **Adaptation caveat:** a ``before`` baseline is measured on an un-adapted visual system, an
+    ``after`` baseline post-adaptation -- they are NOT interchangeable. Default is ``before``; mixing
+    positions across Conditions confounds baseline with adaptation state.
+    """
+
+    enabled: bool = Field(default=False, description="Add a base-only reference segment to each trial.")
+    position: Literal["before", "after", "both"] = Field(
+        default="before",
+        description="Where the baseline sits relative to the oddball stream (before / after / both).",
+    )
+    duration_seconds: float = Field(
+        default=20.0, gt=0, description="How long each baseline segment runs (match the main sequence for a comparable measurement)."
+    )
+    blank_seconds: float = Field(
+        default=1.0, ge=0, description="Fixation-only gap after each baseline segment."
+    )
+    start_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when a baseline segment starts."
+    )
+    stop_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when a baseline segment ends."
     )
 
 
@@ -147,6 +183,39 @@ class FPVSExperimentParams(BaseModel):
     """No experiment-level parameters needed yet."""
 
 
+class StreamParams(BaseModel):
+    """A second simultaneous image stream for **dual bilateral FPVS**. It has its own image pools,
+    base + oddball frequency, screen position, and contrast modulation, and shares the trial duration,
+    fades, and central fixation with the main (first) stream.
+
+    v1 sends **no per-stimulus EEG triggers** for either stream (the two frequency tags are recovered
+    in the frequency domain by FFT, and the photodiode tracks the first stream's timing), so there are
+    no per-onset trigger codes here. The two base frequencies must be spectrally separable -- distinct
+    and NOT harmonically related (enforced on the Condition); pick e.g. 6 Hz and 7 Hz.
+    """
+
+    enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
+    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    base_freq_hz: float = Field(
+        default=7.0, gt=0, description="This stream's base frequency (must differ non-harmonically from the main stream)."
+    )
+    oddball: OddballParams = Field(default_factory=OddballParams)
+    position_pix: tuple[float, float] = Field(
+        default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
+    )
+    modulation: ModulationParams = Field(default_factory=ModulationParams)
+
+    @model_validator(mode="after")
+    def _check_oddball_below_base(self) -> "StreamParams":
+        if self.oddball.pattern is None and self.oddball.oddball_freq_hz >= self.base_freq_hz:
+            raise ValueError(
+                f"second stream oddball_freq_hz ({self.oddball.oddball_freq_hz}) must be < its "
+                f"base_freq_hz ({self.base_freq_hz})"
+            )
+        return self
+
+
 class FPVSConditionParams(BaseModel):
     """Everything needed to run one FPVS trial."""
 
@@ -157,12 +226,23 @@ class FPVSConditionParams(BaseModel):
     modulation: ModulationParams = Field(default_factory=ModulationParams)
     timing: TimingParams = Field(default_factory=TimingParams)
     familiarization: FamiliarizationParams = Field(default_factory=FamiliarizationParams)
+    baseline: BaselineParams = Field(default_factory=BaselineParams)
     fixation: FixationParams = Field(default_factory=FixationParams)
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
     position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
     distractor: DistractorParams = Field(default_factory=DistractorParams)
     go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
+    sweep: FrequencySweepParams = Field(default_factory=FrequencySweepParams)
+    stream_position_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Main stream's screen position (px from center); only applies when second_stream "
+        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+    )
+    second_stream: StreamParams = Field(
+        default_factory=StreamParams,
+        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+    )
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -221,16 +301,62 @@ class FPVSConditionParams(BaseModel):
                     )
         return self
 
+    @model_validator(mode="after")
+    def _check_sweep_overlay_triggers(self) -> "FPVSConditionParams":
+        # v1 scope: a *triggered* distractor/go-no-go overlay places its events off base-onset frames
+        # using a SINGLE frames-per-stimulus, but a frequency sweep changes that per segment -- so a
+        # triggered overlay could land on a base/oddball onset inside some step and fight the port.
+        # Until per-segment overlay scheduling exists, reject the combination at save/freeze time.
+        # Non-triggered overlays during a sweep are fine (no port collision to avoid).
+        if not self.sweep.enabled:
+            return self
+        offenders: list[str] = []
+        if self.distractor.enabled and self.distractor.trigger_code is not None:
+            offenders.append("distractor")
+        if self.go_nogo.enabled and (
+            self.go_nogo.go_trigger_code is not None or self.go_nogo.nogo_trigger_code is not None
+        ):
+            offenders.append("go_nogo")
+        if offenders:
+            raise ValueError(
+                f"a frequency sweep can't run with a *triggered* {' & '.join(offenders)} overlay in "
+                "v1 (its off-base-onset nudge assumes one frame rate, which a sweep changes per "
+                "step). Clear the overlay's trigger code(s), or disable the sweep."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_dual_stream_separable(self) -> "FPVSConditionParams":
+        # Dual bilateral streams must be spectrally separable and spatially distinct, and (v1) can't
+        # combine with a sweep. Enforced at save/freeze time so an un-analysable pairing can't be run.
+        if not self.second_stream.enabled:
+            return self
+        if self.sweep.enabled:
+            raise ValueError("a frequency sweep and a second stream can't both be enabled in v1")
+        if bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
+            raise ValueError(
+                f"the two stream base frequencies ({self.base.base_freq_hz}, "
+                f"{self.second_stream.base_freq_hz}) are equal or harmonically related -- their "
+                "tagged responses can't be separated. Use non-harmonic frequencies (e.g. 6 & 7 Hz)."
+            )
+        if tuple(self.stream_position_pix) == tuple(self.second_stream.position_pix):
+            raise ValueError(
+                "the two streams must be at distinct positions -- set stream_position_pix and "
+                "second_stream.position_pix apart (e.g. (-200, 0) and (200, 0))."
+            )
+        return self
+
 
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
     #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
     #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
-    #: and the ``go_nogo`` spatial task (both additive, default off/None). v4 was the one breaking
-    #: bump (old SepStim selector keys are dropped on validation -- re-freeze such dev-only Instances);
-    #: every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "5"
+    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep``, the per-trial ``baseline``,
+    #: and dual bilateral streams (``second_stream`` + ``stream_position_pix``) -- all additive,
+    #: default off/None. v4 was the one breaking bump (old SepStim selector keys are dropped on
+    #: validation -- re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "6"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -250,11 +376,12 @@ class FPVSSchema:
         # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4"):
+        if old_version not in ("1", "2", "3", "4", "5"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5 are additive (position_jitter, distractor, oddball pattern + go_nogo:
-        # disabled/None defaults fill in). v3->v4 drops the SepStim selector filters: strip them from
-        # base/oddball selectors so the migrated dict carries only subdirectory/filename_pattern.
+        # v1->v2, v2->v3, v4->v5, v5->v6 are additive (position_jitter, distractor, oddball pattern +
+        # go_nogo, sweep: disabled/None defaults fill in). v3->v4 drops the SepStim selector filters:
+        # strip them from base/oddball selectors so the migrated dict carries only
+        # subdirectory/filename_pattern.
         migrated = dict(data)
         for selector_key in ("base_selector", "oddball_selector"):
             selector = migrated.get(selector_key)

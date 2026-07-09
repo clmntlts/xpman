@@ -7,15 +7,19 @@ stimulus lands at the same x in every trial: trials stack into an aligned raster
 column-for-column (the periodic oddballs form clean vertical lines; a deviating trial jumps out).
 Onsets are ticks (oddballs taller + accented); triggers are marks on the row just below, so
 vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious; scored
-responses (blue) sit below the triggers. Distractor (attention-control) events, when present, are
-drawn as purple time-placed marker lines across the strip. The base-only familiarization stream is labelled as such
-(base ticks, no triggers -- not an "empty trial"). Rendered with ``QGraphicsScene`` so it's cheap
-for thousands of marks and its items are inspectable in tests.
+responses (blue) sit below the triggers. Distractor (attention-control) and go/no-go events, when
+present, are drawn as time-placed marker lines across the strip; a frequency sweep's segment
+boundaries are sky-blue dashed dividers tagged with each step's base frequency. Base-only streams are
+labelled as their phase -- "Familiarization" or "Baseline (before/after)" -- not miscounted as trials
+(base ticks, no per-stimulus triggers). Dual-stream onsets carry their stream index in the tooltip.
+Rendered with ``QGraphicsScene`` so it's cheap for thousands of marks and its items are inspectable
+in tests.
 """
 
 from __future__ import annotations
 
-from PySide6.QtGui import QBrush, QColor, QPen
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPen
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from xpman.core.events_log import TrialTimeline
@@ -38,6 +42,7 @@ _RESPONSE = QColor("#3b82f6")  # blue
 _DISTRACTOR = QColor("#a855f7")  # purple
 _GONOGO_GO = QColor("#22c55e")  # green (go = respond)
 _GONOGO_NOGO = QColor("#f59e0b")  # amber (no-go = withhold)
+_SEGMENT = QColor("#38bdf8")  # sky-blue (frequency-sweep segment boundary)
 _AXIS = QColor("#9aa0a6")
 _TEXT = QColor("#d0d0d0")
 
@@ -97,7 +102,8 @@ class TimelineView(QGraphicsView):
                 pen = QPen(_ODDBALL if oddball else _BASE)
                 pen.setWidth(2 if oddball else 1)
                 tick = scene.addLine(x, y - height, x, y, pen)
-                tick.setToolTip(f"stimulus #{onset.index} @ {onset.time_s:.3f}s")
+                stream_note = f" · {onset.label}" if onset.label else ""  # dual-stream: which stream
+                tick.setToolTip(f"stimulus #{onset.index}{stream_note} @ {onset.time_s:.3f}s")
 
             trig_y = y + _TRIGGER_GAP
             for trig in trial.triggers:
@@ -138,6 +144,23 @@ class TimelineView(QGraphicsView):
                 code = f" · code {gn.code}" if gn.code is not None else ""
                 line.setToolTip(f"go/no-go [{gn.label}] #{gn.index}{code} @ {gn.time_s:.3f}s")
 
+            # Frequency-sweep segment boundaries (time-placed, like distractors): a dashed sky-blue
+            # divider where each constant-frequency step began, tagged with its base frequency.
+            for seg in trial.segments:
+                x = _LABEL_W + (seg.time_s / trial.duration_s) * _PLOT_W if trial.duration_s > 0 else _LABEL_W
+                pen = QPen(_SEGMENT)
+                pen.setStyle(Qt.DashLine)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H - 4, x, resp_y, pen)
+                line.setZValue(-0.3)
+                if seg.label:
+                    tag = scene.addText(seg.label)
+                    tag.setDefaultTextColor(_SEGMENT)
+                    font = QFont()
+                    font.setPointSize(6)
+                    tag.setFont(font)
+                    tag.setPos(x, y - _ONSET_ODDBALL_H - 20)
+                line.setToolTip(f"sweep segment {seg.index}: {seg.label or ''} @ {seg.time_s:.3f}s")
+
         scene.setSceneRect(scene.itemsBoundingRect().adjusted(-8, -8, 8, 8))
 
     def _draw_legend(self, scene: QGraphicsScene) -> None:
@@ -149,6 +172,7 @@ class TimelineView(QGraphicsView):
             ("distractor", _DISTRACTOR),
             ("go/no-go go", _GONOGO_GO),
             ("go/no-go no-go", _GONOGO_NOGO),
+            ("sweep segment", _SEGMENT),
         ]
         x = _LABEL_W
         for text, color in entries:

@@ -17,7 +17,13 @@ from xpman.tasks.fpvs.modulation import ModulationParams, Waveform
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
     OddballParams,
+    Segment,
+    Stream,
     _PoolSequencer,
+    _plan_oddball_segment,
+    _run_dual_stream,
+    _run_oddball_segments,
+    _TrialEnvelope,
     achieved_frequency_hz,
     achieved_oddball_frequency_hz,
     derived_oddball_freq_hz,
@@ -1231,3 +1237,453 @@ def test_present_fixation_only_aborts_early(mock_window, event_sink, clock):
     )
     assert aborted is True
     assert frames == 3
+
+
+# ---------------------------------------------------------------------------
+# GOLDEN regression net (Step 0 of the Phase-2 presentation-loop refactor).
+# These three tests are ADDITIVE and pin the *current* behavior of
+# run_base_oddball_sequence so a later refactor cannot silently change:
+#   1. the RNG pool-interleaving order across wraparounds,
+#   2. the one-flip-per-frame total flip count, and
+#   3. the event-log types + their order on the default path.
+# They capture reality (values obtained by running once), not an ideal.
+# ---------------------------------------------------------------------------
+
+
+def _identified_stims(names: list[str]) -> list[MagicMock]:
+    """Build MagicMocks whose ``.identity`` is an explicit string (a bare MagicMock returns a
+    truthy child mock for ``.identity``, so onset payloads would log those child mocks instead
+    of a real identity)."""
+    stims = []
+    for name in names:
+        m = MagicMock(name=name)
+        m.identity = name
+        stims.append(m)
+    return stims
+
+
+def _run_oddball_and_read_onset_identities(event_sink, trigger, clock, mock_window, rng):
+    """Run a 6-wraparound oddball sequence and return the interleaved list of onset ``image``
+    identities in log order (base onsets from ``stimulus_onset``, oddball onsets from
+    ``oddball_onset``). Used by the determinism + golden interleaving test."""
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        # base 6 Hz / oddball 1.2 Hz -> period 5, 10 frames/stim @ 60 Hz.
+        # 6 s trial -> 360 frames -> 36 stimuli: 7 oddballs (pos 5..35) => oddball pool (2)
+        # wraps 3x; 29 base => base pool (3) wraps 9x. Both pools wrap >= 2x.
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=6.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        rng=rng,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    identities = []
+    for r in rows:
+        if r["event_type"] in ("stimulus_onset", "oddball_onset"):
+            identities.append(json.loads(r["payload_json"])["image"])
+    return identities
+
+
+def test_golden_pool_interleaving_order_is_stable_across_wraparounds(
+    mock_window, trigger, clock, tmp_path
+):
+    import numpy as np
+
+    # (a) Determinism: two fresh default_rng(0) runs yield the identical identity sequence.
+    sink_a = EventSink(tmp_path / "a.csv", tmp_path / "a.parquet")
+    seq_a = _run_oddball_and_read_onset_identities(
+        sink_a, trigger, clock, mock_window, np.random.default_rng(0)
+    )
+    sink_b = EventSink(tmp_path / "b.csv", tmp_path / "b.parquet")
+    seq_b = _run_oddball_and_read_onset_identities(
+        sink_b, trigger, clock, mock_window, np.random.default_rng(0)
+    )
+    assert seq_a == seq_b  # deterministic under a fixed seed
+
+    # (b) Golden equality: the interleaved identity sequence is pinned.
+    # GOLDEN: pins RNG pool-interleaving order; a Phase-2 refactor must not change this.
+    expected = [
+        "b0", "b1", "b2", "b2", "o0",
+        "b0", "b1", "b2", "b1", "o1",
+        "b0", "b2", "b0", "b1", "o0",
+        "b1", "b2", "b0", "b0", "o1",
+        "b2", "b1", "b0", "b2", "o0",
+        "b1", "b0", "b2", "b1", "o1",
+        "b2", "b1", "b0", "b1", "o1",
+        "b2",
+    ]
+    assert seq_a == expected
+
+    # (c) Sanity: oddball positions (every 5th, 1-indexed) carry o* identities; base positions
+    # carry b* identities; and a later wraparound differs from the first pass (re-permutation
+    # genuinely happened -- it is NOT the naive non-repermuted cycle).
+    for i, ident in enumerate(seq_a):
+        position_1indexed = i + 1
+        if position_1indexed % 5 == 0:
+            assert ident.startswith("o"), f"position {position_1indexed} should be oddball"
+        else:
+            assert ident.startswith("b"), f"position {position_1indexed} should be base"
+    base_only = [ident for ident in seq_a if ident.startswith("b")]
+    first_pass = base_only[:3]
+    assert first_pass == ["b0", "b1", "b2"]  # first pass preserves given order
+    # some later base wraparound is a different permutation than the first pass
+    later_passes = [tuple(base_only[i : i + 3]) for i in range(3, len(base_only) - 2, 3)]
+    assert any(p != ("b0", "b1", "b2") for p in later_passes)
+
+
+def test_golden_oddball_flip_count_equals_total_frames(mock_window, event_sink, trigger, clock):
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    trial_duration = 2.0
+    refresh = 60.0
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=trial_duration),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=refresh,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    frames_per_stim = frames_per_cycle(refresh, 6.0)  # 10
+    n_stimuli_to_show = max(round(trial_duration * refresh) // frames_per_stim, 1)  # 120 // 10 = 12
+    expected_total_frames = n_stimuli_to_show * frames_per_stim  # 12 * 10 = 120
+    # GOLDEN: one window.flip() per frame across the whole oddball sequence.
+    assert mock_window.flip.call_count == expected_total_frames
+
+
+def test_golden_oddball_event_log_order_and_types(mock_window, event_sink, trigger, clock):
+    base_stimuli = _identified_stims(["b0", "b1", "b2"])
+    oddball_stimuli = _identified_stims(["o0", "o1"])
+    # base 6 Hz / oddball 1.2 Hz -> period 5, 10 frames/stim @ 60 Hz.
+    # 5/6 s trial -> round(50) = 50 frames -> exactly 5 stimuli: positions 1-4 base, position 5 oddball.
+    run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=5 / 6, base_trigger_code=1),
+        oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    event_types = [r["event_type"] for r in rows]
+    # GOLDEN: oddball event-log types + order (base_oddball_sequence_start ...
+    # trigger_sent/stimulus_onset/oddball_onset/flip ... base_oddball_sequence_end); a refactor
+    # must not add/reorder event types on the default path.
+    expected = [
+        "base_oddball_sequence_start",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "stimulus_onset",
+        "trigger_sent",
+        "oddball_onset",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "flip",
+        "base_oddball_sequence_end",
+    ]
+    assert event_types == expected
+
+
+# ---------------------------------------------------------------------------
+# Multi-segment engine (Phase 2 Step 3): the segment loop that a frequency sweep
+# will use. The single-segment path is already pinned byte-for-byte by the golden
+# net above; these exercise the >1-segment behaviour it enables.
+# ---------------------------------------------------------------------------
+
+
+def test_run_oddball_segments_two_segments_continuous_frames_one_flush(
+    mock_window, event_sink, trigger, clock
+):
+    stream = Stream(
+        base_stimuli=_identified_stims(["b0", "b1", "b2"]),
+        oddball_stimuli=_identified_stims(["o0", "o1"]),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        Segment(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+    ]  # 6 Hz -> 10 f/stim x 3 stim = 30 frames; 12 Hz -> 5 f/stim x 6 stim = 30 frames
+    result = _run_oddball_segments(
+        window=mock_window,
+        segments=segments,
+        stream=stream,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        position_provider=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    assert result.n_stimuli_shown == 9  # 3 + 6
+    assert result.n_frames_presented == 60
+
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    types = [r["event_type"] for r in rows]
+    # ONE trial-level wrapper, at the very ends; per-segment provenance for BOTH segments.
+    assert types[0] == "base_oddball_sequence_start"
+    assert types[-1] == "base_oddball_sequence_end"
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("base_oddball_sequence_end") == 1
+    assert types.count("sweep_segment_start") == 2
+    assert types.count("sweep_segment_end") == 2
+    # global_frame_index is CONTINUOUS across the segment boundary (0..59, not reset per segment),
+    # and every per-frame flip is one trailing batch (buffered across segments, flushed once).
+    flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
+    assert flip_frames == list(range(60))
+
+
+def test_run_oddball_segments_single_segment_emits_no_sweep_events(
+    mock_window, event_sink, trigger, clock
+):
+    stream = Stream(
+        base_stimuli=_identified_stims(["b0", "b1"]),
+        oddball_stimuli=_identified_stims(["o0"]),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    _run_oddball_segments(
+        window=mock_window,
+        segments=[Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2))],
+        stream=stream,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        position_provider=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        types = [r["event_type"] for r in csv.DictReader(f)]
+    # A single segment is the default path: no per-segment sweep provenance, just the wrapper.
+    assert "sweep_segment_start" not in types
+    assert "sweep_segment_end" not in types
+    assert types.count("base_oddball_sequence_start") == 1
+
+
+def test_plan_oddball_segment_trial_global_envelope_no_refade_at_boundary():
+    """O4: a later segment's contrast must NOT re-fade from zero at its own start -- the fade envelope
+    is one continuous function over the whole trial (segment-local table, trial-global envelope)."""
+    from xpman.tasks.fpvs.modulation import build_contrast_table, envelope_at_frame
+
+    mod = ModulationParams(waveform=Waveform.SINUSOIDAL)
+    fade_in, fade_out, total_plateau = 12, 12, 120  # two 1 s (60-frame) plateaus @ 60 Hz
+    envelope = _TrialEnvelope(
+        start_frame_index=0, fade_in_frames=fade_in, plateau_frames=total_plateau, fade_out_frames=fade_out
+    )
+    seg2 = Segment(base_freq_hz=6.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.2))
+    plan2 = _plan_oddball_segment(
+        seg2,
+        refresh_rate_hz=60.0,
+        envelope=envelope,
+        segment_fade_in_frames=0,  # not the first segment -> no fade-in of its own
+        segment_fade_out_frames=fade_out,
+        modulation=mod,
+    )
+    assert plan2.modulation_fn is not None
+    table = build_contrast_table(plan2.n_frames_per_stim, mod)
+    fic_peak = max(range(len(table)), key=lambda i: table[i])
+    # Segment 2 begins at global frame 72 (12 fade-in + 60 s-1 plateau), deep in the trial plateau.
+    g = 72
+    assert envelope_at_frame(g, fade_in, total_plateau, fade_out) == pytest.approx(1.0)  # full plateau
+    # modulation_fn = table[fic] * envelope(global); at the plateau that is the full table value...
+    assert plan2.modulation_fn(fic_peak, g) == pytest.approx(table[fic_peak])
+    # ...and NOT a re-faded ~0 (which is what a per-segment envelope origin at g=72 would give).
+    assert plan2.modulation_fn(fic_peak, g) > 0.5 * table[fic_peak]
+
+
+# ---------------------------------------------------------------------------
+# Dual bilateral streams (Phase 2): the frame-driven two-stream engine. Separate
+# code path from the single-stream engine (which the golden net above pins).
+# ---------------------------------------------------------------------------
+
+
+_RESERVED = {(False, False): 200, (False, True): 201, (True, False): 202, (True, True): 203}
+
+
+def _dual_streams():
+    left = Stream(
+        base_stimuli=_identified_stims(["L0", "L1"]),
+        oddball_stimuli=_identified_stims(["Lo0"]),
+        position_pix=(-100.0, 0.0),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    right = Stream(
+        base_stimuli=_identified_stims(["R0", "R1"]),
+        oddball_stimuli=_identified_stims(["Ro0"]),
+        position_pix=(100.0, 0.0),
+        base_trigger_code=3,
+        oddball_trigger_code=4,
+    )
+    # 6 Hz (10 f/stim) vs 12 Hz (5 f/stim) @ 60 Hz, 0.5 s -> 30 frames. Stream 0 onsets at 0/10/20
+    # (all base -- only 3 stimuli, its oddball would be position 5); stream 1 at 0/5/10/15/20/25, its
+    # position 5 (frame 20) is an oddball. So frames 0,10 = both base; frame 20 = base+oddball.
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        Segment(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.4)),
+    ]
+    return [left, right], segments
+
+
+def test_dual_stream_combines_coincident_triggers_and_flips_once_per_frame(event_sink, trigger, clock):
+    window = _callonflip_recording_window(trigger)
+    streams, segments = _dual_streams()
+    _run_dual_stream(
+        window=window,
+        streams=streams,
+        stream_segments=segments,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        tracked_stream_index=0,
+        reserved_codes=_RESERVED,
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    codes = [op[1][0] for op in window.callonflip_ops if op[0] == "set_code"]
+    assert codes.count(200) == 2  # coincident base+base at frames 0 and 10 -> reserved (F,F)
+    assert codes.count(201) == 1  # coincident base(s0)+oddball(s1) at frame 20 -> reserved (F,T)
+    assert codes.count(3) == 3  # stream-1-only base onsets (frames 5/15/25) -> its own code
+    # The individual stream-0 codes and the stream-1 oddball code are NEVER sent alone: those onsets
+    # always coincide, so the combiner replaces them with a reserved code (this is the whole point).
+    assert 1 not in codes and 2 not in codes and 4 not in codes
+    assert window.flip.call_count == 30  # one flip per frame
+
+
+def test_dual_stream_logs_each_stream_onset_with_position(mock_window, event_sink, trigger, clock):
+    streams, segments = _dual_streams()
+    _run_dual_stream(
+        window=mock_window,
+        streams=streams,
+        stream_segments=segments,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        tracked_stream_index=0,
+        reserved_codes=_RESERVED,
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    types = [r["event_type"] for r in rows]
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("base_oddball_sequence_end") == 1
+    onset_rows = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    payloads = [json.loads(r["payload_json"]) for r in onset_rows]
+    streams_seen = [p["stream"] for p in payloads]
+    assert streams_seen.count(0) == 3  # stream 0: 3 onsets (all base)
+    assert streams_seen.count(1) == 6  # stream 1: 6 onsets (5 base + 1 oddball)
+    assert sum(1 for p in payloads if p["stream"] == 1 and p["is_oddball"]) == 1
+    # Each stream's onsets are logged at its own fixed position.
+    assert all(p["pos"] == [-100.0, 0.0] for p in payloads if p["stream"] == 0)
+    assert all(p["pos"] == [100.0, 0.0] for p in payloads if p["stream"] == 1)
+    # Frame index is continuous across the 30-frame segment (one flip per frame, buffered batch).
+    flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
+    assert flip_frames == list(range(30))
