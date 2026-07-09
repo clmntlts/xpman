@@ -48,10 +48,12 @@ class StimulusSelector(BaseModel):
 
 
 class FamiliarizationParams(BaseModel):
-    """Optional familiarization phase shown once before the real sequence -- the subject sees
-    the stimuli streaming (base-only, no oddball) so they're used to them before recording. Runs
-    after the pre-stimulus interval and before the main stimulation's fade-in (legacy ordering).
-    Reuses the Condition's ``base_selector`` pool. Disabled by default.
+    """Optional familiarization phase: a one-off session warm-up shown **once per Run**, before the
+    very first trial (not repeated every trial) -- the subject sees the stimuli streaming (base-only,
+    no oddball) so they're used to them before recording. Runs after that first trial's pre-stimulus
+    interval and before the main stimulation's fade-in (legacy ordering), framed by its own
+    start/stop triggers so it stays identifiable and excludable in analysis. Uses the first trial's
+    Condition ``base_selector`` pool + these settings. Disabled by default.
     """
 
     enabled: bool = Field(default=False, description="Show a familiarization phase before the run.")

@@ -438,9 +438,11 @@ Condition that doesn't set them is just a plateau with no fades or intervals.
 | `fade_out_seconds` | number | 0.0 | Contrast ramps 1 → 0 over this long at the end. |
 | `post_interval_seconds` | two numbers (min, max) | (0, 0) | Fixation-only interval after stimulation. |
 
-**Familiarization** (`familiarization`) — an optional phase, shown once before the real
-sequence, that streams the base stimuli (no oddball) so the subject gets used to them. Runs
-after the pre-interval and before fade-in.
+**Familiarization** (`familiarization`) — an optional session warm-up shown **once per Run**,
+before the very first trial (not repeated every trial), that streams the base stimuli (no oddball)
+so the subject gets used to them. Runs after that first trial's pre-interval and before fade-in;
+its start/stop triggers keep it identifiable and excludable in analysis. Uses the first trial's
+Condition `base_selector` pool and these settings.
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
@@ -707,8 +709,10 @@ This requires writing Python, unlike everything else in this tutorial.
   would destroy them (a result is only interpretable through its Instance's frozen snapshot).
 - An Instance runs **one** experiment per launch (chosen in the Launch dialog); a Program's
   experiments are alternative protocols, not one big sequence.
-- FPVS familiarization phases and distractor/sweep/baseline/frequency-modulation paradigm
-  variants aren't implemented yet (the core base+oddball paradigm is).
+- The FPVS core base+oddball paradigm is implemented, along with contrast modulation,
+  familiarization, position jitter, the fixation distractor task, the spatial go/no-go task, and
+  flexible base/oddball ordering patterns (BBBO…). Still to come: frequency sweep, per-trial
+  baseline, and dual bilateral streams (see `TODO.md`).
 - Real hardware timing verification against the lab's EEG rig hasn't been run yet — see
   `docs/verification_protocol.md`.
 
