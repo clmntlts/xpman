@@ -47,10 +47,11 @@ class GoNoGoParams(BaseModel):
     enabled: bool = Field(default=False, description="Show the spatial go/no-go task during stimulation.")
     markers: list[FixationParams] = Field(
         default_factory=_default_markers,
-        description="Fixation-like markers at configurable positions (>=2). Each is a FixationParams.",
-        # Not rendered by the auto-form yet (a list of sub-models); defaults to two markers left/right
-        # of centre. Edit positions via the params for now -- an in-GUI marker editor is a follow-up.
-        json_schema_extra={"hidden": True},
+        description="Fixation-like markers at configurable positions. Each is a FixationParams; edit "
+        "each marker's position_pix (and appearance). At least 2 are required.",
+        # Rendered by SchemaForm's list-of-model editor (add/remove markers); min_items disables
+        # Remove at 2 to match the >=2 validator. Defaults to a left/right pair.
+        json_schema_extra={"min_items": 2},
     )
     signal_color: str = Field(default="red", description="Colour a marker takes when it 'signals'.")
     event_duration_seconds: float = Field(default=0.2, gt=0, description="How long each signal lasts.")

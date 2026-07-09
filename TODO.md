@@ -188,10 +188,10 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
     - [x] **Multiple fixations + spatial go/no-go (2026-07-09).** `tasks/fpvs/go_nogo.py`: N markers
           at fixed positions, conjunction rule (all signal = GO/respond, one = NO-GO/withhold),
           SDT scoring (hits/misses/FA/CR/hit-rate/FA-rate/d′/RT), decoupled-RNG schedule, optional
-          go/no-go triggers, timeline (GO green / NO-GO amber). Additive schema v4→v5. **Follow-up:**
-          the `markers` list isn't editable in the auto-form yet (defaults to a left/right pair; a
-          `list[BaseModel]` form editor / marker-position widget is deferred — the field is hidden
-          via the new `SchemaForm` json_schema_extra `hidden` mechanism and round-trips verbatim).
+          go/no-go triggers, timeline (GO green / NO-GO amber). Additive schema v4→v5. Marker
+          positions are editable in the GUI via a new `SchemaForm` `list[BaseModel]` editor
+          (add/remove inline sub-forms, `min_items` disables Remove at 2); `SchemaForm` also gained a
+          reusable `json_schema_extra` `hidden` mechanism (round-trip-safe) for fields it can't render.
     - [ ] **Frequency sweep (stepped).** Trial = a sequence of constant-frequency segments; each
           reuses the constant-frequency machinery at its own frequency, continuous global frame
           index, per-segment provenance (`sweep_segment_*`) for per-segment FFT; warn on too-short
