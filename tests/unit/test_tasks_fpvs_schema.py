@@ -207,6 +207,12 @@ def test_sweep_with_untriggered_overlay_is_allowed():
     assert params.sweep.enabled is True and params.distractor.enabled is True
 
 
+def test_condition_params_have_baseline_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.baseline.enabled is False
+    assert params.baseline.position == "before"
+
+
 def test_response_task_is_off_by_default_and_oddball_referenced():
     """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
     its RT reference is the oddball onset (not the most-recent stimulus)."""

@@ -78,6 +78,40 @@ class FamiliarizationParams(BaseModel):
     )
 
 
+class BaselineParams(BaseModel):
+    """Optional per-trial **base-only (no-oddball)** reference segment: the same base stimulation as
+    the main sequence but with no oddballs, so any energy at the oddball frequency in it is pure
+    noise/measurement floor -- the within-trial reference the oddball response is compared against.
+
+    It runs at the Condition's own ``base.base_freq_hz`` with the Condition's ``modulation`` and base
+    pool (so it is the main stimulation *minus* oddballs), framed by its own start/stop triggers and
+    logged as ``baseline_start``/``baseline_end`` (with a ``phase`` of 'before'/'after') so analysis
+    can isolate + exclude it. Disabled by default.
+
+    **Adaptation caveat:** a ``before`` baseline is measured on an un-adapted visual system, an
+    ``after`` baseline post-adaptation -- they are NOT interchangeable. Default is ``before``; mixing
+    positions across Conditions confounds baseline with adaptation state.
+    """
+
+    enabled: bool = Field(default=False, description="Add a base-only reference segment to each trial.")
+    position: Literal["before", "after", "both"] = Field(
+        default="before",
+        description="Where the baseline sits relative to the oddball stream (before / after / both).",
+    )
+    duration_seconds: float = Field(
+        default=20.0, gt=0, description="How long each baseline segment runs (match the main sequence for a comparable measurement)."
+    )
+    blank_seconds: float = Field(
+        default=1.0, ge=0, description="Fixation-only gap after each baseline segment."
+    )
+    start_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when a baseline segment starts."
+    )
+    stop_trigger_code: int | None = Field(
+        default=None, ge=1, le=255, description="Trigger sent when a baseline segment ends."
+    )
+
+
 class PositionJitterParams(BaseModel):
     """Optional per-stimulus (or per-trial) random image position within a researcher-defined
     region (WP-B). Disabled by default, in which case the image stays centered -- the current,
@@ -158,6 +192,7 @@ class FPVSConditionParams(BaseModel):
     modulation: ModulationParams = Field(default_factory=ModulationParams)
     timing: TimingParams = Field(default_factory=TimingParams)
     familiarization: FamiliarizationParams = Field(default_factory=FamiliarizationParams)
+    baseline: BaselineParams = Field(default_factory=BaselineParams)
     fixation: FixationParams = Field(default_factory=FixationParams)
     photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
@@ -253,9 +288,10 @@ class FPVSSchema:
 
     #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
     #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
-    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep`` (all additive, default
-    #: off/None). v4 was the one breaking bump (old SepStim selector keys are dropped on validation --
-    #: re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
+    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep`` and the per-trial ``baseline``
+    #: (all additive, default off/None). v4 was the one breaking bump (old SepStim selector keys are
+    #: dropped on validation -- re-freeze such dev-only Instances); every other bump is additive.
+    #: See ``migrate``.
     SCHEMA_VERSION = "6"
 
     def program_params_model(self) -> type:

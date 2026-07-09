@@ -57,6 +57,7 @@ from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
 from xpman.tasks.fpvs.response import ResponseCollector, score_responses
 from xpman.tasks.fpvs.schema import (
+    BaselineParams,
     FamiliarizationParams,
     FPVSConditionParams,
     FPVSSchema,
@@ -232,6 +233,60 @@ def _run_familiarization(
         event_sink=ctx.event_sink,
         abort_check=ctx.abort_check,
         event_label="familiarization_blank",
+    )
+
+
+def _run_baseline(
+    ctx: TaskContext,
+    baseline: BaselineParams,
+    phase: str,
+    stimuli: list,
+    fixation_stim,
+    refresh_rate_hz: float,
+    base_freq_hz: float,
+    modulation,
+    position_provider: "Callable[[], tuple[float, float]] | None" = None,
+) -> None:
+    """Present one base-only (no-oddball) baseline segment -- the within-trial reference. Runs at the
+    Condition's own ``base_freq_hz`` + ``modulation`` + base pool (so it is the main stimulation minus
+    oddballs), framed by its own start/stop triggers and ``baseline_start``/``baseline_end`` events
+    tagged with ``phase`` ('before'/'after'), followed by a fixation-only blank. Reuses
+    ``run_base_sequence`` exactly as ``_run_familiarization`` does."""
+    ctx.event_sink.log(
+        "baseline_start",
+        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds},
+    )
+    if baseline.start_trigger_code is not None:
+        ctx.trigger.send_trigger(baseline.start_trigger_code)
+
+    run_base_sequence(
+        window=ctx.window,
+        stimuli=stimuli,
+        params=BaseSequenceParams(
+            base_freq_hz=base_freq_hz, trial_duration_seconds=baseline.duration_seconds
+        ),
+        refresh_rate_hz=refresh_rate_hz,
+        trigger=ctx.trigger,
+        clock=ctx.clock,
+        event_sink=ctx.event_sink,
+        abort_check=ctx.abort_check,
+        modulation=modulation,
+        rng=ctx.rng,
+        position_provider=position_provider,
+    )
+
+    if baseline.stop_trigger_code is not None:
+        ctx.trigger.send_trigger(baseline.stop_trigger_code)
+    ctx.event_sink.log("baseline_end", {"phase": phase})
+
+    present_fixation_only(
+        window=ctx.window,
+        fixation_stim=fixation_stim,
+        n_frames=round(baseline.blank_seconds * refresh_rate_hz),
+        clock=ctx.clock,
+        event_sink=ctx.event_sink,
+        abort_check=ctx.abort_check,
+        event_label="baseline_blank",
     )
 
 
@@ -570,6 +625,21 @@ class FPVSTask(TaskModule):
                 ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider
             )
 
+        # Per-trial baseline (base-only reference), 'before' phase: after familiarization and before
+        # the oddball stream, at the Condition's own base freq + modulation + base pool.
+        if params.baseline.enabled and params.baseline.position in ("before", "both"):
+            _run_baseline(
+                ctx,
+                params.baseline,
+                "before",
+                base_stims,
+                fixation_stim,
+                refresh,
+                params.base.base_freq_hz,
+                params.modulation,
+                position_provider,
+            )
+
         if params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
             # of one central stream (the segments x streams engine). The base/oddball trigger codes +
@@ -624,6 +694,22 @@ class FPVSTask(TaskModule):
                 position_provider=position_provider,
                 distractor=distractor_controller,
                 go_nogo=go_nogo_controller,
+            )
+
+        # Per-trial baseline (base-only reference), 'after' phase: after the oddball stream and before
+        # the post-stimulus interval. NB: an 'after' baseline is measured post-adaptation, an 'before'
+        # one un-adapted -- they are not interchangeable (see BaselineParams).
+        if params.baseline.enabled and params.baseline.position in ("after", "both"):
+            _run_baseline(
+                ctx,
+                params.baseline,
+                "after",
+                base_stims,
+                fixation_stim,
+                refresh,
+                params.base.base_freq_hz,
+                params.modulation,
+                position_provider,
             )
 
         # Fixation-only post-stimulus interval.
@@ -777,6 +863,7 @@ class FPVSTask(TaskModule):
                 "pre_interval_frames": pre_frames,
                 "post_interval_frames": post_frames,
                 "familiarization": ran_familiarization,
+                "baseline": params.baseline.position if params.baseline.enabled else None,
                 "aborted": sequence_result.aborted,
                 "n_responses": len(scored_responses),
                 "n_valid_responses": len(valid_rts),
