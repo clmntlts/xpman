@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from xpman.tasks.fpvs.distractor import DistractorParams
 from xpman.tasks.fpvs.fixation import FixationParams
+from xpman.tasks.fpvs.go_nogo import GoNoGoParams
 from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
@@ -159,6 +160,7 @@ class FPVSConditionParams(BaseModel):
     response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
     position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
     distractor: DistractorParams = Field(default_factory=DistractorParams)
+    go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -196,13 +198,12 @@ class FPVSConditionParams(BaseModel):
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
-    #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor`` (both additive). v4 **replaces**
-    #: the SepStim-specific StimulusSelector filters (category/angle/eccentricity/is_fs/variant) with
-    #: a convention-agnostic ``subdirectory`` + ``filename_pattern`` pair. This one is NOT purely
-    #: additive: an old selector's SepStim keys are dropped (ignored) on validation, so a Condition
-    #: that relied on them now selects the whole set -- re-freeze such (dev-only) Instances. See
-    #: ``migrate``.
-    SCHEMA_VERSION = "4"
+    #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
+    #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
+    #: and the ``go_nogo`` spatial task (both additive, default off/None). v4 was the one breaking
+    #: bump (old SepStim selector keys are dropped on validation -- re-freeze such dev-only Instances);
+    #: every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "5"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -222,11 +223,11 @@ class FPVSSchema:
         # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3"):
+        if old_version not in ("1", "2", "3", "4"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2 and v2->v3 are additive (position_jitter, distractor: disabled defaults fill in).
-        # v3->v4 drops the SepStim selector filters: strip them from base/oddball selectors so the
-        # migrated dict carries only the convention-agnostic subdirectory/filename_pattern fields.
+        # v1->v2, v2->v3, v4->v5 are additive (position_jitter, distractor, oddball pattern + go_nogo:
+        # disabled/None defaults fill in). v3->v4 drops the SepStim selector filters: strip them from
+        # base/oddball selectors so the migrated dict carries only subdirectory/filename_pattern.
         migrated = dict(data)
         for selector_key in ("base_selector", "oddball_selector"):
             selector = migrated.get(selector_key)

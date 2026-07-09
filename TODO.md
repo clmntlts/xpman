@@ -180,33 +180,26 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
       old SepStim keys are ignored (→ whole set) -- re-freeze any dev-only Instance that relied on
       them. (Also makes the "second oddball directory" idea trivial: just point the oddball
       selector at another folder.)
-- [ ] **Requested paradigm extensions (2026-07-08, from the lab).** Four concrete features to add
-      when a real protocol needs them:
-    - [ ] **Multiple fixations + spatial go/no-go distractor.** Allow N fixation markers at
-          configurable positions (today there's one, position-configurable). Make the distractor
-          *per-fixation*, and add a go/no-go response rule: a fixation turning red is a signal, and
-          the subject responds ONLY on a defined conjunction -- e.g. **both** fixations red at the
-          same time = **go** (respond); a **single** one red = **no-go** (withhold). Scoring becomes
-          go/no-go (hits on go events, false alarms on responses to no-go/single events, correct
-          rejections). Builds on `tasks/fpvs/distractor.py` + `FixationParams` (a list of fixations,
-          a shared event schedule, a conjunction scorer).
-    - [ ] **Flexible base/oddball ordering pattern (BBO, BBBBO, BOBO, …).** Replace the fixed
-          "every Kth stimulus is the oddball" with a configurable repeating B/O token pattern, so
-          the base:oddball ratio and arrangement are explicit (BOBO = 1:1 alternating, BBBBO = 4:1,
-          BBO = 2:1). Validate the pattern's implied oddball frequency against base_freq/oddball_freq.
-          Touches `paradigm_oddball.oddball_period_stimuli` + the sequence loop + schema. (Supersedes
-          the old terse "oddball-proportion patterns (BBBBO)".)
-    - [ ] **Frequency sweep.** Base (and/or oddball) frequency varies progressively across a trial
-          (ramp, e.g. 2→12 Hz, or stepwise) to find the temporal-resolution threshold where the
-          periodic response drops out. Needs a time-varying frames-per-cycle schedule (the current
-          design assumes a constant integer frames/cycle) + provenance of the sweep profile in the
-          outcome/event log. (Supersedes the old terse "sweep"/"periodic frequency-changing".)
-    - [ ] **Dual (bilateral) image streams.** Present two simultaneous FPVS streams at different
-          screen positions (e.g. left and right of the central fixation), each with its own
-          pool/selector, frequency, and trigger codes, sharing one fixation. Needs per-stream
-          position/selector/timing in the schema, a presentation loop that draws two stimuli per
-          frame with independent modulation + onset schedules, and distinct triggers per stream.
-          Interacts with position jitter (per-stream) and the photodiode.
+- [ ] **Requested paradigm extensions (2026-07-08, from the lab)** — full plan in the approved
+      design (phased 2+1, then 3+4):
+    - [x] **Flexible base/oddball ordering pattern (2026-07-09).** `OddballParams.pattern` (B/O
+          tokens) overrides `oddball_freq_hz`; oddball freq becomes base × (#O/len) (BBBO@6 Hz →
+          1.5 Hz). `check_triggers` shows the derived frequency + warns on uneven O. Additive.
+    - [x] **Multiple fixations + spatial go/no-go (2026-07-09).** `tasks/fpvs/go_nogo.py`: N markers
+          at fixed positions, conjunction rule (all signal = GO/respond, one = NO-GO/withhold),
+          SDT scoring (hits/misses/FA/CR/hit-rate/FA-rate/d′/RT), decoupled-RNG schedule, optional
+          go/no-go triggers, timeline (GO green / NO-GO amber). Additive schema v4→v5. **Follow-up:**
+          the `markers` list isn't editable in the auto-form yet (defaults to a left/right pair; a
+          `list[BaseModel]` form editor / marker-position widget is deferred — the field is hidden
+          via the new `SchemaForm` json_schema_extra `hidden` mechanism and round-trips verbatim).
+    - [ ] **Frequency sweep (stepped).** Trial = a sequence of constant-frequency segments; each
+          reuses the constant-frequency machinery at its own frequency, continuous global frame
+          index, per-segment provenance (`sweep_segment_*`) for per-segment FFT; warn on too-short
+          steps. Phase 2 (needs the segment×stream loop generalization).
+    - [ ] **Dual (bilateral) image streams.** Two simultaneous streams (left/right), each own
+          pool/frequency/position/triggers, shared central fixation; per-frame draws both; coincident
+          onsets send one **combined bitfield code** on the single port; per-stream onset logging;
+          validate distinct non-harmonic frequencies. Phase 2 (segment×stream loop refactor).
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; baseline stimulus period; missing-oddball; double-base; per-image
       transforms (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.

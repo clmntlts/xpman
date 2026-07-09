@@ -545,6 +545,30 @@ and mean RT; the **Trigger / Event Log… → Timeline** tab shows each distract
 marker line. Its schedule is reproducible per (Instance, Subject) and — like position jitter —
 enabling it never changes the stimulus order.
 
+**Spatial go/no-go task** (`go_nogo`) — an alternative *attention-control* task: several markers
+sit at fixed positions (independent of the central images). At random moments they "signal" (turn
+`signal_color`). The rule is a **conjunction**: when **all** markers signal together it's a **GO**
+(respond); when a **single** marker signals it's a **NO-GO** (withhold). Use this OR the central
+`distractor`, not both.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | checkbox | off | Show the spatial go/no-go task. |
+| `markers` | (advanced) | 2 markers, left/right (±150 px) | The marker positions/appearance (a list of fixation markers). Not editable in the form yet — defaults to a left/right pair; edit via params for other layouts. |
+| `signal_color` | text | `red` | Colour a marker takes when it signals. |
+| `event_duration_seconds` | number | 0.2 | How long each signal lasts. |
+| `min/max_interval_seconds` | number | 1.0 / 3.0 | Random gap between events. |
+| `guard_seconds` | number | 1.0 | No event within this of the start/end. |
+| `go_probability` | number | 0.5 | Fraction of events that are GO (all markers signal). |
+| `response_window_seconds` | number | 1.0 | A press within this after an event = a response. |
+| `keys` | comma-separated list | `space` | Key(s) counted as a go/no-go response. |
+| `go_trigger_code` / `nogo_trigger_code` | integer, optional | not set | Optional EEG markers per GO / NO-GO event. |
+
+Scoring is proper signal detection over go/no-go trials: **hits** (respond to GO), **misses** (miss
+a GO), **false alarms** (respond to a NO-GO or spontaneously), **correct rejections** (withhold on
+NO-GO), plus hit-rate, false-alarm-rate, **d′**, and mean RT in the Run's results. The Timeline tab
+shows GO events green and NO-GO events amber. Reproducible + order-preserving like the distractor.
+
 ## 7. Troubleshooting
 
 ### 7.1 The app won't start / `python -m xpman.gui.app` fails immediately

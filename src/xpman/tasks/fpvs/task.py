@@ -43,6 +43,12 @@ from xpman.tasks.fpvs.distractor import (
     schedule_distractor_events,
     score_distractor_responses,
 )
+from xpman.tasks.fpvs.go_nogo import (
+    GoNoGoController,
+    build_go_nogo_stimuli,
+    schedule_go_nogo_events,
+    score_go_nogo,
+)
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
@@ -484,19 +490,34 @@ class FPVSTask(TaskModule):
         # only when enabled -> disabled path is byte-for-byte unchanged. Its keys are collected by a
         # SEPARATE keyboard collector (distinct from the oddball-response collector) scored against
         # distractor events, not stimulus onsets. See distractor.py.
+        # Frames the main sequence will actually present (used to schedule the overlay tasks over the
+        # same span). Matches run_base_oddball_sequence's own n_stimuli_to_show * frames_per_stim.
+        _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
+        _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
+        _effective_frames = max(_total_seq_frames // base_frames_per_cycle, 1) * base_frames_per_cycle
+
         distractor_controller = None
         if params.distractor.enabled:
             distractor_rng = ctx.rng.spawn(1)[0]
-            n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
-            total_seq_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
-            n_stimuli = max(total_seq_frames // base_frames_per_cycle, 1)
-            effective_frames = n_stimuli * base_frames_per_cycle
             events = schedule_distractor_events(
-                effective_frames, base_frames_per_cycle, params.distractor, distractor_rng, refresh
+                _effective_frames, base_frames_per_cycle, params.distractor, distractor_rng, refresh
             )
             distractor_stim = build_distractor_stimulus(ctx.window, params.distractor, params.fixation)
             distractor_controller = DistractorController(
                 events, distractor_stim, params.distractor.trigger_code
+            )
+
+        # Go/no-go spatial task: same decoupled-RNG + off-main-sequence-timeline pattern. Its own
+        # spawn(1) sub-stream (independent of the distractor's) so enabling it never perturbs order.
+        go_nogo_controller = None
+        if params.go_nogo.enabled:
+            go_nogo_rng = ctx.rng.spawn(1)[0]
+            gn_events = schedule_go_nogo_events(
+                _effective_frames, base_frames_per_cycle, params.go_nogo, go_nogo_rng, refresh
+            )
+            gn_base, gn_signal = build_go_nogo_stimuli(ctx.window, params.go_nogo)
+            go_nogo_controller = GoNoGoController(
+                gn_events, gn_base, gn_signal, params.go_nogo.go_trigger_code, params.go_nogo.nogo_trigger_code
             )
 
         # ONE keyboard collector for the whole Run (created on the first trial, reused after --
@@ -549,6 +570,7 @@ class FPVSTask(TaskModule):
             rng=ctx.rng,
             position_provider=position_provider,
             distractor=distractor_controller,
+            go_nogo=go_nogo_controller,
         )
 
         # Fixation-only post-stimulus interval.
@@ -619,6 +641,30 @@ class FPVSTask(TaskModule):
                     "hit_rate": distractor_score.hit_rate,
                     "mean_rt_seconds": distractor_score.mean_rt_seconds,
                     "median_rt_seconds": distractor_score.median_rt_seconds,
+                },
+            )
+
+        # Go/no-go scoring (signal detection over go/no-go trials), if it ran. Same single collector,
+        # partitioned by the go/no-go keys; scored against the go/no-go events. See go_nogo.py.
+        go_nogo_score = None
+        if go_nogo_controller is not None:
+            go_nogo_responses = [r for r in all_presses if r.key_name in set(params.go_nogo.keys)]
+            go_nogo_score = score_go_nogo(
+                go_nogo_responses, go_nogo_controller.events, params.go_nogo
+            )
+            ctx.event_sink.log(
+                "go_nogo_scored",
+                {
+                    "n_go": go_nogo_score.n_go,
+                    "n_nogo": go_nogo_score.n_nogo,
+                    "n_hits": go_nogo_score.n_hits,
+                    "n_misses": go_nogo_score.n_misses,
+                    "n_false_alarms": go_nogo_score.n_false_alarms,
+                    "n_correct_rejections": go_nogo_score.n_correct_rejections,
+                    "hit_rate": go_nogo_score.hit_rate,
+                    "false_alarm_rate": go_nogo_score.false_alarm_rate,
+                    "d_prime": go_nogo_score.d_prime,
+                    "mean_rt_seconds": go_nogo_score.mean_rt_seconds,
                 },
             )
 
@@ -693,6 +739,19 @@ class FPVSTask(TaskModule):
                 "distractor_mean_rt_seconds": (
                     distractor_score.mean_rt_seconds if distractor_score else None
                 ),
+                "go_nogo_enabled": params.go_nogo.enabled,
+                "go_nogo_n_go": go_nogo_score.n_go if go_nogo_score else None,
+                "go_nogo_n_nogo": go_nogo_score.n_nogo if go_nogo_score else None,
+                "go_nogo_n_hits": go_nogo_score.n_hits if go_nogo_score else None,
+                "go_nogo_n_misses": go_nogo_score.n_misses if go_nogo_score else None,
+                "go_nogo_n_false_alarms": go_nogo_score.n_false_alarms if go_nogo_score else None,
+                "go_nogo_n_correct_rejections": (
+                    go_nogo_score.n_correct_rejections if go_nogo_score else None
+                ),
+                "go_nogo_hit_rate": go_nogo_score.hit_rate if go_nogo_score else None,
+                "go_nogo_false_alarm_rate": go_nogo_score.false_alarm_rate if go_nogo_score else None,
+                "go_nogo_d_prime": go_nogo_score.d_prime if go_nogo_score else None,
+                "go_nogo_mean_rt_seconds": go_nogo_score.mean_rt_seconds if go_nogo_score else None,
             }
         )
 
@@ -921,6 +980,37 @@ class FPVSTask(TaskModule):
                     f"distractor.trigger_code ({distractor.trigger_code}) equals a base/oddball "
                     "trigger code -- distractor and stimulus events would be indistinguishable in "
                     "the EEG. Use a distinct code."
+                )
+
+        # Go/no-go (spatial attention) advisories.
+        go_nogo = params.go_nogo
+        if go_nogo.enabled:
+            if go_nogo.response_window_seconds >= go_nogo.min_interval_seconds:
+                warnings.append(
+                    f"go_nogo.response_window_seconds ({go_nogo.response_window_seconds:g}) is >= "
+                    f"min_interval_seconds ({go_nogo.min_interval_seconds:g}) -- a response could fall "
+                    "in two events' windows, making attribution ambiguous."
+                )
+            if 2 * go_nogo.guard_seconds >= params.base.trial_duration_seconds:
+                warnings.append(
+                    f"go_nogo guard bands (2 x {go_nogo.guard_seconds:g}s) span the whole trial "
+                    f"({params.base.trial_duration_seconds:g}s) -- no go/no-go event can be scheduled."
+                )
+            if params.response.enabled and set(go_nogo.keys) & set(params.response.keys):
+                warnings.append(
+                    f"go_nogo and response tasks share key(s) {sorted(set(go_nogo.keys) & set(params.response.keys))} "
+                    "-- the same press would be scored by both. Give the go/no-go task its own key(s)."
+                )
+            if distractor.enabled:
+                warnings.append(
+                    "both the central distractor and the spatial go/no-go task are enabled -- run one "
+                    "behavioural task at a time (their events and keys would otherwise interfere)."
+                )
+            gn_codes = [c for c in (go_nogo.go_trigger_code, go_nogo.nogo_trigger_code) if c is not None]
+            if any(c in (base_code, oddball_code) for c in gn_codes):
+                warnings.append(
+                    "a go_nogo trigger code equals a base/oddball trigger code -- go/no-go and "
+                    "stimulus events would be indistinguishable in the EEG. Use distinct codes."
                 )
 
         return warnings
