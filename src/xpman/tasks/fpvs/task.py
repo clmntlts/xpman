@@ -30,7 +30,9 @@ from xpman.tasks.fpvs.fixation import build_fixation_stimulus
 from xpman.tasks.fpvs.image_set import ImageEntry, filter_entries, scan_directory
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
+    derived_oddball_freq_hz,
     frames_per_cycle,
+    oddball_pattern_mask,
     present_fixation_only,
     run_base_oddball_sequence,
     run_base_sequence,
@@ -778,6 +780,28 @@ class FPVSTask(TaskModule):
                 f"base and oddball use the same trigger code ({base_code}) -- base and "
                 "oddball events will be indistinguishable in the EEG recording"
             )
+
+        # Oddball ordering pattern: it overrides oddball_freq_hz, so surface the resulting oddball
+        # frequency (never let the override be silent) and flag an entered frequency that disagrees
+        # or an uneven O spacing (which smears the oddball response across the spectrum).
+        pattern = params.oddball.pattern
+        if pattern is not None:
+            base_freq = params.base.base_freq_hz
+            derived = derived_oddball_freq_hz(base_freq, pattern)
+            warnings.append(
+                f"oddball pattern '{pattern}' sets the oddball frequency to {derived:g} Hz "
+                f"(base {base_freq:g} x {pattern.count('O')}/{len(pattern)}); oddball_freq_hz is "
+                "ignored while a pattern is set."
+            )
+            mask = oddball_pattern_mask(pattern)
+            o_idx = [i for i, is_o in enumerate(mask) if is_o]
+            gaps = {(o_idx[(k + 1) % len(o_idx)] - o_idx[k]) % len(mask) for k in range(len(o_idx))}
+            if len(gaps) > 1:
+                warnings.append(
+                    f"oddball pattern '{pattern}' places its oddballs UNEVENLY -- the oddball "
+                    "response will be smeared across frequencies rather than a sharp peak. Use an "
+                    "evenly-spaced pattern (one O per cycle, e.g. 'BBBO') for a clean oddball tag."
+                )
 
         # No trigger codes at all -> no event markers are sent, so nothing in the EEG file marks
         # stimulus onset. The recording can't be time-locked/epoched: silently unusable data.

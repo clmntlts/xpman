@@ -20,7 +20,9 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     _PoolSequencer,
     achieved_frequency_hz,
     achieved_oddball_frequency_hz,
+    derived_oddball_freq_hz,
     frames_per_cycle,
+    oddball_pattern_mask,
     oddball_period_stimuli,
     present_fixation_only,
     run_base_oddball_sequence,
@@ -610,6 +612,43 @@ def test_oddball_pool_used_only_at_oddball_positions(mock_window, event_sink, tr
     # it's shown for (10 frames/stimulus).
     assert base_stim.draw.call_count == 15 * 10
     assert odd_stim.draw.call_count == 3 * 10
+
+
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [("BBBO", [False, False, False, True]), ("BOBO", [False, True, False, True]), ("bbbbo", [False] * 4 + [True])],
+)
+def test_oddball_pattern_mask(pattern, expected):
+    assert oddball_pattern_mask(pattern) == expected
+
+
+@pytest.mark.parametrize(
+    "pattern,expected_hz",
+    [("BBBO", 1.5), ("BBBBO", 1.2), ("BOBO", 3.0), ("BO", 3.0)],  # base 6 Hz
+)
+def test_derived_oddball_freq_hz(pattern, expected_hz):
+    assert derived_oddball_freq_hz(6.0, pattern) == pytest.approx(expected_hz)
+
+
+def test_pattern_overrides_frequency_and_places_oddballs(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
+    """A pattern OVERRIDES oddball_freq_hz: 'BBBO' on a 6 Hz base -> oddball every 4th image
+    (positions 4,8,12,16) at 1.5 Hz, ignoring the entered oddball_freq_hz (which would be 1.2/period-5)."""
+    result = run_base_oddball_sequence(
+        window=mock_window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=3.0),  # 18 stimuli
+        oddball_params=OddballParams(oddball_freq_hz=1.2, pattern="BBBO"),  # 1.2 is overridden
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    assert result.oddball_period_stimuli == 4  # pattern length, not the freq-derived 5
+    assert result.achieved_oddball_freq_hz == pytest.approx(1.5)
+    oddball_indices = [o.stim_index for o in result.onsets if o.is_oddball]
+    assert oddball_indices == [3, 7, 11, 15]  # 0-based positions 4,8,12,16
+    assert result.n_oddballs_shown == 4
 
 
 def test_position_one_is_never_oddball_for_period_greater_than_one(mock_window, event_sink, trigger, clock):

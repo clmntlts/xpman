@@ -410,8 +410,9 @@ sections, shown as labeled boxes in the form:
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
-| `oddball_freq_hz` | number | 1.2 | > 0, must not exceed `base_freq_hz` | Target oddball frequency. |
+| `oddball_freq_hz` | number | 1.2 | > 0, must not exceed `base_freq_hz` | Target oddball frequency. Ignored when `pattern` is set. |
 | `oddball_trigger_code` | integer, optional | not set | 1–255 if set | Trigger sent on every oddball-image onset; unset sends none. |
+| `pattern` | text, optional | not set | `B`/`O` tokens, ≥1 each, len ≥ 2 | Explicit repeating base/oddball order (e.g. `BBBBO`, `BOBO`), applied from position 1. **Overrides `oddball_freq_hz`**: the oddball frequency becomes `base_freq × (#O / len)` — e.g. base 6 Hz + `BBBO` → oddball every 4th image = **1.5 Hz**. "Check Triggers…" shows the resulting frequency and warns if the O's are unevenly spaced (which smears the response). Leave unset to use `oddball_freq_hz`. |
 
 **Contrast modulation** (`modulation`) — how each image's contrast is shaped across its cycle.
 The default is the canonical FPVS sinusoidal modulation: each image fades smoothly in and out

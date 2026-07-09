@@ -248,6 +248,26 @@ def test_oddball_freq_exceeding_base_freq_is_rejected():
         FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=3.0), oddball=OddballParams(oddball_freq_hz=6.0))
 
 
+def test_oddball_pattern_valid_roundtrips_and_normalizes():
+    params = OddballParams(pattern="bbbo")
+    assert params.pattern == "BBBO"  # normalized to uppercase
+
+
+@pytest.mark.parametrize("bad", ["B", "BBBX", "BBBB", "OOOO", ""])
+def test_oddball_pattern_rejects_invalid(bad):
+    with pytest.raises(ValidationError):
+        OddballParams(pattern=bad)
+
+
+def test_pattern_bypasses_oddball_below_base_frequency_check():
+    """A pattern overrides oddball_freq_hz, so the oddball<base cross-check must not fire even if
+    oddball_freq_hz is left at a value >= base (it's ignored)."""
+    FPVSConditionParams(
+        base=BaseSequenceParams(base_freq_hz=6.0),
+        oddball=OddballParams(oddball_freq_hz=6.0, pattern="BBBO"),  # 6.0 would normally be rejected
+    )
+
+
 def test_oddball_frequency_constraint_enforced_via_model_validate():
     """The GUI's SchemaForm.get_validated_model() calls model_validate(), not the constructor
     directly -- confirm the cross-field check fires on that path too, not just __init__."""

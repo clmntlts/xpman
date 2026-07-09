@@ -40,7 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from xpman.tasks.fpvs.modulation import ModulationParams, build_contrast_table, envelope_at_frame
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams, should_toggle
@@ -130,6 +130,41 @@ class OddballParams(BaseModel):
         le=255,
         description="Trigger code sent on every oddball-image onset. None sends no trigger.",
     )
+    pattern: str | None = Field(
+        default=None,
+        description=(
+            "Optional repeating base/oddball order as 'B'/'O' tokens (e.g. 'BBBBO', 'BOBO'). When "
+            "set it OVERRIDES oddball_freq_hz: the oddball is placed by the pattern (from position 1), "
+            "and the oddball frequency becomes base_freq * (#O / len). E.g. base 6 Hz + 'BBBO' -> "
+            "oddball every 4th image = 1.5 Hz. None keeps the frequency-derived period (every Kth)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_pattern(self) -> "OddballParams":
+        if self.pattern is None:
+            return self
+        norm = self.pattern.strip().upper()
+        if len(norm) < 2:
+            raise ValueError(f"oddball pattern must be at least 2 tokens long, got {self.pattern!r}")
+        if any(c not in "BO" for c in norm):
+            raise ValueError(f"oddball pattern must contain only 'B'/'O' tokens, got {self.pattern!r}")
+        if "B" not in norm or "O" not in norm:
+            raise ValueError(f"oddball pattern must contain at least one 'B' and one 'O', got {self.pattern!r}")
+        self.pattern = norm  # store normalized (uppercase, trimmed)
+        return self
+
+
+def oddball_pattern_mask(pattern: str) -> list[bool]:
+    """``'BBBO'`` -> ``[False, False, False, True]`` (O = oddball). Assumes a validated pattern."""
+    return [c == "O" for c in pattern.strip().upper()]
+
+
+def derived_oddball_freq_hz(base_freq_hz: float, pattern: str) -> float:
+    """Oddball frequency implied by a repeating ``pattern`` at ``base_freq_hz`` = base * (#O / len).
+    For one evenly-spaced O this is the oddball tagging fundamental (base 6 Hz, 'BBBO' -> 1.5 Hz)."""
+    mask = oddball_pattern_mask(pattern)
+    return base_freq_hz * sum(mask) / len(mask)
 
 
 def frames_per_cycle(refresh_rate_hz: float, target_freq_hz: float) -> int:
@@ -666,8 +701,22 @@ def run_base_oddball_sequence(
     n_frames_per_stim = frames_per_cycle(refresh_rate_hz, base_params.base_freq_hz)
     achieved_base_hz = achieved_frequency_hz(refresh_rate_hz, n_frames_per_stim)
 
-    period = oddball_period_stimuli(base_params.base_freq_hz, oddball_params.oddball_freq_hz)
-    achieved_oddball_hz = achieved_oddball_frequency_hz(achieved_base_hz, period)
+    # Oddball placement: a repeating B/O pattern (if set) OVERRIDES the frequency-derived period.
+    # With a pattern the oddball frequency is base * (#O / len); without one it's the rounded
+    # base/oddball period (today's behaviour, positions K, 2K, ... -- position 1 never an oddball).
+    if oddball_params.pattern is not None:
+        _pattern_mask = oddball_pattern_mask(oddball_params.pattern)
+        period = len(_pattern_mask)  # pattern repetition period (for provenance / result)
+        achieved_oddball_hz = derived_oddball_freq_hz(achieved_base_hz, oddball_params.pattern)
+
+        def _position_is_oddball(position_1indexed: int) -> bool:
+            return _pattern_mask[(position_1indexed - 1) % period]
+    else:
+        period = oddball_period_stimuli(base_params.base_freq_hz, oddball_params.oddball_freq_hz)
+        achieved_oddball_hz = achieved_oddball_frequency_hz(achieved_base_hz, period)
+
+        def _position_is_oddball(position_1indexed: int) -> bool:
+            return position_1indexed % period == 0
 
     n_plateau_frames = round(base_params.trial_duration_seconds * refresh_rate_hz)
     total_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
@@ -688,6 +737,7 @@ def run_base_oddball_sequence(
             "achieved_base_freq_hz": achieved_base_hz,
             "requested_oddball_freq_hz": oddball_params.oddball_freq_hz,
             "achieved_oddball_freq_hz": achieved_oddball_hz,
+            "oddball_pattern": oddball_params.pattern,  # None unless a pattern overrides the frequency
             "frames_per_stimulus": n_frames_per_stim,
             "oddball_period_stimuli": period,
             "n_stimuli_to_show": n_stimuli_to_show,
@@ -709,7 +759,7 @@ def run_base_oddball_sequence(
             aborted = True
             break
 
-        is_oddball = position % period == 0
+        is_oddball = _position_is_oddball(position)
         if is_oddball:
             stim = oddball_stimuli[oddball_pool.next()]
             trigger_code = oddball_params.oddball_trigger_code
