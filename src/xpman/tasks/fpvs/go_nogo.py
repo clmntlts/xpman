@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.fpvs._event_schedule import iter_event_windows
 from xpman.tasks.fpvs.fixation import FixationParams, build_fixation_stimulus
 
 if TYPE_CHECKING:
@@ -128,26 +129,23 @@ def schedule_go_nogo_events(
     signals). When a trigger is configured, onsets are nudged off base-onset frames (multiples of
     ``frames_per_stim``) so a go/no-go trigger can never share a flip with the base/oddball trigger.
     Pure: no PsychoPy, no drawing."""
-    event_frames = max(round(params.event_duration_seconds * refresh_hz), 1)
-    guard_frames = round(params.guard_seconds * refresh_hz)
-    min_gap = max(round(params.min_interval_seconds * refresh_hz), 1)
-    max_gap = max(round(params.max_interval_seconds * refresh_hz), min_gap)
-    last_usable_frame = total_frames - guard_frames
     has_trigger = params.go_trigger_code is not None or params.nogo_trigger_code is not None
     n_markers = len(params.markers)
 
     events: list[GoNoGoEvent] = []
-    cursor = guard_frames
-    index = 0
-    while True:
-        gap = int(rng.integers(min_gap, max_gap + 1))
-        onset = cursor + gap
-        if has_trigger and frames_per_stim > 0:
-            while onset % frames_per_stim == 0:
-                onset += 1
-        offset = onset + event_frames
-        if offset > last_usable_frame:
-            break
+    # The shared generator draws the gap (one rng.integers) per event before yielding; we draw the
+    # kind + marker right after, keeping the interleaved RNG order identical to the old inline loop.
+    for index, onset, offset in iter_event_windows(
+        total_frames,
+        frames_per_stim,
+        event_duration_seconds=params.event_duration_seconds,
+        min_interval_seconds=params.min_interval_seconds,
+        max_interval_seconds=params.max_interval_seconds,
+        guard_seconds=params.guard_seconds,
+        avoid_base_onsets=has_trigger,
+        rng=rng,
+        refresh_hz=refresh_hz,
+    ):
         if float(rng.random()) < params.go_probability:
             kind: Literal["go", "nogo"] = "go"
             signaling = list(range(n_markers))  # all markers signal
@@ -155,8 +153,6 @@ def schedule_go_nogo_events(
             kind = "nogo"
             signaling = [int(rng.integers(0, n_markers))]  # one random marker signals
         events.append(GoNoGoEvent(index=index, onset_frame=onset, offset_frame=offset, kind=kind, signaling=signaling))
-        index += 1
-        cursor = offset
     return events
 
 
