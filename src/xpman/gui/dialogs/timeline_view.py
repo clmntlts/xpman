@@ -36,6 +36,8 @@ _TRIGGER = QColor("#2f855a")  # green
 _TRIGGER_ODDBALL = QColor("#c0392b")  # red
 _RESPONSE = QColor("#3b82f6")  # blue
 _DISTRACTOR = QColor("#a855f7")  # purple
+_GONOGO_GO = QColor("#22c55e")  # green (go = respond)
+_GONOGO_NOGO = QColor("#f59e0b")  # amber (no-go = withhold)
 _AXIS = QColor("#9aa0a6")
 _TEXT = QColor("#d0d0d0")
 
@@ -124,6 +126,18 @@ class TimelineView(QGraphicsView):
                 code = f" · code {dist.code}" if dist.code is not None else ""
                 line.setToolTip(f"distractor #{dist.index}{code} @ {dist.time_s:.3f}s")
 
+            # Go/no-go events, likewise time-placed; GO green, NO-GO amber, so the conjunction
+            # (go) trials stand out from the withhold (no-go) trials at a glance.
+            for gn in trial.go_nogo:
+                x = _LABEL_W + (gn.time_s / trial.duration_s) * _PLOT_W if trial.duration_s > 0 else _LABEL_W
+                color = _GONOGO_GO if gn.label == "go" else _GONOGO_NOGO
+                pen = QPen(color)
+                pen.setWidth(2)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, resp_y, pen)
+                line.setZValue(-0.4)
+                code = f" · code {gn.code}" if gn.code is not None else ""
+                line.setToolTip(f"go/no-go [{gn.label}] #{gn.index}{code} @ {gn.time_s:.3f}s")
+
         scene.setSceneRect(scene.itemsBoundingRect().adjusted(-8, -8, 8, 8))
 
     def _draw_legend(self, scene: QGraphicsScene) -> None:
@@ -133,6 +147,8 @@ class TimelineView(QGraphicsView):
             ("trigger", _TRIGGER),
             ("response", _RESPONSE),
             ("distractor", _DISTRACTOR),
+            ("go/no-go go", _GONOGO_GO),
+            ("go/no-go no-go", _GONOGO_NOGO),
         ]
         x = _LABEL_W
         for text, color in entries:

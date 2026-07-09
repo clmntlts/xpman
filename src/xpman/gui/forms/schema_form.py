@@ -169,6 +169,11 @@ class SchemaForm(QWidget):
         self.model_cls = model_cls
         self._field_widgets: dict[str, Any] = {}
         self._nested_forms: dict[str, SchemaForm] = {}
+        #: Fields marked ``Field(json_schema_extra={"hidden": True})`` are not rendered (a shape the
+        #: form can't edit, or an advanced field), but their value is preserved verbatim across
+        #: get/set so a round-trip through the form never drops or corrupts them.
+        self._hidden_fields: set[str] = set()
+        self._hidden_values: dict[str, Any] = {}
         self._last_errors: list[str] = []
 
         outer_layout = QVBoxLayout(self)
@@ -185,6 +190,12 @@ class SchemaForm(QWidget):
         for name, field_info in model_cls.model_fields.items():
             annotation = field_info.annotation
             is_optional, inner_annotation = _is_optional(annotation)
+
+            extra = field_info.json_schema_extra
+            if isinstance(extra, dict) and extra.get("hidden"):
+                # Not rendered; value preserved across get/set (see set_values/get_values).
+                self._hidden_fields.add(name)
+                continue
 
             if _is_model(inner_annotation):
                 # Nested BaseModel: its own titled QGroupBox with a recursively-built SchemaForm
@@ -294,12 +305,16 @@ class SchemaForm(QWidget):
             values[name] = widget.get_value()
         for name, nested_form in self._nested_forms.items():
             values[name] = nested_form.get_values()
+        values.update(self._hidden_values)  # preserve non-rendered fields verbatim (round-trip safe)
         return values
 
     def set_values(self, values: dict) -> None:
         """Repopulate every field from a dict (e.g. loading an existing Condition's
         ``parameters_json``). Unknown keys are ignored; missing keys leave that field/widget
         unchanged."""
+        for name in self._hidden_fields:
+            if name in values:
+                self._hidden_values[name] = values[name]  # remember for get_values
         for name, widget in self._field_widgets.items():
             if name in values:
                 widget.set_value(values[name])

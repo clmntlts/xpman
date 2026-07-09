@@ -93,6 +93,28 @@ def test_timeline_view_draws_distractor_markers(qtbot):
     assert len(purple_lines) == 2
 
 
+def test_timeline_view_draws_go_nogo_markers(qtbot):
+    """Go/no-go events render as time-placed marker lines, green for GO and amber for NO-GO."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QGraphicsLineItem
+
+    trial = TrialTimeline(
+        index=1,
+        duration_s=2.0,
+        onsets=[TimelineMark(0.0, False, None, 0)],
+        triggers=[],
+        go_nogo=[TimelineMark(0.5, None, 7, 0, label="go"), TimelineMark(1.5, None, 8, 1, label="nogo")],
+    )
+    view = TimelineView([trial])
+    qtbot.addWidget(view)
+
+    green = QColor("#22c55e")
+    amber = QColor("#f59e0b")
+    lines = [it for it in view._scene.items() if isinstance(it, QGraphicsLineItem)]
+    assert any(it.pen().color() == green for it in lines)  # a GO marker
+    assert any(it.pen().color() == amber for it in lines)  # a NO-GO marker
+
+
 def test_timeline_view_empty_shows_note_not_crash(qtbot):
     view = TimelineView([])
     qtbot.addWidget(view)

@@ -187,6 +187,19 @@ def test_build_trial_timelines_captures_distractor_onsets():
     assert [m.code for m in marks] == [99, 99]
 
 
+def test_build_trial_timelines_captures_go_nogo_events():
+    events = [
+        _ev("base_oddball_sequence_start", 10.0),
+        _ev("stimulus_onset", 10.0, {"is_oddball": False, "stim_index": 0}),
+        _ev("go_nogo_onset", 10.5, {"index": 0, "kind": "go", "trigger_code": 7}),
+        _ev("go_nogo_onset", 12.0, {"index": 1, "kind": "nogo", "trigger_code": 8}),
+        _ev("base_oddball_sequence_end", 13.0),
+    ]
+    marks = build_trial_timelines(events)[0].go_nogo
+    assert [(m.label, m.index, m.code) for m in marks] == [("go", 0, 7), ("nogo", 1, 8)]
+    assert [m.time_s for m in marks] == pytest.approx([0.5, 2.0])
+
+
 def test_build_trial_timelines_no_distractors_when_absent():
     events = [
         _ev("base_oddball_sequence_start", 0.0),

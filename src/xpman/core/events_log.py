@@ -56,6 +56,7 @@ class TimelineMark:
     is_oddball: bool | None
     code: int | None  # trigger code (trigger marks only); None for stimulus onsets
     index: int | None = None  # stimulus position within the trial
+    label: str | None = None  # optional tag (e.g. go/no-go event kind: "go" / "nogo")
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ class TrialTimeline:
     #: Distractor (attention-control) event onsets in this stream, if the distractor task ran.
     #: ``code`` carries the optional distractor trigger code (None when behaviour-only).
     distractors: list[TimelineMark] = field(default_factory=list)
+    #: Go/no-go event onsets, if that task ran. ``label`` is "go" or "nogo"; ``code`` the trigger.
+    go_nogo: list[TimelineMark] = field(default_factory=list)
 
     @property
     def n_base(self) -> int:
@@ -121,7 +124,7 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 windows.append(cur)
             cur = {
                 "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [],
-                "responses": [], "distractors": [],
+                "responses": [], "distractors": [], "go_nogo": [],
                 "kind": "familiarization" if event_type == "base_sequence_start" else "trial",
             }
         elif event_type in _SEQUENCE_END_EVENTS:
@@ -145,6 +148,18 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 cur["distractors"].append(
                     TimelineMark(
                         ts - cur["start"], None, payload.get("trigger_code"), payload.get("index", 0)
+                    )
+                )
+                cur["last"] = ts
+            elif event_type == "go_nogo_onset":
+                # Go/no-go event; label carries the GO/NO-GO kind, code the optional trigger.
+                cur["go_nogo"].append(
+                    TimelineMark(
+                        ts - cur["start"],
+                        None,
+                        payload.get("trigger_code"),
+                        payload.get("index", 0),
+                        label=payload.get("kind"),
                     )
                 )
                 cur["last"] = ts
@@ -189,6 +204,7 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 label=label,
                 responses=w["responses"],
                 distractors=w["distractors"],
+                go_nogo=w["go_nogo"],
             )
         )
     return timelines

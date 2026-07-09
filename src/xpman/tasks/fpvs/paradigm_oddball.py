@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from xpman.hardware.trigger import TriggerSender
     from xpman.runtime.logging_sink import EventSink
     from xpman.tasks.fpvs.distractor import DistractorController
+    from xpman.tasks.fpvs.go_nogo import GoNoGoController
     from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 
 
@@ -288,6 +289,7 @@ def _present_stimulus(
     flip_log: "list[tuple[str, dict, float]] | None" = None,
     position: "tuple[float, float] | None" = None,
     distractor: "DistractorController | None" = None,
+    go_nogo: "GoNoGoController | None" = None,
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
     ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
@@ -332,14 +334,19 @@ def _present_stimulus(
         distractor_event = (
             distractor.event_starting_at(global_frame_index) if distractor is not None else None
         )
+        go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
+        go_nogo_code = go_nogo.trigger_code_for(go_nogo_event) if go_nogo_event is not None else None
+        # One registration per frame, in priority order: a base/oddball onset first, then the
+        # overlay tasks (distractor, then go/no-go) whose events the scheduler placed on NON-base-onset
+        # frames so they never fight the stimulus trigger; otherwise the routine clear. (The
+        # distractor and go/no-go tasks are advised mutually exclusive -- see check_triggers -- so
+        # their events don't normally coincide; if they did, the distractor takes this frame.)
         if is_onset and trigger_code is not None:
             window.callOnFlip(trigger.set_code, trigger_code)
         elif distractor_event is not None and distractor.trigger_code is not None:
-            # A distractor onset lands on a NON-base-onset frame (guaranteed by the scheduler when a
-            # distractor trigger is configured), so it never fights the base/oddball set_code above.
-            # Send its code on this flip instead of the routine clear; the next frame's clear_code
-            # resets the port, giving the same ~1-frame pulse as the base/oddball triggers.
             window.callOnFlip(trigger.set_code, distractor.trigger_code)
+        elif go_nogo_event is not None and go_nogo_code is not None:
+            window.callOnFlip(trigger.set_code, go_nogo_code)
         else:
             window.callOnFlip(trigger.clear_code)
 
@@ -363,6 +370,10 @@ def _present_stimulus(
         # (attention-control task -- see distractor.py). Touches only the fixation region.
         if distractor is not None and distractor.is_active(global_frame_index):
             distractor.draw()
+        # Go/no-go markers: persistent markers every frame, signalling ones recoloured on top (see
+        # go_nogo.py). Its own draw method handles the always-visible vs active-signal split.
+        if go_nogo is not None:
+            go_nogo.draw_frame(global_frame_index)
 
         flip_time = window.flip()
         if flip_time is None:
@@ -408,6 +419,21 @@ def _present_stimulus(
                     "index": distractor_event.index,
                     "frame_index": global_frame_index,
                     "trigger_code": distractor.trigger_code,
+                },
+                timestamp=flip_time,
+            )
+        # Go/no-go event onset, likewise logged on this frame with flip_time (and onset_time written
+        # back for RT/SDT scoring in task.py). Records the GO/NO-GO kind + which markers signalled.
+        if go_nogo_event is not None:
+            go_nogo_event.onset_time = flip_time
+            event_sink.log(
+                "go_nogo_onset",
+                {
+                    "index": go_nogo_event.index,
+                    "kind": go_nogo_event.kind,
+                    "signaling": list(go_nogo_event.signaling),
+                    "frame_index": global_frame_index,
+                    "trigger_code": go_nogo_code,
                 },
                 timestamp=flip_time,
             )
@@ -668,6 +694,7 @@ def run_base_oddball_sequence(
     rng: "numpy.random.Generator | None" = None,
     position_provider: Callable[[], tuple[float, float]] | None = None,
     distractor: "DistractorController | None" = None,
+    go_nogo: "GoNoGoController | None" = None,
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -792,6 +819,7 @@ def run_base_oddball_sequence(
             flip_log=flip_log,
             position=stim_position,
             distractor=distractor,
+            go_nogo=go_nogo,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim

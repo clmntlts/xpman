@@ -201,6 +201,25 @@ def test_editing_enum_combobox_reflected_in_get_values(qtbot):
     assert form.get_values()["toggle_strategy"] == ToggleStrategy.ODDBALL_ONSET_ONLY.value
 
 
+def test_hidden_field_is_not_rendered_but_round_trips(qtbot):
+    """A field marked json_schema_extra={'hidden': True} isn't shown, but its value is preserved
+    verbatim through get/set so a round-trip never drops or corrupts it (used for list-of-model
+    fields the form can't edit yet, e.g. go_nogo.markers)."""
+    from pydantic import BaseModel, Field
+
+    class _M(BaseModel):
+        shown: int = 1
+        secret: list[int] = Field(default_factory=lambda: [9, 9], json_schema_extra={"hidden": True})
+
+    form = SchemaForm(_M, initial_values={"shown": 3, "secret": [1, 2, 3]})
+    qtbot.addWidget(form)
+    assert "secret" not in form._field_widgets  # not rendered
+    values = form.get_values()
+    assert values["shown"] == 3
+    assert values["secret"] == [1, 2, 3]  # preserved verbatim
+    assert form.get_validated_model().secret == [1, 2, 3]
+
+
 def test_literal_field_renders_as_choice_combo_not_free_text(qtbot):
     """A ``Literal[...]`` field (FixationParams.bar_orientation) must get a fixed-choice combo,
     not the free-text 'unsupported type' fallback that would let a typo through."""

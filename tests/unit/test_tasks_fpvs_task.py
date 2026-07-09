@@ -1237,6 +1237,42 @@ def test_check_triggers_no_uneven_warning_for_single_evenly_spaced_oddball():
     assert not any("UNEVENLY" in w for w in task.check_triggers(params.model_dump()))
 
 
+def test_check_triggers_warns_when_go_nogo_shares_response_key():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.response.enabled = True
+    params.response.keys = ["space"]
+    params.go_nogo.enabled = True
+    params.go_nogo.response_window_seconds = 0.5
+    params.go_nogo.keys = ["space"]
+    assert any("go_nogo and response tasks share" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_warns_when_both_distractor_and_go_nogo_enabled():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.distractor.enabled = True
+    params.distractor.response_window_seconds = 0.5
+    params.go_nogo.enabled = True
+    params.go_nogo.response_window_seconds = 0.5
+    params.go_nogo.keys = ["p"]  # distinct keys so only the "one task at a time" advisory fires
+    assert any("one behavioural task at a time" in w for w in task.check_triggers(params.model_dump()))
+
+
+def test_check_triggers_clean_when_go_nogo_well_configured():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.base.trial_duration_seconds = 60.0
+    params.go_nogo.enabled = True
+    params.go_nogo.min_interval_seconds = 2.0
+    params.go_nogo.response_window_seconds = 1.0
+    params.go_nogo.guard_seconds = 1.0
+    params.go_nogo.keys = ["p"]  # distinct from response ["space"]
+    params.go_nogo.go_trigger_code = 9  # distinct from base(1)/oddball(2)
+    params.go_nogo.nogo_trigger_code = 10
+    assert task.check_triggers(params.model_dump()) == []
+
+
 def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
     task = FPVSTask()
     params = _clean_condition()
@@ -1386,6 +1422,50 @@ def test_run_trial_with_distractor_populates_outcome_and_logs_events(mock_window
     rows = _read_events(event_sink)
     assert any(r["event_type"] == "distractor_onset" for r in rows)
     assert any(r["event_type"] == "distractor_scored" for r in rows)
+
+
+def test_run_trial_with_go_nogo_populates_outcome_and_logs_events(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 5.0
+    params.go_nogo.enabled = True
+    params.go_nogo.min_interval_seconds = 1.0
+    params.go_nogo.max_interval_seconds = 1.0
+    params.go_nogo.guard_seconds = 0.5
+
+    summary = _run_trial_outcome(task, ctx, params)
+    assert summary["go_nogo_enabled"] is True
+    assert (summary["go_nogo_n_go"] + summary["go_nogo_n_nogo"]) >= 1
+    # No key presses in the mocked keyboard -> every GO is a miss, every NO-GO a correct rejection.
+    assert summary["go_nogo_n_hits"] == 0
+    assert summary["go_nogo_n_false_alarms"] == 0
+    assert summary["go_nogo_n_misses"] == summary["go_nogo_n_go"]
+    assert summary["go_nogo_n_correct_rejections"] == summary["go_nogo_n_nogo"]
+
+    rows = _read_events(event_sink)
+    assert any(r["event_type"] == "go_nogo_onset" for r in rows)
+    assert any(r["event_type"] == "go_nogo_scored" for r in rows)
+
+
+def test_run_trial_without_go_nogo_leaves_metrics_none(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 1.0  # go/no-go disabled by default
+    summary = _run_trial_outcome(task, ctx, params)
+    assert summary["go_nogo_enabled"] is False
+    assert summary["go_nogo_n_go"] is None
+    assert summary["go_nogo_d_prime"] is None
 
 
 def test_run_trial_without_distractor_leaves_metrics_none(mock_window, stim_root, event_sink):

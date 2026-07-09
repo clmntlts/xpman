@@ -44,13 +44,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "4"
+    assert FPVSSchema.SCHEMA_VERSION == "5"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("4", {"x": 1})
-    assert version == "4"
+    version, data = schema.migrate("5", {"x": 1})
+    assert version == "5"
     assert data == {"x": 1}
 
 
@@ -63,7 +63,7 @@ def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "4"
+    assert version == "5"
     assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
     assert data["oddball_selector"] == {}
 
@@ -144,7 +144,7 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "4"
+    assert version == "5"
     assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
 
 
@@ -154,13 +154,29 @@ def test_migrate_v2_to_current_passes_data_through():
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "4"
+    assert version == "5"
     assert data == v2_data
 
 
 def test_condition_params_have_distractor_disabled_by_default():
     params = FPVSConditionParams()
     assert params.distractor.enabled is False
+
+
+def test_condition_params_have_go_nogo_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.go_nogo.enabled is False
+
+
+def test_v4_condition_without_go_nogo_or_pattern_validates_defaults():
+    """A frozen v4 Condition dict (no go_nogo, no oddball.pattern) must validate under v5 with the
+    new blocks defaulting to off/None -- old Instances keep running unchanged."""
+    v4 = FPVSConditionParams().model_dump()
+    v4.pop("go_nogo")
+    v4["oddball"].pop("pattern", None)
+    params = FPVSConditionParams.model_validate(v4)
+    assert params.go_nogo.enabled is False
+    assert params.oddball.pattern is None
 
 
 def test_v2_condition_without_distractor_still_validates_disabled():
