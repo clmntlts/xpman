@@ -706,6 +706,21 @@ def run_base_sequence(
 
 
 @dataclass(frozen=True)
+class _TrialEnvelope:
+    """Trial-global contrast-envelope shape shared by every segment: fade-in at the trial start, a
+    single plateau spanning ALL segments, fade-out at the trial end. The per-cycle contrast TABLE is
+    segment-local (a different base frequency means a different frames-per-cycle), but the fade
+    envelope is one continuous function over the whole trial (O4) so a frequency sweep does not 'pump'
+    contrast back toward zero at each step boundary -- a middle segment simply sits in the plateau.
+    For a single-segment trial this is exactly the pre-refactor fade accounting."""
+
+    start_frame_index: int
+    fade_in_frames: int
+    plateau_frames: int  # total plateau across ALL segments
+    fade_out_frames: int
+
+
+@dataclass(frozen=True)
 class _SegmentPlan:
     """Pure per-segment computation: frame/stimulus counts, achieved frequencies, the oddball
     placement predicate, and the (optional) modulation function for one constant-frequency span.
@@ -724,16 +739,24 @@ def _plan_oddball_segment(
     segment: Segment,
     *,
     refresh_rate_hz: float,
-    starting_frame_index: int,
-    n_fade_in_frames: int,
-    n_fade_out_frames: int,
+    envelope: _TrialEnvelope,
+    segment_fade_in_frames: int,
+    segment_fade_out_frames: int,
     modulation: ModulationParams | None,
 ) -> _SegmentPlan:
-    """Compute a :class:`_SegmentPlan` for one oddball segment. Mirrors exactly the per-trial math
-    ``run_base_oddball_sequence`` used before the segments x streams refactor: a repeating B/O
-    ``pattern`` (if set) OVERRIDES the frequency-derived period; otherwise the oddball lands every
-    Kth position (position 1 is never an oddball for K > 1). Requires an oddball segment -- base-only
-    (baseline) segments run through :func:`run_base_sequence`."""
+    """Compute a :class:`_SegmentPlan` for one oddball segment.
+
+    ``segment_fade_in_frames`` / ``segment_fade_out_frames`` are this segment's share of the trial's
+    fades (the fade-in belongs to the first segment, the fade-out to the last, middle segments get 0)
+    and size only this segment's stimulus budget. ``envelope`` is the trial-global contrast envelope
+    every segment's ``modulation_fn`` shares (O4): the table is segment-local, the fade envelope is one
+    continuous function over the whole trial. For a single segment ``segment_fade_in_frames ==
+    envelope.fade_in_frames`` and ``envelope.plateau_frames`` is this segment's own plateau, so the
+    result is byte-for-byte the pre-refactor per-trial math.
+
+    A repeating B/O ``pattern`` (if set) OVERRIDES the frequency-derived period; otherwise the oddball
+    lands every Kth position (position 1 is never an oddball for K > 1). Requires an oddball segment --
+    base-only (baseline) segments run through :func:`run_base_sequence`."""
     oddball_params = segment.oddball
     if oddball_params is None:
         raise ValueError(
@@ -760,16 +783,21 @@ def _plan_oddball_segment(
         def position_is_oddball(position_1indexed: int) -> bool:
             return position_1indexed % period == 0
 
-    n_plateau_frames = round(segment.duration_seconds * refresh_rate_hz)
-    total_frames = n_fade_in_frames + n_plateau_frames + n_fade_out_frames
-    n_stimuli_to_show = max(total_frames // n_frames_per_stim, 1)
+    # This segment's own frame budget: its share of the trial fades + its own plateau. The stimulus
+    # count floor-divides that budget by its frames-per-stimulus (per-segment truncation is expected --
+    # design invariant #6). For one segment this equals the old fade_in + plateau + fade_out total.
+    segment_plateau_frames = round(segment.duration_seconds * refresh_rate_hz)
+    segment_total_frames = segment_fade_in_frames + segment_plateau_frames + segment_fade_out_frames
+    n_stimuli_to_show = max(segment_total_frames // n_frames_per_stim, 1)
+    # Segment-local TABLE (this segment's frames-per-cycle), trial-global fade ENVELOPE (O4): every
+    # segment passes the SAME envelope params, so the fade is continuous across step boundaries.
     modulation_fn = _build_modulation_fn(
         modulation,
         n_frames_per_cycle=n_frames_per_stim,
-        starting_frame_index=starting_frame_index,
-        n_fade_in_frames=n_fade_in_frames,
-        n_plateau_frames=n_plateau_frames,
-        n_fade_out_frames=n_fade_out_frames,
+        starting_frame_index=envelope.start_frame_index,
+        n_fade_in_frames=envelope.fade_in_frames,
+        n_plateau_frames=envelope.plateau_frames,
+        n_fade_out_frames=envelope.fade_out_frames,
     )
     return _SegmentPlan(
         n_frames_per_stim=n_frames_per_stim,
@@ -886,6 +914,176 @@ def _present_oddball_segment(
     )
 
 
+def _run_oddball_segments(
+    *,
+    window: "psychopy.visual.Window",
+    segments: list[Segment],
+    stream: Stream,
+    refresh_rate_hz: float,
+    trigger: "TriggerSender",
+    clock: "Clock",
+    event_sink: "EventSink",
+    photodiode: "PhotodiodePatch | None",
+    photodiode_params: PhotodiodeParams,
+    abort_check: Callable[[], bool],
+    starting_frame_index: int,
+    n_fade_in_frames: int,
+    n_fade_out_frames: int,
+    rng: "numpy.random.Generator | None",
+    position_provider: Callable[[], tuple[float, float]] | None,
+    distractor: "DistractorController | None",
+    go_nogo: "GoNoGoController | None",
+) -> BaseOddballSequenceResult:
+    """Present an ordered list of constant-frequency ``segments`` of a single ``stream`` back-to-back,
+    keeping a continuous ``global_frame_index``, one onset list, and ONE buffered ``flip_log`` flushed
+    once at the end, with ONE trailing ``clear_code`` (invariants #1, #2). One segment == today's
+    single-frequency trial (byte-for-byte); several segments == a stepped frequency sweep. Per-segment
+    ``sweep_segment_start/end`` provenance is emitted ONLY for an actual sweep (>1 segment), so the
+    single-segment default path's event stream is unchanged (invariant #3)."""
+    if not segments:
+        raise ValueError("_run_oddball_segments requires at least one segment")
+    multi = len(segments) > 1
+
+    # Trial-global contrast envelope (O4): fade-in at the very start, one plateau spanning every
+    # segment (so contrast holds across step boundaries instead of re-fading), fade-out at the end.
+    total_plateau_frames = sum(round(seg.duration_seconds * refresh_rate_hz) for seg in segments)
+    envelope = _TrialEnvelope(
+        start_frame_index=starting_frame_index,
+        fade_in_frames=n_fade_in_frames,
+        plateau_frames=total_plateau_frames,
+        fade_out_frames=n_fade_out_frames,
+    )
+    last_index = len(segments) - 1
+    plans = [
+        _plan_oddball_segment(
+            seg,
+            refresh_rate_hz=refresh_rate_hz,
+            envelope=envelope,
+            segment_fade_in_frames=n_fade_in_frames if i == 0 else 0,
+            segment_fade_out_frames=n_fade_out_frames if i == last_index else 0,
+            modulation=stream.modulation,
+        )
+        for i, seg in enumerate(segments)
+    ]
+
+    # Trial-level start event from the first segment's plan -- for a single segment this is exactly
+    # the pre-refactor payload (invariant #3: no new keys on the default path).
+    first_seg = segments[0]
+    first_plan = plans[0]
+    first_oddball = first_seg.oddball
+    assert first_oddball is not None  # _plan_oddball_segment already enforced this
+    event_sink.log(
+        "base_oddball_sequence_start",
+        {
+            "requested_base_freq_hz": first_seg.base_freq_hz,
+            "achieved_base_freq_hz": first_plan.achieved_base_hz,
+            "requested_oddball_freq_hz": first_oddball.oddball_freq_hz,
+            "achieved_oddball_freq_hz": first_plan.achieved_oddball_hz,
+            "oddball_pattern": first_oddball.pattern,  # None unless a pattern overrides the frequency
+            "frames_per_stimulus": first_plan.n_frames_per_stim,
+            "oddball_period_stimuli": first_plan.period,
+            "n_stimuli_to_show": first_plan.n_stimuli_to_show,
+        },
+    )
+
+    onsets: list[OnsetRecord] = []
+    flip_log: list[tuple[str, dict, float]] = []
+    global_frame_index = starting_frame_index
+    frames_presented = 0
+    stimuli_shown = 0
+    oddballs_shown = 0
+    aborted = False
+
+    for i, (seg, plan) in enumerate(zip(segments, plans)):
+        seg_oddball = seg.oddball
+        assert seg_oddball is not None
+        if multi:
+            event_sink.log(
+                "sweep_segment_start",
+                {
+                    "segment_index": i,
+                    "requested_base_freq_hz": seg.base_freq_hz,
+                    "achieved_base_freq_hz": plan.achieved_base_hz,
+                    "requested_oddball_freq_hz": seg_oddball.oddball_freq_hz,
+                    "achieved_oddball_freq_hz": plan.achieved_oddball_hz,
+                    "oddball_pattern": seg_oddball.pattern,
+                    "frames_per_stimulus": plan.n_frames_per_stim,
+                    "oddball_period_stimuli": plan.period,
+                    "n_stimuli_to_show": plan.n_stimuli_to_show,
+                    "start_frame_index": global_frame_index,
+                },
+            )
+        seg_run = _present_oddball_segment(
+            window=window,
+            plan=plan,
+            stream=stream,
+            starting_frame_index=global_frame_index,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+            photodiode=photodiode,
+            photodiode_params=photodiode_params,
+            abort_check=abort_check,
+            rng=rng,
+            position_provider=position_provider,
+            distractor=distractor,
+            go_nogo=go_nogo,
+            onsets=onsets,
+            flip_log=flip_log,
+        )
+        global_frame_index = seg_run.end_frame_index
+        frames_presented += seg_run.frames_presented
+        stimuli_shown += seg_run.stimuli_shown
+        oddballs_shown += seg_run.oddballs_shown
+        if multi:
+            event_sink.log(
+                "sweep_segment_end",
+                {
+                    "segment_index": i,
+                    "n_stimuli_shown": seg_run.stimuli_shown,
+                    "n_oddballs_shown": seg_run.oddballs_shown,
+                    "n_frames_presented": seg_run.frames_presented,
+                    "end_frame_index": global_frame_index,
+                    "aborted": seg_run.aborted,
+                },
+            )
+        if seg_run.aborted:
+            aborted = True
+            break
+
+    # ONE trailing clear + ONE flip-log flush for the WHOLE trial (invariants #1, #2): the last onset's
+    # code has no following frame to clear it, and the per-frame flips were buffered across all segments.
+    trigger.clear_code()
+    event_sink.log_many(flip_log)
+
+    event_sink.log(
+        "base_oddball_sequence_end",
+        {
+            "n_stimuli_shown": stimuli_shown,
+            "n_oddballs_shown": oddballs_shown,
+            "n_frames_presented": frames_presented,
+            "aborted": aborted,
+        },
+    )
+
+    return BaseOddballSequenceResult(
+        requested_base_freq_hz=first_seg.base_freq_hz,
+        achieved_base_freq_hz=first_plan.achieved_base_hz,
+        requested_oddball_freq_hz=first_oddball.oddball_freq_hz,
+        achieved_oddball_freq_hz=first_plan.achieved_oddball_hz,
+        frames_per_stimulus=first_plan.n_frames_per_stim,
+        oddball_period_stimuli=first_plan.period,
+        n_stimuli_shown=stimuli_shown,
+        n_oddballs_shown=oddballs_shown,
+        n_frames_presented=frames_presented,
+        aborted=aborted,
+        onsets=onsets,
+        waveform=stream.modulation.waveform.value if stream.modulation is not None else None,
+        n_fade_in_frames=n_fade_in_frames,
+        n_fade_out_frames=n_fade_out_frames,
+    )
+
+
 def run_base_oddball_sequence(
     *,
     window: "psychopy.visual.Window",
@@ -938,10 +1136,10 @@ def run_base_oddball_sequence(
         raise ValueError("run_base_oddball_sequence requires at least one oddball stimulus")
     photodiode_params = photodiode_params or PhotodiodeParams()
 
-    # One central stream + one segment == today's single-frequency trial. The segments x streams
-    # engine (Phase 2) lives in _plan_oddball_segment / _present_oddball_segment; this function is
-    # now the thin adapter that packs its arguments into that one-segment/one-stream case, so its
-    # output stays byte-for-byte identical (guarded by the golden regression tests).
+    # One central stream + one segment == today's single-frequency trial. This function is now the
+    # thin adapter that packs its arguments into the one-segment/one-stream case of the segments x
+    # streams engine (_run_oddball_segments), so its output stays byte-for-byte identical (guarded by
+    # the golden regression tests). A frequency sweep calls _run_oddball_segments with >1 segment.
     stream = Stream(
         base_stimuli=base_stimuli,
         oddball_stimuli=oddball_stimuli,
@@ -955,81 +1153,22 @@ def run_base_oddball_sequence(
         duration_seconds=base_params.trial_duration_seconds,
         oddball=oddball_params,
     )
-    plan = _plan_oddball_segment(
-        segment,
-        refresh_rate_hz=refresh_rate_hz,
-        starting_frame_index=starting_frame_index,
-        n_fade_in_frames=n_fade_in_frames,
-        n_fade_out_frames=n_fade_out_frames,
-        modulation=modulation,
-    )
-
-    event_sink.log(
-        "base_oddball_sequence_start",
-        {
-            "requested_base_freq_hz": base_params.base_freq_hz,
-            "achieved_base_freq_hz": plan.achieved_base_hz,
-            "requested_oddball_freq_hz": oddball_params.oddball_freq_hz,
-            "achieved_oddball_freq_hz": plan.achieved_oddball_hz,
-            "oddball_pattern": oddball_params.pattern,  # None unless a pattern overrides the frequency
-            "frames_per_stimulus": plan.n_frames_per_stim,
-            "oddball_period_stimuli": plan.period,
-            "n_stimuli_to_show": plan.n_stimuli_to_show,
-        },
-    )
-
-    onsets: list[OnsetRecord] = []
-    flip_log: list[tuple[str, dict, float]] = []
-    seg_run = _present_oddball_segment(
+    return _run_oddball_segments(
         window=window,
-        plan=plan,
+        segments=[segment],
         stream=stream,
-        starting_frame_index=starting_frame_index,
+        refresh_rate_hz=refresh_rate_hz,
         trigger=trigger,
         clock=clock,
         event_sink=event_sink,
         photodiode=photodiode,
         photodiode_params=photodiode_params,
         abort_check=abort_check,
+        starting_frame_index=starting_frame_index,
+        n_fade_in_frames=n_fade_in_frames,
+        n_fade_out_frames=n_fade_out_frames,
         rng=rng,
         position_provider=position_provider,
         distractor=distractor,
         go_nogo=go_nogo,
-        onsets=onsets,
-        flip_log=flip_log,
-    )
-
-    # The very last onset's code isn't followed by another frame to clear it (the per-frame
-    # clear_code lives inside _present_stimulus), so reset the port once here -- otherwise it
-    # would stay latched at the final code through the post-stimulus interval and beyond.
-    trigger.clear_code()
-    # Flush the per-frame flip records buffered during the timed loop -- off the hot path now
-    # (see _present_stimulus + EventSink.log_many).
-    event_sink.log_many(flip_log)
-
-    event_sink.log(
-        "base_oddball_sequence_end",
-        {
-            "n_stimuli_shown": seg_run.stimuli_shown,
-            "n_oddballs_shown": seg_run.oddballs_shown,
-            "n_frames_presented": seg_run.frames_presented,
-            "aborted": seg_run.aborted,
-        },
-    )
-
-    return BaseOddballSequenceResult(
-        requested_base_freq_hz=base_params.base_freq_hz,
-        achieved_base_freq_hz=plan.achieved_base_hz,
-        requested_oddball_freq_hz=oddball_params.oddball_freq_hz,
-        achieved_oddball_freq_hz=plan.achieved_oddball_hz,
-        frames_per_stimulus=plan.n_frames_per_stim,
-        oddball_period_stimuli=plan.period,
-        n_stimuli_shown=seg_run.stimuli_shown,
-        n_oddballs_shown=seg_run.oddballs_shown,
-        n_frames_presented=seg_run.frames_presented,
-        aborted=seg_run.aborted,
-        onsets=onsets,
-        waveform=modulation.waveform.value if modulation is not None else None,
-        n_fade_in_frames=n_fade_in_frames,
-        n_fade_out_frames=n_fade_out_frames,
     )

@@ -17,7 +17,12 @@ from xpman.tasks.fpvs.modulation import ModulationParams, Waveform
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
     OddballParams,
+    Segment,
+    Stream,
     _PoolSequencer,
+    _plan_oddball_segment,
+    _run_oddball_segments,
+    _TrialEnvelope,
     achieved_frequency_hz,
     achieved_oddball_frequency_hz,
     derived_oddball_freq_hz,
@@ -1445,3 +1450,130 @@ def test_golden_oddball_event_log_order_and_types(mock_window, event_sink, trigg
         "base_oddball_sequence_end",
     ]
     assert event_types == expected
+
+
+# ---------------------------------------------------------------------------
+# Multi-segment engine (Phase 2 Step 3): the segment loop that a frequency sweep
+# will use. The single-segment path is already pinned byte-for-byte by the golden
+# net above; these exercise the >1-segment behaviour it enables.
+# ---------------------------------------------------------------------------
+
+
+def test_run_oddball_segments_two_segments_continuous_frames_one_flush(
+    mock_window, event_sink, trigger, clock
+):
+    stream = Stream(
+        base_stimuli=_identified_stims(["b0", "b1", "b2"]),
+        oddball_stimuli=_identified_stims(["o0", "o1"]),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        Segment(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+    ]  # 6 Hz -> 10 f/stim x 3 stim = 30 frames; 12 Hz -> 5 f/stim x 6 stim = 30 frames
+    result = _run_oddball_segments(
+        window=mock_window,
+        segments=segments,
+        stream=stream,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        position_provider=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    assert result.n_stimuli_shown == 9  # 3 + 6
+    assert result.n_frames_presented == 60
+
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    types = [r["event_type"] for r in rows]
+    # ONE trial-level wrapper, at the very ends; per-segment provenance for BOTH segments.
+    assert types[0] == "base_oddball_sequence_start"
+    assert types[-1] == "base_oddball_sequence_end"
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("base_oddball_sequence_end") == 1
+    assert types.count("sweep_segment_start") == 2
+    assert types.count("sweep_segment_end") == 2
+    # global_frame_index is CONTINUOUS across the segment boundary (0..59, not reset per segment),
+    # and every per-frame flip is one trailing batch (buffered across segments, flushed once).
+    flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
+    assert flip_frames == list(range(60))
+
+
+def test_run_oddball_segments_single_segment_emits_no_sweep_events(
+    mock_window, event_sink, trigger, clock
+):
+    stream = Stream(
+        base_stimuli=_identified_stims(["b0", "b1"]),
+        oddball_stimuli=_identified_stims(["o0"]),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    _run_oddball_segments(
+        window=mock_window,
+        segments=[Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2))],
+        stream=stream,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        position_provider=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        types = [r["event_type"] for r in csv.DictReader(f)]
+    # A single segment is the default path: no per-segment sweep provenance, just the wrapper.
+    assert "sweep_segment_start" not in types
+    assert "sweep_segment_end" not in types
+    assert types.count("base_oddball_sequence_start") == 1
+
+
+def test_plan_oddball_segment_trial_global_envelope_no_refade_at_boundary():
+    """O4: a later segment's contrast must NOT re-fade from zero at its own start -- the fade envelope
+    is one continuous function over the whole trial (segment-local table, trial-global envelope)."""
+    from xpman.tasks.fpvs.modulation import build_contrast_table, envelope_at_frame
+
+    mod = ModulationParams(waveform=Waveform.SINUSOIDAL)
+    fade_in, fade_out, total_plateau = 12, 12, 120  # two 1 s (60-frame) plateaus @ 60 Hz
+    envelope = _TrialEnvelope(
+        start_frame_index=0, fade_in_frames=fade_in, plateau_frames=total_plateau, fade_out_frames=fade_out
+    )
+    seg2 = Segment(base_freq_hz=6.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.2))
+    plan2 = _plan_oddball_segment(
+        seg2,
+        refresh_rate_hz=60.0,
+        envelope=envelope,
+        segment_fade_in_frames=0,  # not the first segment -> no fade-in of its own
+        segment_fade_out_frames=fade_out,
+        modulation=mod,
+    )
+    assert plan2.modulation_fn is not None
+    table = build_contrast_table(plan2.n_frames_per_stim, mod)
+    fic_peak = max(range(len(table)), key=lambda i: table[i])
+    # Segment 2 begins at global frame 72 (12 fade-in + 60 s-1 plateau), deep in the trial plateau.
+    g = 72
+    assert envelope_at_frame(g, fade_in, total_plateau, fade_out) == pytest.approx(1.0)  # full plateau
+    # modulation_fn = table[fic] * envelope(global); at the plateau that is the full table value...
+    assert plan2.modulation_fn(fic_peak, g) == pytest.approx(table[fic_peak])
+    # ...and NOT a re-faded ~0 (which is what a per-segment envelope origin at g=72 would give).
+    assert plan2.modulation_fn(fic_peak, g) > 0.5 * table[fic_peak]
