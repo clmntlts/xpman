@@ -580,6 +580,62 @@ a GO), **false alarms** (respond to a NO-GO or spontaneously), **correct rejecti
 NO-GO), plus hit-rate, false-alarm-rate, **d′**, and mean RT in the Run's results. The Timeline tab
 shows GO events green and NO-GO events amber. Reproducible + order-preserving like the distractor.
 
+**Frequency sweep** (`sweep`) — instead of one base/oddball frequency for the whole trial, present a
+sequence of constant-frequency **steps** back-to-back. Each step runs at its own base rate and
+oddball placement for its own duration; the frame count stays continuous across steps and the
+contrast envelope fades only at the trial's very start/end (not per step). Analysis is **per step**:
+the event log brackets each with `sweep_segment_start`/`sweep_segment_end` (their frame ranges) and
+the **Timeline** tab draws a sky-blue divider at each step, tagged with its frequency.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | checkbox | off | Run the main stimulation as a stepped sweep (supersedes the single `base`/`oddball` + `trial_duration`). |
+| `steps` | list (add/remove) | empty | Ordered steps, **≥ 2** when enabled. Each step = its own `base_freq_hz`, `duration_seconds`, and an `oddball` (frequency or B/O pattern). |
+
+"Check Triggers…" warns when a step is **too short to resolve its oddball** (the FFT bin width is
+`1/duration`; you want a few bins below the oddball frequency — realistically ≥ ~4 s for a 1.2 Hz
+oddball). A *triggered* distractor/go-no-go overlay can't run during a sweep (v1) — clear its trigger
+code or disable the sweep.
+
+**Per-trial baseline** (`baseline`) — an optional **base-only (no-oddball)** reference segment: the
+same base stimulation as the main sequence but with the oddballs removed, so any energy at the
+oddball frequency in it is the pure measurement floor. It runs at the Condition's own `base_freq_hz`
++ `modulation` + base pool, framed by its own start/stop triggers and logged `baseline_start`/`_end`
+(with its phase). On the Timeline it's labelled **"Baseline (before/after)"**.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | checkbox | off | Add a base-only reference segment to each trial. |
+| `position` | dropdown | `before` | Where it sits relative to the oddball stream: `before`, `after`, or `both`. |
+| `duration_seconds` | number | 20.0 | Length of each baseline segment (match the main sequence for a comparable measurement). |
+| `blank_seconds` | number | 1.0 | Fixation-only gap after each baseline segment. |
+| `start_trigger_code` / `stop_trigger_code` | integer, optional | not set | EEG markers framing each baseline segment. |
+
+⚠️ A `before` baseline is measured on an **un-adapted** visual system, an `after` baseline
+**post-adaptation** — they are not interchangeable. Keep `position` consistent within a study.
+
+**Dual bilateral streams** (`second_stream` + `stream_position_pix`) — present **two** image streams
+at once (e.g. left and right of the shared central fixation), each frequency-tagged at its own base +
+oddball rate. Both are drawn every frame at their own position; the two tagged responses are recovered
+by FFT at their distinct frequencies. Each stream's onsets are logged separately (with a `stream`
+index), and the photodiode tracks the **first** stream.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `stream_position_pix` | x,y (px) | (0,0) | The **main** stream's position; only applies when a second stream is on (e.g. set to (−200, 0)). |
+| `second_stream.enabled` | checkbox | off | Turn on the second bilateral stream. |
+| `second_stream.base_freq_hz` | number | 7.0 | Its base frequency — must differ **non-harmonically** from the main stream (e.g. 6 & 7 Hz, not 3 & 6). |
+| `second_stream.oddball` | group | 1.2 Hz | Its oddball placement (frequency or B/O pattern). |
+| `second_stream.position_pix` | x,y (px) | (200,0) | Its screen position (must differ from the main stream's). |
+| `second_stream.base_selector` / `oddball_selector` | group | whole set | Its own image pools. |
+| `second_stream.modulation` | group | sinusoidal | Its own contrast modulation. |
+
+Saving is **blocked** if the two base frequencies are equal or harmonically related (their responses
+couldn't be separated), if the two positions are identical, or if a sweep is also enabled (v1).
+"Check Triggers…" additionally warns about **intermodulation** collisions (`|n·f1 ± m·f2|` landing on
+a tagged frequency). v1 sends **no per-stream stimulus EEG triggers** (the frequency tags are the
+signal); pick distinct, non-harmonic frequencies with a clear spectral gap.
+
 ## 7. Troubleshooting
 
 ### 7.1 The app won't start / `python -m xpman.gui.app` fails immediately
@@ -710,9 +766,10 @@ This requires writing Python, unlike everything else in this tutorial.
 - An Instance runs **one** experiment per launch (chosen in the Launch dialog); a Program's
   experiments are alternative protocols, not one big sequence.
 - The FPVS core base+oddball paradigm is implemented, along with contrast modulation,
-  familiarization, position jitter, the fixation distractor task, the spatial go/no-go task, and
-  flexible base/oddball ordering patterns (BBBO…). Still to come: frequency sweep, per-trial
-  baseline, and dual bilateral streams (see `TODO.md`).
+  familiarization, position jitter, the fixation distractor task, the spatial go/no-go task,
+  flexible base/oddball ordering patterns (BBBO…), the stepped **frequency sweep**, the per-trial
+  **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions (size
+  modulation, intra-category oddball, etc.) are listed in `TODO.md`.
 - Real hardware timing verification against the lab's EEG rig hasn't been run yet — see
   `docs/verification_protocol.md`.
 

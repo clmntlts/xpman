@@ -170,6 +170,24 @@ these into the same photodiode + logic-analyzer session:
    image lands at varying positions within the configured region while the **fixation marker stays
    centered** and the photodiode patch (screen corner) is unaffected. Each onset logs its `pos`, and
    positions are reproducible for the same (Instance, Subject).
+4. **Frequency sweep (`sweep`).** With a multi-step sweep, confirm on the photodiode that each step
+   runs at its own base rate and that the frame count is **continuous across step boundaries** (no
+   dropped/duplicated frame at a boundary). Check the contrast envelope fades only at the trial's
+   very start/end (no re-fade at each step). Analyse **per segment** using the
+   `sweep_segment_start/end` frame ranges; discard the first ~0.5–1 s of each segment (the step
+   transient). Verify each step is long enough to resolve its oddball (`1/duration` FFT bin).
+5. **Per-trial baseline (`baseline`).** Confirm the base-only segment shows the base stimulation with
+   **no oddball onsets**, framed by its `baseline_start/end` markers (+ start/stop triggers), and that
+   its oddball-frequency power is at the noise floor. Keep `position` (before/after) consistent — an
+   after-baseline is post-adaptation.
+6. **Dual bilateral streams (`second_stream`).** The higher-risk draw-budget case: **2 ImageStims +
+   fixation + photodiode + overlays per frame** — verify **no dropped frames** at the target refresh.
+   Confirm each stream renders at its own position and frequency, the photodiode (tracking stream 0)
+   still marks stream-0 onsets cleanly, and each stream's tagged response appears at its own frequency
+   in the FFT with the intermodulation terms (`|n·f1 ± m·f2|`) clear of the tags. v1 sends no
+   per-stream stimulus triggers; if that changes, verify the reserved-code combiner on the analyzer
+   (coincident onsets → one reserved code, never two overlapping pulses within the ~8 ms BioSemi
+   pulse).
 
 ## Everything else stays in normal CI
 
