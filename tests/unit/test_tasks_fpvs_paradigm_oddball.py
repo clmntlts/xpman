@@ -21,6 +21,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     Stream,
     _PoolSequencer,
     _plan_oddball_segment,
+    _run_dual_stream,
     _run_oddball_segments,
     _TrialEnvelope,
     achieved_frequency_hz,
@@ -1577,3 +1578,112 @@ def test_plan_oddball_segment_trial_global_envelope_no_refade_at_boundary():
     assert plan2.modulation_fn(fic_peak, g) == pytest.approx(table[fic_peak])
     # ...and NOT a re-faded ~0 (which is what a per-segment envelope origin at g=72 would give).
     assert plan2.modulation_fn(fic_peak, g) > 0.5 * table[fic_peak]
+
+
+# ---------------------------------------------------------------------------
+# Dual bilateral streams (Phase 2): the frame-driven two-stream engine. Separate
+# code path from the single-stream engine (which the golden net above pins).
+# ---------------------------------------------------------------------------
+
+
+_RESERVED = {(False, False): 200, (False, True): 201, (True, False): 202, (True, True): 203}
+
+
+def _dual_streams():
+    left = Stream(
+        base_stimuli=_identified_stims(["L0", "L1"]),
+        oddball_stimuli=_identified_stims(["Lo0"]),
+        position_pix=(-100.0, 0.0),
+        base_trigger_code=1,
+        oddball_trigger_code=2,
+    )
+    right = Stream(
+        base_stimuli=_identified_stims(["R0", "R1"]),
+        oddball_stimuli=_identified_stims(["Ro0"]),
+        position_pix=(100.0, 0.0),
+        base_trigger_code=3,
+        oddball_trigger_code=4,
+    )
+    # 6 Hz (10 f/stim) vs 12 Hz (5 f/stim) @ 60 Hz, 0.5 s -> 30 frames. Stream 0 onsets at 0/10/20
+    # (all base -- only 3 stimuli, its oddball would be position 5); stream 1 at 0/5/10/15/20/25, its
+    # position 5 (frame 20) is an oddball. So frames 0,10 = both base; frame 20 = base+oddball.
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        Segment(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.4)),
+    ]
+    return [left, right], segments
+
+
+def test_dual_stream_combines_coincident_triggers_and_flips_once_per_frame(event_sink, trigger, clock):
+    window = _callonflip_recording_window(trigger)
+    streams, segments = _dual_streams()
+    _run_dual_stream(
+        window=window,
+        streams=streams,
+        stream_segments=segments,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        tracked_stream_index=0,
+        reserved_codes=_RESERVED,
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    codes = [op[1][0] for op in window.callonflip_ops if op[0] == "set_code"]
+    assert codes.count(200) == 2  # coincident base+base at frames 0 and 10 -> reserved (F,F)
+    assert codes.count(201) == 1  # coincident base(s0)+oddball(s1) at frame 20 -> reserved (F,T)
+    assert codes.count(3) == 3  # stream-1-only base onsets (frames 5/15/25) -> its own code
+    # The individual stream-0 codes and the stream-1 oddball code are NEVER sent alone: those onsets
+    # always coincide, so the combiner replaces them with a reserved code (this is the whole point).
+    assert 1 not in codes and 2 not in codes and 4 not in codes
+    assert window.flip.call_count == 30  # one flip per frame
+
+
+def test_dual_stream_logs_each_stream_onset_with_position(mock_window, event_sink, trigger, clock):
+    streams, segments = _dual_streams()
+    _run_dual_stream(
+        window=mock_window,
+        streams=streams,
+        stream_segments=segments,
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        photodiode=None,
+        photodiode_params=PhotodiodeParams(),
+        tracked_stream_index=0,
+        reserved_codes=_RESERVED,
+        abort_check=lambda: False,
+        starting_frame_index=0,
+        n_fade_in_frames=0,
+        n_fade_out_frames=0,
+        rng=None,
+        distractor=None,
+        go_nogo=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    types = [r["event_type"] for r in rows]
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("base_oddball_sequence_end") == 1
+    onset_rows = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    payloads = [json.loads(r["payload_json"]) for r in onset_rows]
+    streams_seen = [p["stream"] for p in payloads]
+    assert streams_seen.count(0) == 3  # stream 0: 3 onsets (all base)
+    assert streams_seen.count(1) == 6  # stream 1: 6 onsets (5 base + 1 oddball)
+    assert sum(1 for p in payloads if p["stream"] == 1 and p["is_oddball"]) == 1
+    # Each stream's onsets are logged at its own fixed position.
+    assert all(p["pos"] == [-100.0, 0.0] for p in payloads if p["stream"] == 0)
+    assert all(p["pos"] == [100.0, 0.0] for p in payloads if p["stream"] == 1)
+    # Frame index is continuous across the 30-frame segment (one flip per frame, buffered batch).
+    flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
+    assert flip_frames == list(range(30))
