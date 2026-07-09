@@ -1213,6 +1213,30 @@ def test_check_triggers_no_flat_contrast_warning_for_waveform_none():
     assert not any("amplitude" in w for w in task.check_triggers(params.model_dump()))
 
 
+def test_check_triggers_surfaces_pattern_derived_oddball_frequency():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.base.base_freq_hz = 6.0
+    params.oddball.pattern = "BBBO"  # -> 1.5 Hz, overriding oddball_freq_hz
+    warnings = task.check_triggers(params.model_dump())
+    assert any("1.5 Hz" in w and "pattern" in w for w in warnings)
+
+
+def test_check_triggers_warns_on_unevenly_spaced_oddball_pattern():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.oddball.pattern = "BBOBO"  # O at positions 3 and 5 -> uneven gaps -> smearing
+    warnings = task.check_triggers(params.model_dump())
+    assert any("UNEVENLY" in w or "smeared" in w for w in warnings)
+
+
+def test_check_triggers_no_uneven_warning_for_single_evenly_spaced_oddball():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.oddball.pattern = "BBBO"  # one O per cycle -> clean
+    assert not any("UNEVENLY" in w for w in task.check_triggers(params.model_dump()))
+
+
 def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
     task = FPVSTask()
     params = _clean_condition()

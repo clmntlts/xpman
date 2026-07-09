@@ -180,6 +180,10 @@ class FPVSConditionParams(BaseModel):
         # makes *every* stimulus (including the first) an oddball -- degenerate, and
         # contradicts run_base_oddball_sequence's own documented "position 1 is never an
         # oddball" behavior.
+        # A pattern overrides oddball_freq_hz (the field is ignored), and a pattern of length >= 2
+        # always yields an oddball rate < base -- so the frequency constraint doesn't apply then.
+        if self.oddball.pattern is not None:
+            return self
         if self.oddball.oddball_freq_hz >= self.base.base_freq_hz:
             raise ValueError(
                 f"oddball.oddball_freq_hz ({self.oddball.oddball_freq_hz!r}) must be strictly "
