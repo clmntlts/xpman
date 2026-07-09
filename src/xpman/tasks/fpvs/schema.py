@@ -194,6 +194,31 @@ class FPVSConditionParams(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_behavioural_tasks_dont_share_keys(self) -> "FPVSConditionParams":
+        # All key presses come from ONE keyboard and are routed to a task by key name (see
+        # task.py run_trial). If two *enabled* behavioural tasks share a key, the same press is
+        # scored by both -- an unrecoverable ambiguity, so reject it at save/freeze time rather than
+        # silently double-counting. (A single enabled task, or disabled ones, are always fine.)
+        enabled: list[tuple[str, set[str]]] = []
+        if self.response.enabled:
+            enabled.append(("response", set(self.response.keys)))
+        if self.distractor.enabled:
+            enabled.append(("distractor", set(self.distractor.keys)))
+        if self.go_nogo.enabled:
+            enabled.append(("go_nogo", set(self.go_nogo.keys)))
+        for i in range(len(enabled)):
+            for j in range(i + 1, len(enabled)):
+                (name_a, keys_a), (name_b, keys_b) = enabled[i], enabled[j]
+                shared = keys_a & keys_b
+                if shared:
+                    raise ValueError(
+                        f"the enabled '{name_a}' and '{name_b}' tasks share key(s) {sorted(shared)} "
+                        "-- one press would be scored by both. Give each enabled behavioural task "
+                        "its own key(s), or enable only one."
+                    )
+        return self
+
 
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""

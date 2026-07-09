@@ -957,16 +957,8 @@ class FPVSTask(TaskModule):
                     "could fall in two events' windows, making hit attribution ambiguous. Keep the "
                     "window shorter than the minimum gap between events."
                 )
-            # Same key scores two tasks: the oddball-response collector and the distractor collector
-            # both consume it, so a press is attributed to whichever collects first.
-            if params.response.enabled:
-                shared = set(distractor.keys) & set(params.response.keys)
-                if shared:
-                    warnings.append(
-                        f"distractor and response tasks share key(s) {sorted(shared)} -- the same "
-                        "press would be scored by both. Give the distractor its own key(s), or "
-                        "disable the oddball-response task when using the distractor."
-                    )
+            # (Shared keys across enabled behavioural tasks are a HARD error at the Condition level --
+            # see FPVSConditionParams._check_behavioural_tasks_dont_share_keys -- so no advisory here.)
             # Guard bands consume the whole plateau: no event can be placed.
             if 2 * distractor.guard_seconds >= params.base.trial_duration_seconds:
                 warnings.append(
@@ -996,11 +988,7 @@ class FPVSTask(TaskModule):
                     f"go_nogo guard bands (2 x {go_nogo.guard_seconds:g}s) span the whole trial "
                     f"({params.base.trial_duration_seconds:g}s) -- no go/no-go event can be scheduled."
                 )
-            if params.response.enabled and set(go_nogo.keys) & set(params.response.keys):
-                warnings.append(
-                    f"go_nogo and response tasks share key(s) {sorted(set(go_nogo.keys) & set(params.response.keys))} "
-                    "-- the same press would be scored by both. Give the go/no-go task its own key(s)."
-                )
+            # (Shared keys are a hard error -- see the Condition-level validator above.)
             if distractor.enabled:
                 warnings.append(
                     "both the central distractor and the spatial go/no-go task are enabled -- run one "

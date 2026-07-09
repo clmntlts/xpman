@@ -657,6 +657,7 @@ def test_run_trial_scores_responses_and_includes_in_outcome(mock_window, stim_ro
 
     params = FPVSConditionParams()
     params.base.trial_duration_seconds = 1.0
+    params.response.enabled = True  # the explicit oddball-response task is off by default now
 
     fake_keypress = MagicMock()
     fake_keypress.name = "space"
@@ -1237,17 +1238,6 @@ def test_check_triggers_no_uneven_warning_for_single_evenly_spaced_oddball():
     assert not any("UNEVENLY" in w for w in task.check_triggers(params.model_dump()))
 
 
-def test_check_triggers_warns_when_go_nogo_shares_response_key():
-    task = FPVSTask()
-    params = _clean_condition()
-    params.response.enabled = True
-    params.response.keys = ["space"]
-    params.go_nogo.enabled = True
-    params.go_nogo.response_window_seconds = 0.5
-    params.go_nogo.keys = ["space"]
-    assert any("go_nogo and response tasks share" in w for w in task.check_triggers(params.model_dump()))
-
-
 def test_check_triggers_warns_when_both_distractor_and_go_nogo_enabled():
     task = FPVSTask()
     params = _clean_condition()
@@ -1280,17 +1270,6 @@ def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
     params.distractor.min_interval_seconds = 1.0
     params.distractor.response_window_seconds = 1.5  # wider than the min gap -> ambiguous
     assert any("response_window_seconds" in w for w in task.check_triggers(params.model_dump()))
-
-
-def test_check_triggers_warns_when_distractor_shares_response_key():
-    task = FPVSTask()
-    params = _clean_condition()
-    params.response.enabled = True
-    params.response.keys = ["space"]
-    params.distractor.enabled = True
-    params.distractor.response_window_seconds = 0.5  # keep the window advisory quiet
-    params.distractor.keys = ["space"]  # collides with the oddball-response key
-    assert any("share key" in w for w in task.check_triggers(params.model_dump()))
 
 
 def test_check_triggers_warns_when_distractor_guard_spans_whole_trial():
@@ -1513,8 +1492,8 @@ def test_run_trial_distractor_responses_are_collected_even_with_response_task_on
 ):
     """Regression: two Keyboard instances share PsychoPy's device buffer, so the oddball-response
     collector's getKeys(clear=True) used to drain the distractor presses before they were read --
-    every distractor response was silently lost. With the oddball-response task ALSO enabled (the
-    default), a key press must still be scored as a distractor hit."""
+    every distractor response was silently lost. With the oddball-response task ALSO enabled (on a
+    DIFFERENT key -- shared keys are now a hard error), a distractor press must still be a hit."""
     from types import SimpleNamespace
 
     task = FPVSTask()
@@ -1527,6 +1506,7 @@ def test_run_trial_distractor_responses_are_collected_even_with_response_task_on
     )
     params.base.trial_duration_seconds = 5.0
     params.response.enabled = True  # the collector that used to drain the buffer first
+    params.response.keys = ["a"]  # distinct from the distractor key (shared keys now rejected)
     params.distractor.enabled = True
     params.distractor.min_interval_seconds = 1.0
     params.distractor.max_interval_seconds = 1.0

@@ -168,6 +168,51 @@ def test_condition_params_have_go_nogo_disabled_by_default():
     assert params.go_nogo.enabled is False
 
 
+def test_response_task_is_off_by_default_and_oddball_referenced():
+    """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
+    its RT reference is the oddball onset (not the most-recent stimulus)."""
+    from xpman.tasks.fpvs.response import RTReference
+
+    r = FPVSConditionParams().response
+    assert r.enabled is False
+    assert r.rt_reference is RTReference.MOST_RECENT_ODDBALL_ONSET
+
+
+def test_two_enabled_behavioural_tasks_sharing_a_key_is_rejected():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+    from xpman.tasks.fpvs.response import ResponseKeyParams
+
+    # response + distractor both on "space" -> a press would be scored by both -> rejected.
+    with pytest.raises(ValidationError, match="share key"):
+        FPVSConditionParams(
+            response=ResponseKeyParams(enabled=True, keys=["space"]),
+            distractor=DistractorParams(enabled=True, keys=["space"]),
+        )
+    # distractor + go_nogo both on "space" -> rejected.
+    with pytest.raises(ValidationError, match="share key"):
+        FPVSConditionParams(
+            distractor=DistractorParams(enabled=True, keys=["space"]),
+            go_nogo=GoNoGoParams(enabled=True, keys=["space"]),
+        )
+
+
+def test_distinct_keys_or_disabled_tasks_are_allowed():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.response import ResponseKeyParams
+
+    # Distinct keys: fine.
+    FPVSConditionParams(
+        response=ResponseKeyParams(enabled=True, keys=["a"]),
+        distractor=DistractorParams(enabled=True, keys=["space"]),
+    )
+    # Same key but one task disabled: fine (only one collects).
+    FPVSConditionParams(
+        response=ResponseKeyParams(enabled=False, keys=["space"]),
+        distractor=DistractorParams(enabled=True, keys=["space"]),
+    )
+
+
 def test_v4_condition_without_go_nogo_or_pattern_validates_defaults():
     """A frozen v4 Condition dict (no go_nogo, no oddball.pattern) must validate under v5 with the
     new blocks defaulting to off/None -- old Instances keep running unchanged."""

@@ -509,18 +509,27 @@ hardware timing verification (e.g. taping a photodiode sensor to it):
 (flips every N screen frames regardless of stimulus), `oddball_onset_only` (flips only on
 oddball images — useful for marking just the oddball events on an EEG channel).
 
-**Response collection** (`response`)
+**Response collection** (`response`) — the *explicit* oddball-response task ("press when you see the
+oddball"). **Off by default**, and for most FPVS work you should leave it off: standard FPVS is a
+**passive** paradigm — asking for a response to every oddball at these rates is unreliable, and it
+pulls attention onto the tagged dimension, contaminating the signal. Use an **orthogonal** fixation
+task (`distractor` or `go_nogo`) as your behavioural measure instead. Enable this only for a
+deliberately *active/behavioural* FPVS variant.
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
-| `enabled` | checkbox | on | — | Collect keyboard responses at all. |
+| `enabled` | checkbox | **off** | — | Collect keyboard responses to oddballs. |
 | `keys` | comma-separated list | `space` | — | Which key(s) count as a response, e.g. `space, left`. |
-| `rt_reference` | dropdown | `most_recent_stimulus_onset` | see below | What a response's reaction time is measured against. |
+| `rt_reference` | dropdown | `most_recent_oddball_onset` | see below | What a response's reaction time is measured against. |
 | `max_rt_seconds` | number, optional | not set | > 0 if set | Responses slower than this (relative to their reference onset) are marked invalid. Unset = no limit. |
 
-`rt_reference` options: `most_recent_stimulus_onset` (whichever image — base or oddball — was
-shown last), `most_recent_oddball_onset` (only counts from oddball images), `trial_start`
-(from the very start of the trial).
+`rt_reference` options: `most_recent_oddball_onset` (the default — RT from the oddball being
+responded to), `most_recent_stimulus_onset` (whichever image, base or oddball, was shown last — near
+meaningless at a fast base rate), `trial_start` (from the very start of the trial).
+
+> **Note:** all behavioural tasks (`response`, `distractor`, `go_nogo`) share one keyboard, routed
+> by key. Two *enabled* tasks that share a key are **rejected** at save/freeze time (a press can't be
+> attributed to both) — give each enabled task its own key(s), or enable only one.
 
 **Distractor task** (`distractor`) — an optional *attention-control* task: at pseudo-random
 moments during the stimulation, a brief change appears **at the fixation point** and the subject
