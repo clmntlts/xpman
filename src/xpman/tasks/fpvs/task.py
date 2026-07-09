@@ -30,7 +30,9 @@ from xpman.tasks.fpvs.fixation import build_fixation_stimulus
 from xpman.tasks.fpvs.image_set import ImageEntry, filter_entries, scan_directory
 from xpman.tasks.fpvs.paradigm_oddball import (
     BaseSequenceParams,
+    Segment,
     Stream,
+    _run_dual_stream,
     _run_oddball_segments,
     derived_oddball_freq_hz,
     frames_per_cycle,
@@ -39,6 +41,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
+from xpman.tasks.fpvs.streams import stream_separability_warnings
 from xpman.tasks.fpvs.sweep import min_recommended_step_seconds, plan_sweep_segments
 from xpman.tasks.fpvs.distractor import (
     DistractorController,
@@ -640,7 +643,82 @@ class FPVSTask(TaskModule):
                 position_provider,
             )
 
-        if params.sweep.enabled:
+        if params.second_stream.enabled:
+            # Dual bilateral streams: two simultaneous frame-driven streams at distinct positions +
+            # non-harmonic frequencies (validated on the Condition). Build the 2nd stream's own image
+            # pools; both share the central fixation, trial duration, and fades. v1 sends no per-stream
+            # stimulus triggers (analysis is frequency-domain), so reserved_codes stays None.
+            s2 = params.second_stream
+            s2_base_entries = _select_pool(self._image_entries, s2.base_selector)
+            s2_oddball_entries = _select_pool(self._image_entries, s2.oddball_selector)
+            if not s2_base_entries:
+                raise ValueError(
+                    f"trial {trial_index}: second_stream.base_selector {s2.base_selector!r} matched no images"
+                )
+            if not s2_oddball_entries:
+                raise ValueError(
+                    f"trial {trial_index}: second_stream.oddball_selector {s2.oddball_selector!r} matched no images"
+                )
+            s2_base_order = ctx.rng.permutation(len(s2_base_entries))
+            s2_oddball_order = ctx.rng.permutation(len(s2_oddball_entries))
+            s2_base_stims = [
+                _ImageWithFixation(
+                    _get_image_stim(self._image_stim_cache, ctx.window, s2_base_entries[i]),
+                    fixation_stim,
+                    s2_base_entries[i].path.name,
+                )
+                for i in s2_base_order
+            ]
+            s2_oddball_stims = [
+                _ImageWithFixation(
+                    _get_image_stim(self._image_stim_cache, ctx.window, s2_oddball_entries[i]),
+                    fixation_stim,
+                    s2_oddball_entries[i].path.name,
+                )
+                for i in s2_oddball_order
+            ]
+            _duration = params.base.trial_duration_seconds
+            sequence_result = _run_dual_stream(
+                window=ctx.window,
+                streams=[
+                    Stream(
+                        base_stimuli=base_stims,
+                        oddball_stimuli=oddball_stims,
+                        position_pix=tuple(params.stream_position_pix),
+                        base_trigger_code=None,
+                        oddball_trigger_code=None,
+                        modulation=params.modulation,
+                    ),
+                    Stream(
+                        base_stimuli=s2_base_stims,
+                        oddball_stimuli=s2_oddball_stims,
+                        position_pix=tuple(s2.position_pix),
+                        base_trigger_code=None,
+                        oddball_trigger_code=None,
+                        modulation=s2.modulation,
+                    ),
+                ],
+                stream_segments=[
+                    Segment(base_freq_hz=params.base.base_freq_hz, duration_seconds=_duration, oddball=params.oddball),
+                    Segment(base_freq_hz=s2.base_freq_hz, duration_seconds=_duration, oddball=s2.oddball),
+                ],
+                refresh_rate_hz=self._refresh_rate_hz,
+                trigger=ctx.trigger,
+                clock=ctx.clock,
+                event_sink=ctx.event_sink,
+                photodiode=photodiode,
+                photodiode_params=params.photodiode,
+                tracked_stream_index=0,
+                reserved_codes=None,
+                abort_check=ctx.abort_check,
+                starting_frame_index=0,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+                rng=ctx.rng,
+                distractor=distractor_controller,
+                go_nogo=go_nogo_controller,
+            )
+        elif params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
             # of one central stream (the segments x streams engine). The base/oddball trigger codes +
             # contrast modulation come from the Condition (all steps share them); each step supplies
@@ -1162,5 +1240,26 @@ class FPVSTask(TaskModule):
                         f"needed to resolve its {odd_hz:g} Hz oddball (FFT bin = 1/duration). Its oddball "
                         "response may be too smeared to measure; lengthen the step."
                     )
+
+        if params.second_stream.enabled:
+            s2 = params.second_stream
+            warnings.append(
+                f"dual bilateral streams: main {params.base.base_freq_hz:g} Hz at "
+                f"{tuple(params.stream_position_pix)} px, second {s2.base_freq_hz:g} Hz at "
+                f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
+                "photodiode tracks the MAIN stream only, and v1 sends no per-stream stimulus triggers."
+            )
+            odd1 = (
+                derived_oddball_freq_hz(params.base.base_freq_hz, params.oddball.pattern)
+                if params.oddball.pattern is not None
+                else params.oddball.oddball_freq_hz
+            )
+            odd2 = (
+                derived_oddball_freq_hz(s2.base_freq_hz, s2.oddball.pattern)
+                if s2.oddball.pattern is not None
+                else s2.oddball.oddball_freq_hz
+            )
+            for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
+                warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
 
         return warnings

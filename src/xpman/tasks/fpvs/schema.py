@@ -22,6 +22,7 @@ from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
+from xpman.tasks.fpvs.streams import bases_harmonically_related
 from xpman.tasks.fpvs.sweep import FrequencySweepParams
 
 
@@ -182,6 +183,39 @@ class FPVSExperimentParams(BaseModel):
     """No experiment-level parameters needed yet."""
 
 
+class StreamParams(BaseModel):
+    """A second simultaneous image stream for **dual bilateral FPVS**. It has its own image pools,
+    base + oddball frequency, screen position, and contrast modulation, and shares the trial duration,
+    fades, and central fixation with the main (first) stream.
+
+    v1 sends **no per-stimulus EEG triggers** for either stream (the two frequency tags are recovered
+    in the frequency domain by FFT, and the photodiode tracks the first stream's timing), so there are
+    no per-onset trigger codes here. The two base frequencies must be spectrally separable -- distinct
+    and NOT harmonically related (enforced on the Condition); pick e.g. 6 Hz and 7 Hz.
+    """
+
+    enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
+    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    base_freq_hz: float = Field(
+        default=7.0, gt=0, description="This stream's base frequency (must differ non-harmonically from the main stream)."
+    )
+    oddball: OddballParams = Field(default_factory=OddballParams)
+    position_pix: tuple[float, float] = Field(
+        default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
+    )
+    modulation: ModulationParams = Field(default_factory=ModulationParams)
+
+    @model_validator(mode="after")
+    def _check_oddball_below_base(self) -> "StreamParams":
+        if self.oddball.pattern is None and self.oddball.oddball_freq_hz >= self.base_freq_hz:
+            raise ValueError(
+                f"second stream oddball_freq_hz ({self.oddball.oddball_freq_hz}) must be < its "
+                f"base_freq_hz ({self.base_freq_hz})"
+            )
+        return self
+
+
 class FPVSConditionParams(BaseModel):
     """Everything needed to run one FPVS trial."""
 
@@ -200,6 +234,15 @@ class FPVSConditionParams(BaseModel):
     distractor: DistractorParams = Field(default_factory=DistractorParams)
     go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
     sweep: FrequencySweepParams = Field(default_factory=FrequencySweepParams)
+    stream_position_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Main stream's screen position (px from center); only applies when second_stream "
+        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+    )
+    second_stream: StreamParams = Field(
+        default_factory=StreamParams,
+        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+    )
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -282,16 +325,37 @@ class FPVSConditionParams(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_dual_stream_separable(self) -> "FPVSConditionParams":
+        # Dual bilateral streams must be spectrally separable and spatially distinct, and (v1) can't
+        # combine with a sweep. Enforced at save/freeze time so an un-analysable pairing can't be run.
+        if not self.second_stream.enabled:
+            return self
+        if self.sweep.enabled:
+            raise ValueError("a frequency sweep and a second stream can't both be enabled in v1")
+        if bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
+            raise ValueError(
+                f"the two stream base frequencies ({self.base.base_freq_hz}, "
+                f"{self.second_stream.base_freq_hz}) are equal or harmonically related -- their "
+                "tagged responses can't be separated. Use non-harmonic frequencies (e.g. 6 & 7 Hz)."
+            )
+        if tuple(self.stream_position_pix) == tuple(self.second_stream.position_pix):
+            raise ValueError(
+                "the two streams must be at distinct positions -- set stream_position_pix and "
+                "second_stream.position_pix apart (e.g. (-200, 0) and (200, 0))."
+            )
+        return self
+
 
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
     #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
     #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
-    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep`` and the per-trial ``baseline``
-    #: (all additive, default off/None). v4 was the one breaking bump (old SepStim selector keys are
-    #: dropped on validation -- re-freeze such dev-only Instances); every other bump is additive.
-    #: See ``migrate``.
+    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep``, the per-trial ``baseline``,
+    #: and dual bilateral streams (``second_stream`` + ``stream_position_pix``) -- all additive,
+    #: default off/None. v4 was the one breaking bump (old SepStim selector keys are dropped on
+    #: validation -- re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
     SCHEMA_VERSION = "6"
 
     def program_params_model(self) -> type:

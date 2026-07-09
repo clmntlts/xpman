@@ -1667,3 +1667,46 @@ def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink)
     assert starts[0] < main < starts[1]
     assert result.outcome_summary["baseline"] == "both"
     assert 60 in trigger.codes_sent and 61 in trigger.codes_sent
+
+
+def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, event_sink):
+    """An enabled second_stream runs the frame-driven dual-stream engine: two streams at distinct
+    positions + non-harmonic frequencies, each logging its own onsets."""
+    import json
+
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    starts = [r for r in rows if r["event_type"] == "base_oddball_sequence_start"]
+    assert len(starts) == 1
+    payload = json.loads(starts[0]["payload_json"])
+    assert payload["n_streams"] == 2
+    assert payload["photodiode_tracks_stream"] == 0
+    onset_rows = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    streams_seen = {json.loads(r["payload_json"])["stream"] for r in onset_rows}
+    assert streams_seen == {0, 1}  # both streams presented onsets
+    assert result.outcome_summary["aborted"] is False
