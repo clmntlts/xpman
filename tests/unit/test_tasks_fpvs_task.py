@@ -1583,3 +1583,39 @@ def test_cleanup_clears_response_collector_and_logs(mock_window, stim_root, even
     assert task._response_collector is not None
     task.cleanup(ctx)
     assert task._response_collector is None
+
+
+def test_run_trial_sweep_presents_steps_as_segments(mock_window, stim_root, event_sink):
+    """An enabled frequency sweep runs its steps as back-to-back segments: per-segment sweep_segment_*
+    provenance for each step, one trial-level wrapper, and a continuous main sequence."""
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+            ],
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    types = [r["event_type"] for r in _read_events(event_sink)]
+    assert types.count("sweep_segment_start") == 2  # one per step
+    assert types.count("sweep_segment_end") == 2
+    assert types.count("base_oddball_sequence_start") == 1  # single trial-level wrapper
+    assert "base_oddball_sequence_end" in types
+    assert result.outcome_summary["aborted"] is False

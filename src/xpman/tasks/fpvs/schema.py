@@ -22,6 +22,7 @@ from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
+from xpman.tasks.fpvs.sweep import FrequencySweepParams
 
 
 class StimulusSelector(BaseModel):
@@ -163,6 +164,7 @@ class FPVSConditionParams(BaseModel):
     position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
     distractor: DistractorParams = Field(default_factory=DistractorParams)
     go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
+    sweep: FrequencySweepParams = Field(default_factory=FrequencySweepParams)
     background_gray: float = Field(
         default=0.5,
         ge=0.0,
@@ -221,16 +223,40 @@ class FPVSConditionParams(BaseModel):
                     )
         return self
 
+    @model_validator(mode="after")
+    def _check_sweep_overlay_triggers(self) -> "FPVSConditionParams":
+        # v1 scope: a *triggered* distractor/go-no-go overlay places its events off base-onset frames
+        # using a SINGLE frames-per-stimulus, but a frequency sweep changes that per segment -- so a
+        # triggered overlay could land on a base/oddball onset inside some step and fight the port.
+        # Until per-segment overlay scheduling exists, reject the combination at save/freeze time.
+        # Non-triggered overlays during a sweep are fine (no port collision to avoid).
+        if not self.sweep.enabled:
+            return self
+        offenders: list[str] = []
+        if self.distractor.enabled and self.distractor.trigger_code is not None:
+            offenders.append("distractor")
+        if self.go_nogo.enabled and (
+            self.go_nogo.go_trigger_code is not None or self.go_nogo.nogo_trigger_code is not None
+        ):
+            offenders.append("go_nogo")
+        if offenders:
+            raise ValueError(
+                f"a frequency sweep can't run with a *triggered* {' & '.join(offenders)} overlay in "
+                "v1 (its off-base-onset nudge assumes one frame rate, which a sweep changes per "
+                "step). Clear the overlay's trigger code(s), or disable the sweep."
+            )
+        return self
+
 
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""
 
     #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
     #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
-    #: and the ``go_nogo`` spatial task (both additive, default off/None). v4 was the one breaking
-    #: bump (old SepStim selector keys are dropped on validation -- re-freeze such dev-only Instances);
-    #: every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "5"
+    #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep`` (all additive, default
+    #: off/None). v4 was the one breaking bump (old SepStim selector keys are dropped on validation --
+    #: re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "6"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -250,11 +276,12 @@ class FPVSSchema:
         # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4"):
+        if old_version not in ("1", "2", "3", "4", "5"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5 are additive (position_jitter, distractor, oddball pattern + go_nogo:
-        # disabled/None defaults fill in). v3->v4 drops the SepStim selector filters: strip them from
-        # base/oddball selectors so the migrated dict carries only subdirectory/filename_pattern.
+        # v1->v2, v2->v3, v4->v5, v5->v6 are additive (position_jitter, distractor, oddball pattern +
+        # go_nogo, sweep: disabled/None defaults fill in). v3->v4 drops the SepStim selector filters:
+        # strip them from base/oddball selectors so the migrated dict carries only
+        # subdirectory/filename_pattern.
         migrated = dict(data)
         for selector_key in ("base_selector", "oddball_selector"):
             selector = migrated.get(selector_key)

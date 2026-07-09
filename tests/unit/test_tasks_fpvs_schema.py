@@ -44,13 +44,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "5"
+    assert FPVSSchema.SCHEMA_VERSION == "6"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("5", {"x": 1})
-    assert version == "5"
+    version, data = schema.migrate("6", {"x": 1})
+    assert version == "6"
     assert data == {"x": 1}
 
 
@@ -63,7 +63,7 @@ def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "5"
+    assert version == "6"
     assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
     assert data["oddball_selector"] == {}
 
@@ -144,7 +144,7 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "5"
+    assert version == "6"
     assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
 
 
@@ -154,7 +154,7 @@ def test_migrate_v2_to_current_passes_data_through():
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "5"
+    assert version == "6"
     assert data == v2_data
 
 
@@ -166,6 +166,45 @@ def test_condition_params_have_distractor_disabled_by_default():
 def test_condition_params_have_go_nogo_disabled_by_default():
     params = FPVSConditionParams()
     assert params.go_nogo.enabled is False
+
+
+def test_condition_params_have_sweep_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.sweep.enabled is False
+    assert params.sweep.steps == []
+
+
+def test_migrate_v5_to_v6_is_additive_passthrough():
+    schema = FPVSSchema()
+    v5 = {"base": {"base_freq_hz": 6.0}, "go_nogo": {"enabled": False}}
+    version, data = schema.migrate("5", v5)
+    assert version == "6"
+    assert data == v5  # sweep default (disabled) fills in on validation
+
+
+def test_sweep_with_triggered_overlay_is_rejected():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    # A *triggered* overlay during a sweep can collide with a per-step base/oddball trigger -> rejected.
+    with pytest.raises(ValidationError, match="triggered"):
+        FPVSConditionParams(
+            sweep=FrequencySweepParams(enabled=True, steps=steps),
+            distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
+        )
+
+
+def test_sweep_with_untriggered_overlay_is_allowed():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    params = FPVSConditionParams(
+        sweep=FrequencySweepParams(enabled=True, steps=steps),
+        distractor=DistractorParams(enabled=True, trigger_code=None, keys=["a"]),
+    )
+    assert params.sweep.enabled is True and params.distractor.enabled is True
 
 
 def test_response_task_is_off_by_default_and_oddball_referenced():
