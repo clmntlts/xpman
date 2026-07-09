@@ -1261,5 +1261,11 @@ class FPVSTask(TaskModule):
             )
             for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
                 warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
+            if params.position_jitter.enabled:
+                warnings.append(
+                    "position_jitter is enabled with a second stream -- dual bilateral streams use "
+                    "FIXED positions in v1, so the jitter is IGNORED for both streams. Disable jitter "
+                    "or the second stream to avoid the surprise."
+                )
 
         return warnings
