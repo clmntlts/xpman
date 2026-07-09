@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.fpvs._event_schedule import iter_event_windows
 from xpman.tasks.fpvs.fixation import FixationParams, FixationShape, build_fixation_stimulus
 
 if TYPE_CHECKING:
@@ -141,30 +142,20 @@ def schedule_distractor_events(
     ``frames_per_stim``) is nudged forward to the next non-onset frame, so its trigger can never
     collide with the base/oddball trigger on that flip. Pure: no PsychoPy, no drawing.
     """
-    event_frames = max(round(params.event_duration_seconds * refresh_hz), 1)
-    guard_frames = round(params.guard_seconds * refresh_hz)
-    min_gap = max(round(params.min_interval_seconds * refresh_hz), 1)
-    max_gap = max(round(params.max_interval_seconds * refresh_hz), min_gap)
-    last_usable_frame = total_frames - guard_frames
-
-    events: list[DistractorEvent] = []
-    cursor = guard_frames
-    index = 0
-    while True:
-        gap = int(rng.integers(min_gap, max_gap + 1))
-        onset = cursor + gap
-        if params.trigger_code is not None and frames_per_stim > 0:
-            # Nudge off a base-onset frame so the distractor trigger never shares a flip with the
-            # base/oddball trigger. Only moves forward, so the min gap is preserved (never shrunk).
-            while onset % frames_per_stim == 0:
-                onset += 1
-        offset = onset + event_frames
-        if offset > last_usable_frame:
-            break
-        events.append(DistractorEvent(index=index, onset_frame=onset, offset_frame=offset))
-        index += 1
-        cursor = offset
-    return events
+    return [
+        DistractorEvent(index=index, onset_frame=onset, offset_frame=offset)
+        for index, onset, offset in iter_event_windows(
+            total_frames,
+            frames_per_stim,
+            event_duration_seconds=params.event_duration_seconds,
+            min_interval_seconds=params.min_interval_seconds,
+            max_interval_seconds=params.max_interval_seconds,
+            guard_seconds=params.guard_seconds,
+            avoid_base_onsets=params.trigger_code is not None,
+            rng=rng,
+            refresh_hz=refresh_hz,
+        )
+    ]
 
 
 def score_distractor_responses(
