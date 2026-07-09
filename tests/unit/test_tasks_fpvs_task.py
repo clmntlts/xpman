@@ -542,7 +542,9 @@ def test_run_trial_sets_mid_gray_background(mock_window, stim_root, event_sink):
     assert mock_window.color == (0.0, 0.0, 0.0)
 
 
-def test_run_trial_runs_familiarization_before_main_when_enabled(mock_window, stim_root, event_sink):
+def test_run_trial_runs_familiarization_before_main_on_first_trial_when_enabled(
+    mock_window, stim_root, event_sink
+):
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
@@ -580,6 +582,40 @@ def test_run_trial_runs_familiarization_before_main_when_enabled(mock_window, st
     # Start/stop triggers fired.
     assert 40 in trigger.codes_sent
     assert 41 in trigger.codes_sent
+
+
+def test_run_trial_familiarization_only_on_first_trial(mock_window, stim_root, event_sink):
+    """Familiarization is a one-off session warm-up: even when enabled it plays ONCE, on the first
+    trial (trial_index == 0), and is skipped on every later trial of the Run."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 0.5
+    params.familiarization.enabled = True
+    params.familiarization.duration_seconds = 0.3
+    params.familiarization.start_trigger_code = 40
+
+    trigger = NullTrigger(reset_after=0.0)
+    ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        # A later trial in the same Run (trial_index > 0): familiarization must NOT replay.
+        result = task.run_trial(ctx, params.model_dump(), trial_index=1)
+
+    assert result.outcome_summary["familiarization"] is False
+    types = [r["event_type"] for r in _read_events(event_sink)]
+    assert "familiarization_start" not in types
+    assert 40 not in trigger.codes_sent
+    # The main oddball sequence still runs on the later trial.
+    assert "base_oddball_sequence_start" in types
 
 
 def test_run_trial_skips_familiarization_by_default(mock_window, stim_root, event_sink):

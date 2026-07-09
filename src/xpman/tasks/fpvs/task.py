@@ -544,9 +544,13 @@ class FPVSTask(TaskModule):
             event_label="pre_stimulus_interval",
         )
 
-        # Familiarization phase (base-only stream), after the pre-interval and before the main
-        # stimulation -- matching legacy ordering. Reuses the base pool.
-        if params.familiarization.enabled:
+        # Familiarization phase (base-only stream): a one-off session warm-up shown ONCE, before the
+        # very first trial of the Run (trial_index == 0) -- not repeated every trial. It uses the
+        # first trial's Condition familiarization settings + base pool, runs after the pre-interval
+        # and before the main stimulation (matching legacy ordering). Its own start/stop markers keep
+        # it identifiable and excludable in analysis.
+        ran_familiarization = params.familiarization.enabled and trial_index == 0
+        if ran_familiarization:
             _run_familiarization(
                 ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider
             )
@@ -723,7 +727,7 @@ class FPVSTask(TaskModule):
                 "n_fade_out_frames": sequence_result.n_fade_out_frames,
                 "pre_interval_frames": pre_frames,
                 "post_interval_frames": post_frames,
-                "familiarization": params.familiarization.enabled,
+                "familiarization": ran_familiarization,
                 "aborted": sequence_result.aborted,
                 "n_responses": len(scored_responses),
                 "n_valid_responses": len(valid_rts),

@@ -207,15 +207,14 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           analysis can isolate it. Reuses `run_base_sequence` (base-only) exactly as familiarization
           already does; composes with the sweep segment structure. Additive, default off. (Supersedes
           the terse "baseline stimulus period" below.)
-    - [ ] **Familiarization presented once, as the first trial (2026-07-09, from the lab).** BUG/
-          behaviour change: `FPVSTask.run_trial` currently runs the familiarization stream at the
-          START of **every** trial when `familiarization.enabled` (a 10-trial block repeats it 10×),
-          even though `FamiliarizationParams`'s own docstring says "shown once before the real
-          sequence." Hoist it to a **run-level** step so it plays **once** at the very start of the
-          Run (before the first trial) — e.g. a first-trial guard in `run_trial`, or better an
-          `on_before_run`/first-trial hook in `runtime/engine.execute_run` so it's task-agnostic and
-          clearly a session warm-up. Keep it identifiable in the event log (its start/stop markers)
-          and excluded from per-trial analysis. Reconcile the docstring with the actual behaviour.
+    - [x] **Familiarization presented once, as the first trial (2026-07-09).** Was a behaviour bug:
+          `FPVSTask.run_trial` ran the familiarization stream at the START of **every** trial when
+          `familiarization.enabled` (a 10-trial block repeated it 10×), contradicting its own
+          "shown once" docstring. Fixed with a first-trial guard (`trial_index == 0`) in `run_trial`
+          so it plays **once** per Run, before the first trial; `outcome_summary["familiarization"]`
+          now reports what actually ran (True only on trial 0). Its start/stop markers keep it
+          identifiable + excludable in analysis. Docstring + tutorial reconciled ("once per Run").
+          (Deferred the task-agnostic `on_before_run` engine hook — the guard is sufficient for now.)
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; missing-oddball; double-base; per-image transforms
       (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
