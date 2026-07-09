@@ -200,9 +200,25 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           pool/frequency/position/triggers, shared central fixation; per-frame draws both; coincident
           onsets send one **combined bitfield code** on the single port; per-stream onset logging;
           validate distinct non-harmonic frequencies. Phase 2 (segment×stream loop refactor).
+    - [ ] **Per-trial baseline period (2026-07-09, from the lab).** An optional **base-only
+          (no-oddball)** segment within each trial, as a within-trial reference the oddball response
+          is compared against. Configurable position (before and/or after the oddball stream) and
+          duration, its own start/stop triggers, and its own logged segment (`baseline_*`) so
+          analysis can isolate it. Reuses `run_base_sequence` (base-only) exactly as familiarization
+          already does; composes with the sweep segment structure. Additive, default off. (Supersedes
+          the terse "baseline stimulus period" below.)
+    - [ ] **Familiarization presented once, as the first trial (2026-07-09, from the lab).** BUG/
+          behaviour change: `FPVSTask.run_trial` currently runs the familiarization stream at the
+          START of **every** trial when `familiarization.enabled` (a 10-trial block repeats it 10×),
+          even though `FamiliarizationParams`'s own docstring says "shown once before the real
+          sequence." Hoist it to a **run-level** step so it plays **once** at the very start of the
+          Run (before the first trial) — e.g. a first-trial guard in `run_trial`, or better an
+          `on_before_run`/first-trial hook in `runtime/engine.execute_run` so it's task-agnostic and
+          clearly a session warm-up. Keep it identifiable in the event log (its start/stop markers)
+          and excluded from per-trial analysis. Reconcile the docstring with the actual behaviour.
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
-      intra-category oddball; baseline stimulus period; missing-oddball; double-base; per-image
-      transforms (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
+      intra-category oddball; missing-oddball; double-base; per-image transforms
+      (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
       Plus a dedicated familiarization stimulus selector (currently reuses `base_selector`),
       extending the distractor across the pre/post/familiarization phases (currently the main
       sequence only), and an optional `subdirectory` dropdown in the GUI (currently free text + preview).
