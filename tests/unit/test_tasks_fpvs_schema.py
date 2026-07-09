@@ -213,6 +213,54 @@ def test_condition_params_have_baseline_disabled_by_default():
     assert params.baseline.position == "before"
 
 
+def test_condition_params_have_second_stream_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.second_stream.enabled is False
+
+
+def test_dual_stream_rejects_harmonic_base_frequencies():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # main base 6 Hz, second 12 Hz = 2*6 -> fundamentals overlap -> rejected.
+    with pytest.raises(ValidationError, match="harmonically related"):
+        FPVSConditionParams(second_stream=StreamParams(enabled=True, base_freq_hz=12.0))
+
+
+def test_dual_stream_rejects_identical_positions():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="distinct positions"):
+        FPVSConditionParams(
+            stream_position_pix=(100.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(100.0, 0.0)),
+        )
+
+
+def test_dual_stream_rejects_sweep_combo():
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    with pytest.raises(ValidationError, match="second stream"):
+        FPVSConditionParams(
+            sweep=FrequencySweepParams(
+                enabled=True,
+                steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)],
+            ),
+            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        )
+
+
+def test_valid_dual_stream_is_accepted():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+    )
+    assert params.second_stream.enabled is True
+    assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 7.0)
+
+
 def test_response_task_is_off_by_default_and_oddball_referenced():
     """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
     its RT reference is the oddball onset (not the most-recent stimulus)."""
