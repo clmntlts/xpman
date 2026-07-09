@@ -45,13 +45,25 @@ class RTReference(str, enum.Enum):
 
 
 class ResponseKeyParams(BaseModel):
-    """All overridable per Condition -- nothing about response collection is fixed."""
+    """Explicit oddball-response task ("press when you see the oddball"). All overridable per
+    Condition.
 
-    enabled: bool = True
+    Disabled by default on purpose: **standard FPVS is a passive paradigm.** Asking subjects to
+    respond to oddballs at these rates is unreliable (a ~450 ms RT spans several base stimuli) and,
+    worse, directs attention onto the very dimension being frequency-tagged -- contaminating the
+    signal. The recommended behavioural measure is an *orthogonal* fixation task
+    (:mod:`distractor` / :mod:`go_nogo`), not this. Enable this only for a deliberately active
+    (behavioural) FPVS variant.
+    """
+
+    enabled: bool = False
     keys: list[str] = Field(
         default_factory=lambda: ["space"], description="Key name(s) counted as a response."
     )
-    rt_reference: RTReference = RTReference.MOST_RECENT_STIMULUS_ONSET
+    #: Defaults to the oddball onset, not the most-recent stimulus: at a 6 Hz base a response is
+    #: several base stimuli late, so referencing RT to "most recent stimulus" is near-meaningless
+    #: for oddball detection. The oddball onset is the only defensible default for this task.
+    rt_reference: RTReference = RTReference.MOST_RECENT_ODDBALL_ONSET
     max_rt_seconds: float | None = Field(
         default=None,
         gt=0,
