@@ -220,6 +220,47 @@ def test_hidden_field_is_not_rendered_but_round_trips(qtbot):
     assert form.get_validated_model().secret == [1, 2, 3]
 
 
+def test_list_of_model_field_renders_editable_items(qtbot):
+    """A list[BaseModel] field (go_nogo.markers) renders as an add/remove list of inline sub-forms,
+    seeded with the default items -- no longer hidden."""
+    from xpman.gui.forms.schema_form import _ModelListWidget
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+
+    form = SchemaForm(GoNoGoParams)
+    qtbot.addWidget(form)
+    markers = form._field_widgets["markers"]
+    assert isinstance(markers, _ModelListWidget)
+    assert len(markers.get_value()) == 2  # default left/right pair
+    assert len(form.get_validated_model().markers) == 2
+
+
+def test_list_of_model_add_and_remove_respects_min_items(qtbot):
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+
+    form = SchemaForm(GoNoGoParams)
+    qtbot.addWidget(form)
+    markers = form._field_widgets["markers"]
+    markers._on_add()  # 2 -> 3
+    assert len(markers.get_value()) == 3
+    markers._remove(markers._entries[-1][0])  # 3 -> 2
+    assert len(markers.get_value()) == 2
+    markers._remove(markers._entries[-1][0])  # min_items=2 -> stays at 2
+    assert len(markers.get_value()) == 2
+
+
+def test_list_of_model_edits_round_trip(qtbot):
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+
+    form = SchemaForm(
+        GoNoGoParams,
+        initial_values={"markers": [{"position_pix": (-200.0, 0.0)}, {"position_pix": (200.0, 50.0)}]},
+    )
+    qtbot.addWidget(form)
+    gp = form.get_validated_model()
+    assert gp.markers[0].position_pix == (-200.0, 0.0)
+    assert gp.markers[1].position_pix == (200.0, 50.0)
+
+
 def test_literal_field_renders_as_choice_combo_not_free_text(qtbot):
     """A ``Literal[...]`` field (FixationParams.bar_orientation) must get a fixed-choice combo,
     not the free-text 'unsupported type' fallback that would let a typo through."""

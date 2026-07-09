@@ -554,7 +554,7 @@ sit at fixed positions (independent of the central images). At random moments th
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | checkbox | off | Show the spatial go/no-go task. |
-| `markers` | (advanced) | 2 markers, left/right (±150 px) | The marker positions/appearance (a list of fixation markers). Not editable in the form yet — defaults to a left/right pair; edit via params for other layouts. |
+| `markers` | list (add/remove) | 2 markers, left/right (±150 px) | The markers, each a fixation marker with its own `position_pix` (and appearance). Use **+ Add marker** / **Remove** in the form to change how many (min 2); edit each marker's `position_pix` for the layout you want. |
 | `signal_color` | text | `red` | Colour a marker takes when it signals. |
 | `event_duration_seconds` | number | 0.2 | How long each signal lasts. |
 | `min/max_interval_seconds` | number | 1.0 / 3.0 | Random gap between events. |

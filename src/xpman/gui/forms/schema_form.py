@@ -32,7 +32,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from xpman.gui.forms.widgets import (
     BoolFieldWidget,
@@ -44,6 +44,7 @@ from xpman.gui.forms.widgets import (
     OptionalFieldWidget,
     StringFieldWidget,
     StringListFieldWidget,
+    _ErrorLabelMixin,
     _FLOAT_FALLBACK_MAX,
     _FLOAT_FALLBACK_MIN,
     _INT_FALLBACK_MAX,
@@ -149,6 +150,15 @@ def _is_str_list(annotation: Any) -> bool:
     return len(args) == 1 and args[0] is str
 
 
+def _list_item_model(annotation: Any) -> type[BaseModel] | None:
+    """If ``annotation`` is ``list[SomeBaseModel]``, return that item model; otherwise ``None``."""
+    if get_origin(annotation) is list:
+        args = get_args(annotation)
+        if len(args) == 1 and _is_model(args[0]):
+            return args[0]
+    return None
+
+
 class SchemaForm(QWidget):
     """Auto-generates an editable Qt form from a Pydantic ``BaseModel`` subclass.
 
@@ -195,6 +205,22 @@ class SchemaForm(QWidget):
             if isinstance(extra, dict) and extra.get("hidden"):
                 # Not rendered; value preserved across get/set (see set_values/get_values).
                 self._hidden_fields.add(name)
+                continue
+
+            item_model = _list_item_model(inner_annotation)
+            if item_model is not None:
+                # list[BaseModel] (e.g. go/no-go markers): an add/remove list of inline sub-forms.
+                min_items = int(extra.get("min_items", 0)) if isinstance(extra, dict) else 0
+                pretty = prettify_field_name(name)
+                item_label = pretty[:-1] if pretty.endswith("s") else pretty
+                widget = _ModelListWidget(item_model, min_items=min_items, item_label=item_label)
+                widget.valueEdited.connect(self.valuesChanged.emit)
+                self._field_widgets[name] = widget
+                group = QGroupBox(pretty)
+                if field_info.description:
+                    group.setToolTip(field_info.description)
+                QVBoxLayout(group).addWidget(widget)
+                outer_layout.addWidget(group)
                 continue
 
             if _is_model(inner_annotation):
@@ -375,3 +401,75 @@ class SchemaForm(QWidget):
                 nested_loc = list(loc[1:])
                 self._nested_forms[top]._apply_error({"loc": nested_loc, "msg": message})
         return full_message
+
+
+class _ModelListWidget(_ErrorLabelMixin):
+    """Editable list of nested ``BaseModel`` items (e.g. go/no-go markers). Each item is an inline
+    :class:`SchemaForm` in a titled box with a *Remove* button; an *Add* button appends a
+    default-constructed item. ``get_value`` returns a list of dicts; ``set_value`` rebuilds the
+    sub-forms. ``min_items`` disables *Remove* once the list is that short (e.g. markers need >= 2).
+    """
+
+    def __init__(
+        self,
+        item_model_cls: type[BaseModel],
+        *,
+        min_items: int = 0,
+        item_label: str = "Item",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._item_model_cls = item_model_cls
+        self._min_items = min_items
+        self._item_label = item_label
+        #: (group box, its SchemaForm, its Remove button) per item, in display order.
+        self._entries: list[tuple[QGroupBox, "SchemaForm", QPushButton]] = []
+        self._items_layout = QVBoxLayout()
+        self._items_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.addLayout(self._items_layout)
+        self._add_button = QPushButton(f"+ Add {item_label.lower()}")
+        self._add_button.clicked.connect(self._on_add)
+        self._content_layout.addWidget(self._add_button)
+
+    def _on_add(self) -> None:
+        self._append(None)
+        self.valueEdited.emit()
+
+    def _append(self, initial: dict | None) -> None:
+        box = QGroupBox()
+        layout = QVBoxLayout(box)
+        form = SchemaForm(self._item_model_cls, initial_values=initial, parent=box)
+        form.valuesChanged.connect(self.valueEdited.emit)
+        layout.addWidget(form)
+        remove = QPushButton("Remove")
+        remove.clicked.connect(lambda *_: self._remove(box))
+        layout.addWidget(remove)
+        self._items_layout.addWidget(box)
+        self._entries.append((box, form, remove))
+        self._relabel()
+
+    def _remove(self, box: QGroupBox) -> None:
+        if len(self._entries) <= self._min_items:
+            return
+        self._entries = [entry for entry in self._entries if entry[0] is not box]
+        box.setParent(None)
+        box.deleteLater()
+        self._relabel()
+        self.valueEdited.emit()
+
+    def _relabel(self) -> None:
+        can_remove = len(self._entries) > self._min_items
+        for i, (box, _form, remove) in enumerate(self._entries):
+            box.setTitle(f"{self._item_label} {i + 1}")
+            remove.setEnabled(can_remove)
+
+    def get_value(self) -> list[dict]:
+        return [form.get_values() for (_box, form, _remove) in self._entries]
+
+    def set_value(self, value: Any) -> None:
+        for box, _form, _remove in self._entries:
+            box.setParent(None)
+            box.deleteLater()
+        self._entries = []
+        for item in value or []:
+            self._append(item)
