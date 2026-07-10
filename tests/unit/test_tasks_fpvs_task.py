@@ -1787,6 +1787,110 @@ def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, even
     assert not any(k.startswith("sweep_") for k in summary)
 
 
+def test_run_trial_dual_stream_triggers_and_jitter_wired(mock_window, stim_root, event_sink):
+    """#2 + #3 end-to-end: both streams triggered -> the reserved coincidence table reaches the engine
+    (recorded in provenance) and per-stream jitter is applied so each stream's onsets scatter around
+    its own centre."""
+    import json
+
+    from xpman.tasks.fpvs.schema import (
+        BaseSequenceParams as _Base,
+        CoincidenceCodes,
+        OddballParams as _Odd,
+        PositionJitterParams,
+        StreamParams,
+    )
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base=_Base(base_trigger_code=10, trial_duration_seconds=0.5),
+        oddball=_Odd(oddball_trigger_code=11),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            base_trigger_code=20,
+            oddball_trigger_code=21,
+        ),
+        coincidence_codes=CoincidenceCodes(
+            both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+        ),
+        position_jitter=PositionJitterParams(
+            enabled=True, region="rectangle", x_range_pix=(-40.0, 40.0), y_range_pix=(-40.0, 40.0)
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    # #2: reserved table + per-stream codes reached the engine and are decodable from provenance.
+    assert start["reserved_coincidence_codes"] == {
+        "base+base": 200, "base+oddball": 201, "oddball+base": 202, "oddball+oddball": 203,
+    }
+    assert [s["base_trigger_code"] for s in start["streams"]] == [10, 20]
+    assert [s["oddball_trigger_code"] for s in start["streams"]] == [11, 21]
+    # #3: each stream jitters around its own centre (-200 / +200 within +/-40 px), and actually moved.
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    s0 = [p["pos"] for p in payloads if p["stream"] == 0]
+    s1 = [p["pos"] for p in payloads if p["stream"] == 1]
+    assert s0 and s1
+    assert all(-240.0 <= x <= -160.0 for x, _ in s0)
+    assert all(160.0 <= x <= 240.0 for x, _ in s1)
+    assert any((x, y) != (-200.0, 0.0) for x, y in s0)
+    assert any((x, y) != (200.0, 0.0) for x, y in s1)
+
+
+def test_run_trial_dual_stream_no_triggers_stays_v1(mock_window, stim_root, event_sink):
+    """Default-off guard (#2): no per-stream trigger codes -> no reserved table (empty provenance
+    mapping), no per-stimulus trigger_sent events -- byte-for-byte v1 dual-stream behavior."""
+    import json
+
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    assert start["reserved_coincidence_codes"] == {}
+    assert all(s["base_trigger_code"] is None and s["oddball_trigger_code"] is None for s in start["streams"])
+    assert not any(r["event_type"] == "trigger_sent" for r in rows)
+
+
 def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, stim_root, event_sink):
     """Default-off guard (#10): a plain single-stream, non-sweep trial's outcome_summary carries NONE
     of the new per-stream / per-segment keys -- frozen Instances stay byte-for-byte."""
@@ -1855,7 +1959,9 @@ def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, sti
     assert result.outcome_summary["aborted"] is False
 
 
-def test_check_triggers_warns_jitter_ignored_under_dual_stream(stim_root):
+def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_root):
+    # #3: dual streams now support per-stream jitter, so the former "jitter is IGNORED" advisory must
+    # be gone (each stream jitters around its own centre instead).
     from xpman.tasks.fpvs.schema import PositionJitterParams, StreamParams
 
     params = FPVSConditionParams(
@@ -1864,4 +1970,4 @@ def test_check_triggers_warns_jitter_ignored_under_dual_stream(stim_root):
         position_jitter=PositionJitterParams(enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0)),
     )
     warnings = FPVSTask().check_triggers(params.model_dump())
-    assert any("jitter is IGNORED" in w for w in warnings)
+    assert not any("IGNORED" in w for w in warnings)

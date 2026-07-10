@@ -656,8 +656,10 @@ class FPVSTask(TaskModule):
         if params.second_stream.enabled:
             # Dual bilateral streams: two simultaneous frame-driven streams at distinct positions +
             # non-harmonic frequencies (validated on the Condition). Build the 2nd stream's own image
-            # pools; both share the central fixation, trial duration, and fades. v1 sends no per-stream
-            # stimulus triggers (analysis is frequency-domain), so reserved_codes stays None.
+            # pools; both share the central fixation, trial duration, and fades. Per-stream stimulus
+            # triggers are optional (v2, #2): the main stream carries the Condition's base/oddball codes,
+            # the second stream its own; a coincidence table is passed ONLY when both streams are
+            # triggered (validated on the Condition), otherwise reserved_codes stays None (no ambiguity).
             s2 = params.second_stream
             s2_base_entries = _select_pool(self._image_entries, s2.base_selector)
             s2_oddball_entries = _select_pool(self._image_entries, s2.oddball_selector)
@@ -688,6 +690,32 @@ class FPVSTask(TaskModule):
                 for i in s2_oddball_order
             ]
             _duration = params.base.trial_duration_seconds
+            # Reserved coincidence table (v2, #2): only when BOTH streams send trigger codes does a
+            # coincident onset need a reserved code; the Condition validator guarantees a complete 2x2
+            # table in that case. At most one triggered stream -> None (no ambiguity to resolve).
+            s1_triggered = (
+                params.base.base_trigger_code is not None
+                or params.oddball.oddball_trigger_code is not None
+            )
+            s2_triggered = s2.base_trigger_code is not None or s2.oddball_trigger_code is not None
+            reserved_codes = (
+                params.coincidence_codes.as_reserved_table()
+                if s1_triggered and s2_triggered
+                else None
+            )
+            # Per-stream position jitter (v2, #3): each stream gets its OWN decoupled sub-stream so the
+            # two streams jitter independently yet reproducibly. ctx.rng.spawn(2) derives two independent
+            # child streams from ctx.rng's SeedSequence WITHOUT consuming from ctx.rng's own draw stream
+            # (same decoupling as the single-stream position provider), so enabling jitter never perturbs
+            # pool order. The children are ordered by stream_index, so a given (Instance, Subject) always
+            # yields the same per-stream jitter sequence, and stream 0's sequence differs from stream 1's.
+            dual_position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None
+            if params.position_jitter.enabled:
+                stream_rngs = ctx.rng.spawn(2)
+                dual_position_providers = [
+                    _build_position_provider(params.position_jitter, stream_rngs[0]),
+                    _build_position_provider(params.position_jitter, stream_rngs[1]),
+                ]
             sequence_result = _run_dual_stream(
                 window=ctx.window,
                 streams=[
@@ -695,16 +723,16 @@ class FPVSTask(TaskModule):
                         base_stimuli=base_stims,
                         oddball_stimuli=oddball_stims,
                         position_pix=tuple(params.stream_position_pix),
-                        base_trigger_code=None,
-                        oddball_trigger_code=None,
+                        base_trigger_code=params.base.base_trigger_code,
+                        oddball_trigger_code=params.oddball.oddball_trigger_code,
                         modulation=params.modulation,
                     ),
                     Stream(
                         base_stimuli=s2_base_stims,
                         oddball_stimuli=s2_oddball_stims,
                         position_pix=tuple(s2.position_pix),
-                        base_trigger_code=None,
-                        oddball_trigger_code=None,
+                        base_trigger_code=s2.base_trigger_code,
+                        oddball_trigger_code=s2.oddball_trigger_code,
                         modulation=s2.modulation,
                     ),
                 ],
@@ -719,7 +747,7 @@ class FPVSTask(TaskModule):
                 photodiode=photodiode,
                 photodiode_params=params.photodiode,
                 tracked_stream_index=0,
-                reserved_codes=None,
+                reserved_codes=reserved_codes,
                 abort_check=ctx.abort_check,
                 starting_frame_index=0,
                 n_fade_in_frames=n_fade_in_frames,
@@ -727,6 +755,7 @@ class FPVSTask(TaskModule):
                 rng=ctx.rng,
                 distractor=distractor_controller,
                 go_nogo=go_nogo_controller,
+                position_providers=dual_position_providers,
             )
         elif params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
@@ -1283,7 +1312,8 @@ class FPVSTask(TaskModule):
                 f"dual bilateral streams: main {params.base.base_freq_hz:g} Hz at "
                 f"{tuple(params.stream_position_pix)} px, second {s2.base_freq_hz:g} Hz at "
                 f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
-                "photodiode tracks the MAIN stream only, and v1 sends no per-stream stimulus triggers."
+                "photodiode tracks the MAIN stream only. Per-stream stimulus triggers are optional "
+                "(set each stream's base/oddball codes; coincident onsets use coincidence_codes)."
             )
             odd1 = (
                 derived_oddball_freq_hz(params.base.base_freq_hz, params.oddball.pattern)
@@ -1297,11 +1327,7 @@ class FPVSTask(TaskModule):
             )
             for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
                 warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
-            if params.position_jitter.enabled:
-                warnings.append(
-                    "position_jitter is enabled with a second stream -- dual bilateral streams use "
-                    "FIXED positions in v1, so the jitter is IGNORED for both streams. Disable jitter "
-                    "or the second stream to avoid the surprise."
-                )
+            # (Position jitter is now supported per stream for dual streams -- #3 -- so the former
+            # "jitter ignored" advisory no longer applies. Each stream jitters around its OWN centre.)
 
         return warnings

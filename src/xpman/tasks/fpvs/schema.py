@@ -24,6 +24,7 @@ from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
 from xpman.tasks.fpvs.streams import bases_harmonically_related
 from xpman.tasks.fpvs.sweep import FrequencySweepParams
+from xpman.tasks.fpvs.trigger_combine import check_reserved_code_collisions
 
 
 class StimulusSelector(BaseModel):
@@ -188,10 +189,14 @@ class StreamParams(BaseModel):
     base + oddball frequency, screen position, and contrast modulation, and shares the trial duration,
     fades, and central fixation with the main (first) stream.
 
-    v1 sends **no per-stimulus EEG triggers** for either stream (the two frequency tags are recovered
-    in the frequency domain by FFT, and the photodiode tracks the first stream's timing), so there are
-    no per-onset trigger codes here. The two base frequencies must be spectrally separable -- distinct
-    and NOT harmonically related (enforced on the Condition); pick e.g. 6 Hz and 7 Hz.
+    The two frequency tags are recovered in the frequency domain by FFT, and the photodiode tracks the
+    first stream's timing. **Per-stream EEG triggers are optional (v2, default off):** set
+    ``base_trigger_code`` / ``oddball_trigger_code`` to emit an 8-bit code on this stream's onsets;
+    leaving both ``None`` reproduces v1 (no triggers, byte-for-byte). When BOTH streams send triggers,
+    frames where both onset together resolve to a single reserved coincidence code (see
+    ``FPVSConditionParams.coincidence_codes``) -- one port, one pulse. The two base frequencies must be
+    spectrally separable -- distinct and NOT harmonically related (enforced on the Condition); pick e.g.
+    6 Hz and 7 Hz.
     """
 
     enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
@@ -205,6 +210,18 @@ class StreamParams(BaseModel):
         default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
     )
     modulation: ModulationParams = Field(default_factory=ModulationParams)
+    base_trigger_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description="Trigger code sent on every base-image onset of THIS stream. None sends no trigger.",
+    )
+    oddball_trigger_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description="Trigger code sent on every oddball-image onset of THIS stream. None sends no trigger.",
+    )
 
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "StreamParams":
@@ -214,6 +231,64 @@ class StreamParams(BaseModel):
                 f"base_freq_hz ({self.base_freq_hz})"
             )
         return self
+
+
+class CoincidenceCodes(BaseModel):
+    """Reserved 8-bit codes for the 2x2 coincident-onset cases of dual bilateral streams. When both
+    streams onset on the *same* monitor frame there is only one port and one pulse, so the pair's
+    ``(stream-A is_oddball, stream-B is_oddball)`` combination maps to ONE reserved code instead of two
+    fighting pulses (see ``tasks/fpvs/trigger_combine.py``). The four fields name that 2x2:
+
+    - ``both_base`` -> both streams show a base image on this frame ``(False, False)``.
+    - ``a_base_b_oddball`` -> stream A base, stream B oddball ``(False, True)``.
+    - ``a_oddball_b_base`` -> stream A oddball, stream B base ``(True, False)``.
+    - ``both_oddball`` -> both streams show an oddball ``(True, True)``.
+
+    "A" is the main (first) stream, "B" the ``second_stream`` -- i.e. ascending stream index. These are
+    only consulted when BOTH streams have trigger codes set; with at most one triggered stream no
+    coincidence is ambiguous and no reserved code is needed. All optional (default None = unset); the
+    Condition validator requires the full set once both streams are triggered, and that every reserved
+    code is a valid 8-bit int disjoint from the stream codes (see ``_check_coincidence_codes``).
+    """
+
+    both_base: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (base, base) coincident onset."
+    )
+    a_base_b_oddball: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (base, oddball) coincident onset."
+    )
+    a_oddball_b_base: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (oddball, base) coincident onset."
+    )
+    both_oddball: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (oddball, oddball) coincident onset."
+    )
+
+    def all_set(self) -> bool:
+        """True when all four reserved codes are set (a complete 2x2 coincidence table)."""
+        return all(
+            c is not None
+            for c in (self.both_base, self.a_base_b_oddball, self.a_oddball_b_base, self.both_oddball)
+        )
+
+    def any_set(self) -> bool:
+        """True when at least one reserved code is set (used to detect a partially-filled table)."""
+        return any(
+            c is not None
+            for c in (self.both_base, self.a_base_b_oddball, self.a_oddball_b_base, self.both_oddball)
+        )
+
+    def as_reserved_table(self) -> "dict[tuple[bool, bool], int]":
+        """The four codes as the ``ReservedCodeTable`` ``trigger_combine`` consumes, keyed by the two
+        streams' ``(is_oddball, is_oddball)`` flags in ascending stream-index order. Requires
+        :meth:`all_set` (call only once the validator has confirmed a complete table)."""
+        assert self.all_set()  # validator guarantees this before we build the runtime table
+        return {
+            (False, False): self.both_base,  # type: ignore[dict-item]
+            (False, True): self.a_base_b_oddball,  # type: ignore[dict-item]
+            (True, False): self.a_oddball_b_base,  # type: ignore[dict-item]
+            (True, True): self.both_oddball,  # type: ignore[dict-item]
+        }
 
 
 class FPVSConditionParams(BaseModel):
@@ -242,6 +317,11 @@ class FPVSConditionParams(BaseModel):
     second_stream: StreamParams = Field(
         default_factory=StreamParams,
         description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+    )
+    coincidence_codes: CoincidenceCodes = Field(
+        default_factory=CoincidenceCodes,
+        description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
+        "streams are triggered; see CoincidenceCodes).",
     )
     background_gray: float = Field(
         default=0.5,
@@ -344,6 +424,77 @@ class FPVSConditionParams(BaseModel):
                 "the two streams must be at distinct positions -- set stream_position_pix and "
                 "second_stream.position_pix apart (e.g. (-200, 0) and (200, 0))."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_coincidence_codes(self) -> "FPVSConditionParams":
+        # Reserved coincidence codes only matter for dual bilateral streams (v2 per-stream triggers).
+        # Field constraints already guarantee every code is a valid 8-bit int (1..255); this validator
+        # enforces the cross-field CONSISTENCY: a complete 2x2 table when (and only when) both streams
+        # are triggered, and reserved codes disjoint from every stream code so a lone onset can never be
+        # mistaken for a coincidence in the recording. All checks are skipped when the second stream is
+        # disabled, so a plain single-stream Condition is completely unaffected.
+        stream_codes = [
+            self.base.base_trigger_code,
+            self.oddball.oddball_trigger_code,
+            self.second_stream.base_trigger_code,
+            self.second_stream.oddball_trigger_code,
+        ]
+        codes = self.coincidence_codes
+        if not self.second_stream.enabled:
+            # No dual streams: reserved codes are inert. Reject a stray filled-in table only if it would
+            # otherwise silently do nothing -- but keep it lenient (the field defaults are all None), so
+            # only guard the impossible-to-use case rather than surprising single-stream users.
+            return self
+
+        both_triggered = (
+            self.base.base_trigger_code is not None or self.oddball.oddball_trigger_code is not None
+        ) and (
+            self.second_stream.base_trigger_code is not None
+            or self.second_stream.oddball_trigger_code is not None
+        )
+        if not both_triggered:
+            # At most one stream sends triggers -> no coincidence is ever ambiguous (only one code can
+            # be present on a shared frame), so reserved codes are unnecessary. Reject a partially- or
+            # fully-filled table here as a likely misconfiguration (it would never be consulted).
+            if codes.any_set():
+                raise ValueError(
+                    "coincidence_codes are set but the two streams are not both triggered -- reserved "
+                    "codes are only used when BOTH streams send trigger codes (otherwise no coincident "
+                    "onset is ambiguous). Set trigger codes on both streams, or clear coincidence_codes."
+                )
+            return self
+
+        # Both streams triggered: a complete 2x2 reserved table is required (any coincident-onset case
+        # can occur), each code valid 8-bit (field-enforced), all four distinct, and disjoint from every
+        # stream code so a lone onset can't be confused with a coincidence.
+        if not codes.all_set():
+            missing = [
+                name
+                for name, value in (
+                    ("both_base", codes.both_base),
+                    ("a_base_b_oddball", codes.a_base_b_oddball),
+                    ("a_oddball_b_base", codes.a_oddball_b_base),
+                    ("both_oddball", codes.both_oddball),
+                )
+                if value is None
+            ]
+            raise ValueError(
+                "both streams send trigger codes, so all four coincidence_codes must be set (a "
+                f"coincident onset in any of the 2x2 cases needs its own reserved code); missing: "
+                f"{missing}. Fill them in, or remove a stream's trigger codes."
+            )
+        table = codes.as_reserved_table()
+        reserved_values = list(table.values())
+        if len(set(reserved_values)) != len(reserved_values):
+            raise ValueError(
+                f"coincidence_codes must be four DISTINCT reserved codes, got {reserved_values} -- "
+                "duplicates make different coincident-onset cases indistinguishable in the recording."
+            )
+        # Disjointness from stream codes: reuse the pure combiner-side check so the schema and runtime
+        # agree on the rule (a stream code equal to a reserved code would make a lone onset look like a
+        # coincidence). Re-raise its message as-is (it already explains the collision).
+        check_reserved_code_collisions(stream_codes, table)
         return self
 
 
