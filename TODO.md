@@ -225,7 +225,12 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           so it plays **once** per Run, before the first trial; `outcome_summary["familiarization"]`
           now reports what actually ran (True only on trial 0). Its start/stop markers keep it
           identifiable + excludable in analysis. Docstring + tutorial reconciled ("once per Run").
-          (Deferred the task-agnostic `on_before_run` engine hook — the guard is sufficient for now.)
+          (The task-agnostic `on_before_run` engine hook was later added in issue #8, but FPVS
+          familiarization deliberately stays in-trial: it is coupled to trial-0's `ctx.rng` base-pool
+          shuffle + randomized pre-interval and is reported in trial-0's `outcome_summary`, so
+          hoisting it to a run-level hook would change rng-consumption order and event ordering —
+          both forbidden by the byte-for-byte reproducibility net. The hook exists for future,
+          genuinely run-level warm-ups.)
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; missing-oddball; double-base; per-image transforms
       (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
