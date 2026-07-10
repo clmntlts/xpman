@@ -1620,6 +1620,59 @@ def test_run_trial_sweep_presents_steps_as_segments(mock_window, stim_root, even
     assert "base_oddball_sequence_end" in types
     assert result.outcome_summary["aborted"] is False
 
+    # #10: the flat results summary carries a compact per-segment breakdown (one column set per step),
+    # so per-step stats are exportable without opening the raw event file.
+    summary = result.outcome_summary
+    assert summary["sweep_n_segments"] == 2
+    assert summary["sweep_seg0_achieved_base_freq_hz"] == pytest.approx(6.0)
+    assert summary["sweep_seg1_achieved_base_freq_hz"] == pytest.approx(12.0)
+    assert summary["sweep_seg0_achieved_oddball_freq_hz"] == pytest.approx(1.2)
+    assert summary["sweep_seg0_n_stimuli_shown"] > 0
+    assert summary["sweep_seg1_n_stimuli_shown"] > 0
+    # aggregate n_stimuli_shown is the sum of the per-segment counts
+    assert (
+        summary["sweep_seg0_n_stimuli_shown"] + summary["sweep_seg1_n_stimuli_shown"]
+        == summary["n_stimuli_shown"]
+    )
+    assert "sweep_seg0_n_oddballs_shown" in summary
+    # per-STREAM keys are absent -- a sweep is single-stream
+    assert not any(k.startswith("stream") for k in summary)
+
+
+def test_run_trial_sweep_outcome_summary_per_segment_keys(mock_window, stim_root, event_sink):
+    """A three-step sweep surfaces sweep_seg0/1/2_* columns and sweep_n_segments == 3."""
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=15.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+            ],
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    summary = result.outcome_summary
+    assert summary["sweep_n_segments"] == 3
+    for i, base in enumerate((6.0, 10.0, 15.0)):
+        assert summary[f"sweep_seg{i}_achieved_base_freq_hz"] == pytest.approx(base)
+        assert summary[f"sweep_seg{i}_n_stimuli_shown"] > 0
+
 
 def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink):
     """A 'both' baseline runs one base-only reference before the oddball stream and one after, each
@@ -1710,6 +1763,54 @@ def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, even
     streams_seen = {json.loads(r["payload_json"])["stream"] for r in onset_rows}
     assert streams_seen == {0, 1}  # both streams presented onsets
     assert result.outcome_summary["aborted"] is False
+
+    # #10: the flat results summary carries a per-stream breakdown (each stream's achieved tagged
+    # frequency + counts), so stream-1's frequency is exportable without opening the raw event file.
+    # Cross-check against the start event's per-stream achieved freqs (the refresh-quantized values).
+    stream_freqs = {s["stream"]: s["achieved_base_freq_hz"] for s in payload["streams"]}
+    summary = result.outcome_summary
+    assert summary["n_streams"] == 2
+    assert summary["stream0_achieved_base_freq_hz"] == pytest.approx(stream_freqs[0])
+    assert summary["stream1_achieved_base_freq_hz"] == pytest.approx(stream_freqs[1])
+    # the two streams ran at distinct (non-harmonic) base rates -- the whole point of a second stream
+    assert summary["stream0_achieved_base_freq_hz"] != summary["stream1_achieved_base_freq_hz"]
+    assert summary["stream0_n_stimuli_shown"] > 0
+    assert summary["stream1_n_stimuli_shown"] > 0
+    assert "stream0_achieved_oddball_freq_hz" in summary
+    assert "stream1_n_oddballs_shown" in summary
+    # per-stream stimulus counts sum to the aggregate
+    assert (
+        summary["stream0_n_stimuli_shown"] + summary["stream1_n_stimuli_shown"]
+        == summary["n_stimuli_shown"]
+    )
+    # no sweep keys on a (non-sweep) dual-stream trial
+    assert not any(k.startswith("sweep_") for k in summary)
+
+
+def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, stim_root, event_sink):
+    """Default-off guard (#10): a plain single-stream, non-sweep trial's outcome_summary carries NONE
+    of the new per-stream / per-segment keys -- frozen Instances stay byte-for-byte."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    summary = result.outcome_summary
+    assert "n_streams" not in summary
+    assert "sweep_n_segments" not in summary
+    assert not any(k.startswith("stream") for k in summary)
+    assert not any(k.startswith("sweep_") for k in summary)
 
 
 def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, stim_root, event_sink):
