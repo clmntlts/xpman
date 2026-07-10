@@ -922,8 +922,7 @@ class FPVSTask(TaskModule):
                     },
                 )
 
-        return TrialResult(
-            outcome_summary={
+        outcome_summary = {
                 "refresh_rate_hz": self._refresh_rate_hz,
                 "refresh_measured_successfully": self._refresh_measured_successfully,
                 "pool_mean_luminance": self._pool_mean_luminance,
@@ -970,8 +969,35 @@ class FPVSTask(TaskModule):
                 "go_nogo_false_alarm_rate": go_nogo_score.false_alarm_rate if go_nogo_score else None,
                 "go_nogo_d_prime": go_nogo_score.d_prime if go_nogo_score else None,
                 "go_nogo_mean_rt_seconds": go_nogo_score.mean_rt_seconds if go_nogo_score else None,
-            }
-        )
+        }
+
+        # Additive, default-off per-stream / per-segment detail for the flat results table (#10). A
+        # plain single-stream, non-sweep trial leaves both breakdowns empty, so its outcome_summary is
+        # byte-for-byte unchanged (frozen Instances stay backward-compatible). Only a dual-stream run
+        # emits ``streamN_*`` keys; only an actual sweep emits ``sweep_*`` keys. ``export._normalize_rows``
+        # already unions heterogeneous keys across Results, so mixed runs export cleanly.
+        if sequence_result.per_stream:
+            outcome_summary["n_streams"] = len(sequence_result.per_stream)
+            for s in sequence_result.per_stream:
+                outcome_summary[f"stream{s.stream_index}_achieved_base_freq_hz"] = s.achieved_base_freq_hz
+                outcome_summary[f"stream{s.stream_index}_achieved_oddball_freq_hz"] = (
+                    s.achieved_oddball_freq_hz
+                )
+                outcome_summary[f"stream{s.stream_index}_n_stimuli_shown"] = s.n_stimuli_shown
+                outcome_summary[f"stream{s.stream_index}_n_oddballs_shown"] = s.n_oddballs_shown
+        if sequence_result.per_segment:
+            outcome_summary["sweep_n_segments"] = len(sequence_result.per_segment)
+            for seg in sequence_result.per_segment:
+                outcome_summary[f"sweep_seg{seg.segment_index}_achieved_base_freq_hz"] = (
+                    seg.achieved_base_freq_hz
+                )
+                outcome_summary[f"sweep_seg{seg.segment_index}_achieved_oddball_freq_hz"] = (
+                    seg.achieved_oddball_freq_hz
+                )
+                outcome_summary[f"sweep_seg{seg.segment_index}_n_stimuli_shown"] = seg.n_stimuli_shown
+                outcome_summary[f"sweep_seg{seg.segment_index}_n_oddballs_shown"] = seg.n_oddballs_shown
+
+        return TrialResult(outcome_summary=outcome_summary)
 
     def run_metadata(self) -> dict:
         """Run-level provenance the engine persists onto the Run: the achieved refresh rate the

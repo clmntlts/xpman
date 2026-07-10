@@ -250,6 +250,32 @@ class BaseSequenceResult:
 
 
 @dataclass(frozen=True)
+class StreamOutcome:
+    """Per-stream achieved metrics for a multi-stream (dual bilateral) trial. One per stream, in
+    stream order. Empty on the single-stream default path -- the aggregate fields on
+    :class:`BaseOddballSequenceResult` already fully describe a one-stream trial."""
+
+    stream_index: int
+    achieved_base_freq_hz: float
+    achieved_oddball_freq_hz: float
+    n_stimuli_shown: int
+    n_oddballs_shown: int
+
+
+@dataclass(frozen=True)
+class SegmentOutcome:
+    """Per-segment achieved metrics for a stepped frequency sweep. One per step, in presentation
+    order. Empty on the single-segment default path (a plain trial is one segment, already fully
+    described by the aggregate fields)."""
+
+    segment_index: int
+    achieved_base_freq_hz: float
+    achieved_oddball_freq_hz: float
+    n_stimuli_shown: int
+    n_oddballs_shown: int
+
+
+@dataclass(frozen=True)
 class BaseOddballSequenceResult:
     """Summary of one ``run_base_oddball_sequence`` call."""
 
@@ -268,6 +294,12 @@ class BaseOddballSequenceResult:
     waveform: str | None = None
     n_fade_in_frames: int = 0
     n_fade_out_frames: int = 0
+    # Per-stream / per-segment breakdowns for the multi-* paradigms; both empty (and NOT surfaced in
+    # the results summary) on the single-stream, single-segment default path so frozen Instances stay
+    # byte-for-byte. ``per_stream`` is populated only for a dual-stream trial (>1 stream), ``per_segment``
+    # only for an actual frequency sweep (>1 segment).
+    per_stream: tuple[StreamOutcome, ...] = ()
+    per_segment: tuple[SegmentOutcome, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -994,6 +1026,7 @@ def _run_oddball_segments(
     stimuli_shown = 0
     oddballs_shown = 0
     aborted = False
+    segment_outcomes: list[SegmentOutcome] = []
 
     for i, (seg, plan) in enumerate(zip(segments, plans)):
         seg_oddball = seg.oddball
@@ -1037,6 +1070,18 @@ def _run_oddball_segments(
         stimuli_shown += seg_run.stimuli_shown
         oddballs_shown += seg_run.oddballs_shown
         if multi:
+            # Compact per-step provenance for the results summary (mirrors sweep_segment_end, which
+            # stays in the event log). Emitted only for an actual sweep so the single-segment default
+            # result carries no per_segment detail.
+            segment_outcomes.append(
+                SegmentOutcome(
+                    segment_index=i,
+                    achieved_base_freq_hz=plan.achieved_base_hz,
+                    achieved_oddball_freq_hz=plan.achieved_oddball_hz,
+                    n_stimuli_shown=seg_run.stimuli_shown,
+                    n_oddballs_shown=seg_run.oddballs_shown,
+                )
+            )
             event_sink.log(
                 "sweep_segment_end",
                 {
@@ -1082,6 +1127,7 @@ def _run_oddball_segments(
         waveform=stream.modulation.waveform.value if stream.modulation is not None else None,
         n_fade_in_frames=n_fade_in_frames,
         n_fade_out_frames=n_fade_out_frames,
+        per_segment=tuple(segment_outcomes),
     )
 
 
@@ -1361,6 +1407,19 @@ def _run_dual_stream(
         waveform=first.stream.modulation.waveform.value if first.stream.modulation is not None else None,
         n_fade_in_frames=n_fade_in_frames,
         n_fade_out_frames=n_fade_out_frames,
+        # Per-stream breakdown for the results summary (mirrors the event log's per_stream, plus each
+        # stream's achieved tagged frequency). Only >= 2 streams reach here, so this is never set on the
+        # single-stream path.
+        per_stream=tuple(
+            StreamOutcome(
+                stream_index=rt.stream_index,
+                achieved_base_freq_hz=rt.plan.achieved_base_hz,
+                achieved_oddball_freq_hz=rt.plan.achieved_oddball_hz,
+                n_stimuli_shown=rt.n_stimuli_shown,
+                n_oddballs_shown=rt.n_oddballs_shown,
+            )
+            for rt in runtimes
+        ),
     )
 
 
