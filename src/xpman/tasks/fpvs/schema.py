@@ -222,6 +222,13 @@ class StreamParams(BaseModel):
         le=255,
         description="Trigger code sent on every oddball-image onset of THIS stream. None sends no trigger.",
     )
+    sweep: FrequencySweepParams = Field(
+        default_factory=FrequencySweepParams,
+        description="This stream's per-step frequencies for a sweep x dual-stream (v2, #4). Enabled "
+        "only together with the main sweep, and on a SHARED timeline: same number of steps and the "
+        "same per-step durations as the Condition's sweep (only the base/oddball frequencies differ "
+        "per stream). Disabled by default; when off this stream uses its single base_freq_hz/oddball.",
+    )
 
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "StreamParams":
@@ -382,13 +389,16 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_sweep_overlay_triggers(self) -> "FPVSConditionParams":
-        # v1 scope: a *triggered* distractor/go-no-go overlay places its events off base-onset frames
-        # using a SINGLE frames-per-stimulus, but a frequency sweep changes that per segment -- so a
-        # triggered overlay could land on a base/oddball onset inside some step and fight the port.
-        # Until per-segment overlay scheduling exists, reject the combination at save/freeze time.
-        # Non-triggered overlays during a sweep are fine (no port collision to avoid).
-        if not self.sweep.enabled:
+    def _check_triggered_overlay_with_dual_stream_sweep(self) -> "FPVSConditionParams":
+        # #4 lifted the blanket "sweep + triggered overlay" rejection: a single-stream sweep now
+        # schedules a triggered overlay PER SEGMENT (off each step's own base-onset cadence), so it
+        # never collides with the port. The one combination we still reject is a *triggered* overlay
+        # together with a sweep x DUAL stream: the two streams have DIFFERENT frames-per-stimulus per
+        # segment, so an overlay nudged off ONE stream's cadence could still land on the OTHER stream's
+        # onset -- there is no single cadence to schedule off. (Untriggered overlays are always fine;
+        # single-stream sweeps with a triggered overlay are fine; dual streams without a sweep already
+        # schedule triggered overlays off the shared single cadence.)
+        if not (self.sweep.enabled and self.second_stream.enabled):
             return self
         offenders: list[str] = []
         if self.distractor.enabled and self.distractor.trigger_code is not None:
@@ -399,21 +409,49 @@ class FPVSConditionParams(BaseModel):
             offenders.append("go_nogo")
         if offenders:
             raise ValueError(
-                f"a frequency sweep can't run with a *triggered* {' & '.join(offenders)} overlay in "
-                "v1 (its off-base-onset nudge assumes one frame rate, which a sweep changes per "
-                "step). Clear the overlay's trigger code(s), or disable the sweep."
+                f"a *triggered* {' & '.join(offenders)} overlay can't run with a sweep x dual-stream "
+                "(the two streams change frequency per step, so there is no single base-onset cadence "
+                "to schedule the trigger off). Clear the overlay's trigger code(s), disable the second "
+                "stream, or disable the sweep."
             )
         return self
 
     @model_validator(mode="after")
     def _check_dual_stream_separable(self) -> "FPVSConditionParams":
-        # Dual bilateral streams must be spectrally separable and spatially distinct, and (v1) can't
-        # combine with a sweep. Enforced at save/freeze time so an un-analysable pairing can't be run.
+        # Dual bilateral streams must be spectrally separable and spatially distinct. A sweep x
+        # dual-stream is allowed (#4) but ONLY on a SHARED step timeline: both streams change frequency
+        # at the same segment boundaries (same number of steps, same per-step durations); only the
+        # per-step frequencies differ. Independent per-stream sweeps (different step counts / durations)
+        # are still rejected -- they can't be presented on one continuous frame timeline. Enforced at
+        # save/freeze time so an un-analysable pairing can't be run.
         if not self.second_stream.enabled:
             return self
-        if self.sweep.enabled:
-            raise ValueError("a frequency sweep and a second stream can't both be enabled in v1")
-        if bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
+        if self.sweep.enabled or self.second_stream.sweep.enabled:
+            if not (self.sweep.enabled and self.second_stream.sweep.enabled):
+                raise ValueError(
+                    "a sweep x dual-stream needs BOTH the main sweep and second_stream.sweep enabled "
+                    "on a shared timeline -- enable both, or neither. (One stream sweeping while the "
+                    "other holds a fixed frequency is not supported.)"
+                )
+            main_durations = [s.duration_seconds for s in self.sweep.steps]
+            second_durations = [s.duration_seconds for s in self.second_stream.sweep.steps]
+            if main_durations != second_durations:
+                raise ValueError(
+                    "a sweep x dual-stream must share ONE step timeline: the two streams' sweep steps "
+                    f"must have the same count and per-step durations (got main {main_durations} vs "
+                    f"second {second_durations}). Independent per-stream sweeps are not supported -- "
+                    "only the per-step frequencies may differ between streams."
+                )
+            # Each step's paired base frequencies must be spectrally separable, like the single-freq
+            # dual-stream case -- a step where the two streams are harmonically related is un-analysable.
+            for i, (a, b) in enumerate(zip(self.sweep.steps, self.second_stream.sweep.steps)):
+                if bases_harmonically_related(a.base_freq_hz, b.base_freq_hz):
+                    raise ValueError(
+                        f"sweep step {i}: the two stream base frequencies ({a.base_freq_hz}, "
+                        f"{b.base_freq_hz}) are equal or harmonically related -- their tagged responses "
+                        "can't be separated. Use non-harmonic frequencies per step (e.g. 6 & 7 Hz)."
+                    )
+        elif bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
             raise ValueError(
                 f"the two stream base frequencies ({self.base.base_freq_hz}, "
                 f"{self.second_stream.base_freq_hz}) are equal or harmonically related -- their "

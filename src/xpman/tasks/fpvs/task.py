@@ -42,7 +42,11 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_sequence,
 )
 from xpman.tasks.fpvs.streams import stream_separability_warnings
-from xpman.tasks.fpvs.sweep import min_recommended_step_seconds, plan_sweep_segments
+from xpman.tasks.fpvs.sweep import (
+    min_recommended_step_seconds,
+    plan_sweep_overlay_windows,
+    plan_sweep_segments,
+)
 from xpman.tasks.fpvs.distractor import (
     DistractorController,
     build_distractor_stimulus,
@@ -565,15 +569,21 @@ class FPVSTask(TaskModule):
         # same span). Matches the engine's own per-segment n_stimuli_to_show * frames_per_stim sum
         # (design invariants #4/#6). A sweep sums over its steps (fades only on the first/last step,
         # each step floor-divided by its own frames-per-cycle -- mirrors _plan_oddball_segment).
+        # For a sweep the base-onset cadence changes per step, so a *triggered* overlay must be
+        # scheduled PER SEGMENT (each step over its own frame span, off its own frames-per-cycle) --
+        # #4. ``overlay_segments`` is the per-step SegmentWindow list; it is None on the non-sweep path
+        # so the scheduler falls back to its single-segment call (byte-for-byte the v1 schedule + RNG
+        # draw order). ``_effective_frames`` (the total presented frames) still drives the untriggered
+        # single-segment path and stays exactly the pre-#4 sweep accounting.
+        overlay_segments = None
         if params.sweep.enabled:
-            _last_step = len(params.sweep.steps) - 1
-            _effective_frames = 0
-            for _i, _step in enumerate(params.sweep.steps):
-                _step_fpc = frames_per_cycle(refresh, _step.base_freq_hz)
-                _step_fade_in = n_fade_in_frames if _i == 0 else 0
-                _step_fade_out = n_fade_out_frames if _i == _last_step else 0
-                _step_budget = _step_fade_in + round(_step.duration_seconds * refresh) + _step_fade_out
-                _effective_frames += max(_step_budget // _step_fpc, 1) * _step_fpc
+            overlay_segments = plan_sweep_overlay_windows(
+                params.sweep,
+                refresh_hz=refresh,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+            )
+            _effective_frames = sum(w.frame_count for w in overlay_segments)
         else:
             _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
             _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
@@ -583,7 +593,12 @@ class FPVSTask(TaskModule):
         if params.distractor.enabled:
             distractor_rng = ctx.rng.spawn(1)[0]
             events = schedule_distractor_events(
-                _effective_frames, base_frames_per_cycle, params.distractor, distractor_rng, refresh
+                _effective_frames,
+                base_frames_per_cycle,
+                params.distractor,
+                distractor_rng,
+                refresh,
+                segments=overlay_segments,
             )
             distractor_stim = build_distractor_stimulus(ctx.window, params.distractor, params.fixation)
             distractor_controller = DistractorController(
@@ -596,7 +611,12 @@ class FPVSTask(TaskModule):
         if params.go_nogo.enabled:
             go_nogo_rng = ctx.rng.spawn(1)[0]
             gn_events = schedule_go_nogo_events(
-                _effective_frames, base_frames_per_cycle, params.go_nogo, go_nogo_rng, refresh
+                _effective_frames,
+                base_frames_per_cycle,
+                params.go_nogo,
+                go_nogo_rng,
+                refresh,
+                segments=overlay_segments,
             )
             gn_base, gn_signal = build_go_nogo_stimuli(ctx.window, params.go_nogo)
             go_nogo_controller = GoNoGoController(
@@ -716,6 +736,20 @@ class FPVSTask(TaskModule):
                     _build_position_provider(params.position_jitter, stream_rngs[0]),
                     _build_position_provider(params.position_jitter, stream_rngs[1]),
                 ]
+            # Sweep x dual-stream (v2, #4): when the Condition's sweep is enabled the two streams share
+            # ONE step timeline (the Condition validator guarantees matching step counts + durations).
+            # Build a list of time-segments, each pairing the main stream's step with the second
+            # stream's step (its own per-step base frequency + oddball). No sweep -> None, so
+            # _run_dual_stream presents the single time-segment (stream_segments) exactly as in v1.
+            dual_timeline = None
+            if params.sweep.enabled:
+                dual_timeline = [
+                    [
+                        Segment(base_freq_hz=main_step.base_freq_hz, duration_seconds=main_step.duration_seconds, oddball=main_step.oddball),
+                        Segment(base_freq_hz=second_step.base_freq_hz, duration_seconds=second_step.duration_seconds, oddball=second_step.oddball),
+                    ]
+                    for main_step, second_step in zip(params.sweep.steps, s2.sweep.steps)
+                ]
             sequence_result = _run_dual_stream(
                 window=ctx.window,
                 streams=[
@@ -756,6 +790,7 @@ class FPVSTask(TaskModule):
                 distractor=distractor_controller,
                 go_nogo=go_nogo_controller,
                 position_providers=dual_position_providers,
+                stream_segment_timeline=dual_timeline,
             )
         elif params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
