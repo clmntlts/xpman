@@ -1845,3 +1845,88 @@ def test_dual_stream_no_providers_stays_at_fixed_positions(mock_window, event_si
     payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
     assert all(p["pos"] == [-100.0, 0.0] for p in payloads if p["stream"] == 0)
     assert all(p["pos"] == [100.0, 0.0] for p in payloads if p["stream"] == 1)
+
+
+# ---------------------------------------------------------------------------
+# Sweep x dual-stream (#4): a shared step timeline drives BOTH streams. Single-segment timeline stays
+# byte-for-byte the v1 dual-stream path; a multi-segment timeline walks segments continuously.
+# ---------------------------------------------------------------------------
+
+
+def test_dual_stream_single_element_timeline_equals_legacy_stream_segments(tmp_path, trigger, clock):
+    # Equivalence: passing the single time-segment as stream_segment_timeline=[segments] must produce
+    # the identical event log to the v1 stream_segments=segments call (no sweep -> nothing changes).
+    def _run(sink, window, *, timeline):
+        streams, segments = _dual_streams()
+        kw = dict(
+            window=window, streams=streams, refresh_rate_hz=60.0, trigger=trigger, clock=clock,
+            event_sink=sink, photodiode=None, photodiode_params=PhotodiodeParams(), tracked_stream_index=0,
+            reserved_codes=_RESERVED, abort_check=lambda: False, starting_frame_index=0,
+            n_fade_in_frames=0, n_fade_out_frames=0, rng=None, distractor=None, go_nogo=None,
+        )
+        if timeline:
+            _run_dual_stream(stream_segments=segments, stream_segment_timeline=[segments], **kw)
+        else:
+            _run_dual_stream(stream_segments=segments, **kw)
+        sink.close()
+        with sink.csv_path.open(newline="", encoding="utf-8") as f:
+            return [(r["event_type"], r["payload_json"]) for r in csv.DictReader(f)]
+
+    legacy = _run(EventSink(tmp_path / "a.csv", tmp_path / "a.parquet"), _callonflip_recording_window(trigger), timeline=False)
+    wrapped = _run(EventSink(tmp_path / "b.csv", tmp_path / "b.parquet"), _callonflip_recording_window(trigger), timeline=True)
+    assert legacy == wrapped  # byte-for-byte identical event log
+    # A single time-segment is not a sweep: no per-segment provenance emitted.
+    assert not any(t == "sweep_segment_start" for t, _ in wrapped)
+
+
+def test_dual_stream_shared_timeline_presents_both_streams_across_segments(event_sink, trigger, clock):
+    # A 2-step shared timeline: each stream changes frequency at the shared boundary. Both streams are
+    # presented across BOTH segments, frames are continuous, and per-segment provenance is emitted.
+    left = Stream(
+        base_stimuli=_identified_stims(["L0", "L1"]), oddball_stimuli=_identified_stims(["Lo0"]),
+        position_pix=(-100.0, 0.0), base_trigger_code=1, oddball_trigger_code=2,
+    )
+    right = Stream(
+        base_stimuli=_identified_stims(["R0", "R1"]), oddball_stimuli=_identified_stims(["Ro0"]),
+        position_pix=(100.0, 0.0), base_trigger_code=3, oddball_trigger_code=4,
+    )
+    # Step 0: s0 6 Hz (10 f/stim), s1 7.5 Hz (8 f/stim), 0.5 s -> 30 frames.
+    # Step 1: s0 12 Hz (5 f/stim), s1 10 Hz (6 f/stim), 0.5 s -> 30 frames. Continuous 0..59.
+    timeline = [
+        [
+            Segment(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+            Segment(base_freq_hz=7.5, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.5)),
+        ],
+        [
+            Segment(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.4)),
+            Segment(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.0)),
+        ],
+    ]
+    result = _run_dual_stream(
+        window=_callonflip_recording_window(trigger), streams=[left, right], stream_segments=timeline[0],
+        stream_segment_timeline=timeline, refresh_rate_hz=60.0, trigger=trigger, clock=clock,
+        event_sink=event_sink, photodiode=None, photodiode_params=PhotodiodeParams(), tracked_stream_index=0,
+        reserved_codes=_RESERVED, abort_check=lambda: False, starting_frame_index=0,
+        n_fade_in_frames=0, n_fade_out_frames=0, rng=None, distractor=None, go_nogo=None,
+    )
+    assert result.n_frames_presented == 60
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    types = [r["event_type"] for r in rows]
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("base_oddball_sequence_end") == 1
+    assert types.count("sweep_segment_start") == 2  # one per time-segment
+    assert types.count("sweep_segment_end") == 2
+    # Frames are continuous across the segment boundary (0..59), one flip per frame.
+    flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
+    assert flip_frames == list(range(60))
+    # Both streams onset in BOTH segments (seg 0 = frames 0..29, seg 1 = frames 30..59).
+    onset_payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    seg0 = [p for p in onset_payloads if p["frame_index"] < 30]
+    seg1 = [p for p in onset_payloads if p["frame_index"] >= 30]
+    assert {p["stream"] for p in seg0} == {0, 1}
+    assert {p["stream"] for p in seg1} == {0, 1}
+    # Stream 1 changes cadence: 8 f/stim in seg 0 (onsets at 0/8/16/24), 6 f/stim in seg 1 (30/36/..).
+    s1_seg1_frames = sorted(p["frame_index"] for p in seg1 if p["stream"] == 1)
+    assert s1_seg1_frames == [30, 36, 42, 48, 54]

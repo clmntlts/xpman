@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
-from xpman.tasks.fpvs.paradigm_oddball import OddballParams, Segment
+from xpman.tasks.fpvs._event_schedule import SegmentWindow
+from xpman.tasks.fpvs.paradigm_oddball import OddballParams, Segment, frames_per_cycle
 
 
 class SweepStep(BaseModel):
@@ -79,6 +80,40 @@ def plan_sweep_segments(sweep: FrequencySweepParams) -> list[Segment]:
         Segment(base_freq_hz=step.base_freq_hz, duration_seconds=step.duration_seconds, oddball=step.oddball)
         for step in sweep.steps
     ]
+
+
+def plan_sweep_overlay_windows(
+    sweep: FrequencySweepParams,
+    *,
+    refresh_hz: float,
+    n_fade_in_frames: int,
+    n_fade_out_frames: int,
+) -> list[SegmentWindow]:
+    """Turn an enabled sweep into the per-segment :class:`SegmentWindow` list the overlay schedulers
+    (:mod:`distractor` / :mod:`go_nogo`) consume, so a *triggered* overlay is scheduled off each step's
+    OWN base-onset cadence during a sweep. Returns ``[]`` when the sweep is disabled (the caller then
+    uses the single-segment path).
+
+    The frame span of each step MUST match what the presentation engine actually presents for that step
+    (:func:`paradigm_oddball._plan_oddball_segment`): its budget is its share of the trial fades (fade-in
+    on the first step, fade-out on the last, 0 for middle steps) plus its plateau, floor-divided by its
+    own frames-per-cycle and re-multiplied (per-segment truncation, design invariant #6). ``start_frame``
+    accumulates those spans so the windows tile the sequence exactly as the engine's continuous
+    ``global_frame_index`` does. Pure -- mirrors ``task.py``'s ``_effective_frames`` sweep accounting."""
+    if not sweep.enabled:
+        return []
+    windows: list[SegmentWindow] = []
+    last_index = len(sweep.steps) - 1
+    start_frame = 0
+    for i, step in enumerate(sweep.steps):
+        fpc = frames_per_cycle(refresh_hz, step.base_freq_hz)
+        fade_in = n_fade_in_frames if i == 0 else 0
+        fade_out = n_fade_out_frames if i == last_index else 0
+        budget = fade_in + round(step.duration_seconds * refresh_hz) + fade_out
+        frame_count = max(budget // fpc, 1) * fpc
+        windows.append(SegmentWindow(start_frame=start_frame, frame_count=frame_count, frames_per_stim=fpc))
+        start_frame += frame_count
+    return windows
 
 
 def min_recommended_step_seconds(oddball_freq_hz: float, n_bins: int = 5) -> float:

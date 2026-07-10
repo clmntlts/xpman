@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from xpman.tasks.fpvs._event_schedule import iter_event_windows
+from xpman.tasks.fpvs._event_schedule import (
+    SegmentWindow,
+    iter_event_windows_over_segments,
+)
 from xpman.tasks.fpvs.fixation import FixationParams, FixationShape, build_fixation_stimulus
 
 if TYPE_CHECKING:
@@ -133,6 +136,7 @@ def schedule_distractor_events(
     params: DistractorParams,
     rng: "numpy.random.Generator",
     refresh_hz: float,
+    segments: "list[SegmentWindow] | None" = None,
 ) -> list[DistractorEvent]:
     """Deterministically place distractor events across ``[guard, total_frames-guard)``.
 
@@ -141,12 +145,18 @@ def schedule_distractor_events(
     ``params.trigger_code`` is set, an onset landing on a base-onset frame (a multiple of
     ``frames_per_stim``) is nudged forward to the next non-onset frame, so its trigger can never
     collide with the base/oddball trigger on that flip. Pure: no PsychoPy, no drawing.
+
+    ``segments`` (v2, #4): an explicit list of :class:`SegmentWindow` for a frequency sweep, where the
+    base-onset cadence changes per step. Each segment is scheduled over its own frame span with its own
+    ``frames_per_stim``, so a triggered overlay never lands on a base onset inside any step. When
+    ``None`` (the default, non-sweep case) the whole sequence is ONE segment starting at frame 0 with
+    ``frames_per_stim`` -- byte-for-byte the v1 single-call schedule and RNG draw order.
     """
+    windows = segments or [SegmentWindow(start_frame=0, frame_count=total_frames, frames_per_stim=frames_per_stim)]
     return [
         DistractorEvent(index=index, onset_frame=onset, offset_frame=offset)
-        for index, onset, offset in iter_event_windows(
-            total_frames,
-            frames_per_stim,
+        for index, onset, offset in iter_event_windows_over_segments(
+            windows,
             event_duration_seconds=params.event_duration_seconds,
             min_interval_seconds=params.min_interval_seconds,
             max_interval_seconds=params.max_interval_seconds,

@@ -182,15 +182,39 @@ def test_migrate_v5_to_v6_is_additive_passthrough():
     assert data == v5  # sweep default (disabled) fills in on validation
 
 
-def test_sweep_with_triggered_overlay_is_rejected():
+def test_sweep_with_triggered_single_stream_overlay_is_allowed():
+    # #4: a triggered overlay during a SINGLE-stream sweep is now allowed -- it is scheduled per
+    # segment (off each step's own base-onset cadence), so it never collides with the port.
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
-    # A *triggered* overlay during a sweep can collide with a per-step base/oddball trigger -> rejected.
-    with pytest.raises(ValidationError, match="triggered"):
+    params = FPVSConditionParams(
+        sweep=FrequencySweepParams(enabled=True, steps=steps),
+        distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
+    )
+    assert params.sweep.enabled and params.distractor.trigger_code == 50
+
+
+def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
+    # #4: the one combination still rejected -- a triggered overlay together with a sweep x DUAL
+    # stream (the two streams have different per-step cadences, so no single cadence to nudge off).
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
+    with pytest.raises(ValidationError, match="sweep x dual-stream"):
         FPVSConditionParams(
-            sweep=FrequencySweepParams(enabled=True, steps=steps),
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
             distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
         )
 
@@ -236,18 +260,84 @@ def test_dual_stream_rejects_identical_positions():
         )
 
 
-def test_dual_stream_rejects_sweep_combo():
+def test_dual_stream_rejects_one_sided_sweep():
+    # #4: a sweep x dual-stream needs BOTH streams sweeping on a shared timeline. Main stream sweeping
+    # while the second holds a fixed frequency (its sweep disabled) is rejected.
     from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
-    with pytest.raises(ValidationError, match="second stream"):
+    with pytest.raises(ValidationError, match="both.*enabled|BOTH"):
         FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
             sweep=FrequencySweepParams(
                 enabled=True,
                 steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)],
             ),
             second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
         )
+
+
+def test_dual_stream_rejects_independent_per_stream_sweep_timelines():
+    # #4: independent per-stream sweeps (mismatched step durations) are rejected -- both streams must
+    # change frequency at the SAME segment boundaries (shared timeline).
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=4.0), SweepStep(base_freq_hz=4.0, duration_seconds=6.0)]
+    with pytest.raises(ValidationError, match="share ONE step timeline"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
+        )
+
+
+def test_dual_stream_rejects_harmonic_sweep_step():
+    # #4: each step's paired base frequencies must be spectrally separable, like the single-freq case.
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=10.0, duration_seconds=5.0)]  # step 1: 5 & 10 = harmonic
+    with pytest.raises(ValidationError, match="harmonically related"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
+        )
+
+
+def test_shared_timeline_sweep_dual_stream_is_accepted():
+    # #4: a shared-timeline sweep x dual-stream (matching step counts + durations, non-harmonic per
+    # step, distinct positions) is accepted.
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second),
+        ),
+    )
+    assert params.sweep.enabled and params.second_stream.sweep.enabled
+    assert [s.duration_seconds for s in params.sweep.steps] == [s.duration_seconds for s in params.second_stream.sweep.steps]
 
 
 def test_valid_dual_stream_is_accepted():
