@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from xpman.tasks.fpvs._event_schedule import iter_event_windows
+from xpman.tasks.fpvs._event_schedule import (
+    SegmentWindow,
+    iter_event_windows_over_segments,
+)
 from xpman.tasks.fpvs.fixation import FixationParams, build_fixation_stimulus
 
 if TYPE_CHECKING:
@@ -123,21 +126,27 @@ def schedule_go_nogo_events(
     params: GoNoGoParams,
     rng: "numpy.random.Generator",
     refresh_hz: float,
+    segments: "list[SegmentWindow] | None" = None,
 ) -> list[GoNoGoEvent]:
     """Deterministically place go/no-go events across ``[guard, total_frames-guard)``. Each event is
     GO (all markers signal) with probability ``go_probability``, else NO-GO (one random marker
     signals). When a trigger is configured, onsets are nudged off base-onset frames (multiples of
     ``frames_per_stim``) so a go/no-go trigger can never share a flip with the base/oddball trigger.
-    Pure: no PsychoPy, no drawing."""
+    Pure: no PsychoPy, no drawing.
+
+    ``segments`` (v2, #4): per-segment scheduling for a frequency sweep -- each :class:`SegmentWindow`
+    scheduled over its own frame span with its own base-onset cadence. ``None`` (non-sweep) schedules
+    the whole sequence as one segment from frame 0, byte-for-byte the v1 single-call schedule + the v1
+    interleaved RNG draw order (the gap draw, then this loop's kind + marker draws, per event)."""
     has_trigger = params.go_trigger_code is not None or params.nogo_trigger_code is not None
     n_markers = len(params.markers)
+    windows = segments or [SegmentWindow(start_frame=0, frame_count=total_frames, frames_per_stim=frames_per_stim)]
 
     events: list[GoNoGoEvent] = []
     # The shared generator draws the gap (one rng.integers) per event before yielding; we draw the
     # kind + marker right after, keeping the interleaved RNG order identical to the old inline loop.
-    for index, onset, offset in iter_event_windows(
-        total_frames,
-        frames_per_stim,
+    for index, onset, offset in iter_event_windows_over_segments(
+        windows,
         event_duration_seconds=params.event_duration_seconds,
         min_interval_seconds=params.min_interval_seconds,
         max_interval_seconds=params.max_interval_seconds,

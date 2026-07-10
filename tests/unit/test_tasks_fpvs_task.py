@@ -1674,6 +1674,123 @@ def test_run_trial_sweep_outcome_summary_per_segment_keys(mock_window, stim_root
         assert summary[f"sweep_seg{i}_n_stimuli_shown"] > 0
 
 
+def test_run_trial_triggered_distractor_during_sweep_never_collides(mock_window, stim_root, event_sink):
+    """#4 acceptance: a *triggered* distractor runs during a multi-step sweep, and no distractor onset
+    lands on a base/oddball onset frame of ANY step (its trigger can never fight the port)."""
+    import json
+
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=12.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+            ],
+        ),
+    )
+    params.distractor.enabled = True
+    params.distractor.trigger_code = 55
+    params.distractor.min_interval_seconds = 0.4
+    params.distractor.max_interval_seconds = 1.0
+    params.distractor.guard_seconds = 0.5
+    params.distractor.keys = ["a"]
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["distractor_enabled"] is True
+    assert result.outcome_summary["distractor_n_events"] >= 1
+
+    rows = _read_events(event_sink)
+    # Frame indices of every stimulus/oddball onset (per step) and every distractor onset.
+    onset_frames = {
+        json.loads(r["payload_json"])["frame_index"]
+        for r in rows
+        if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    }
+    distractor_frames = [
+        json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "distractor_onset"
+    ]
+    assert distractor_frames  # some fired
+    # The core guarantee: no triggered distractor onset shares a flip with any base/oddball onset.
+    assert not (set(distractor_frames) & onset_frames)
+
+
+def test_run_trial_shared_timeline_sweep_dual_stream_presents_both_streams(mock_window, stim_root, event_sink):
+    """#4 acceptance: a shared-timeline sweep x dual-stream drives BOTH streams across every segment,
+    with per-segment provenance and both streams changing frequency at the shared boundary."""
+    import json
+
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        SweepStep(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.4)),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=7.5, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.5)),
+        SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.0)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.5,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["aborted"] is False
+    rows = _read_events(event_sink)
+    types = [r["event_type"] for r in rows]
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("sweep_segment_start") == 2  # one per shared time-segment
+    assert types.count("sweep_segment_end") == 2
+    # Both streams present onsets, and both appear in BOTH time-segments.
+    onset_payloads = [
+        json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    ]
+    boundary = min(
+        json.loads(r["payload_json"])["start_frame_index"]
+        for r in rows
+        if r["event_type"] == "sweep_segment_start" and json.loads(r["payload_json"])["segment_index"] == 1
+    )
+    seg0_streams = {p["stream"] for p in onset_payloads if p["frame_index"] < boundary}
+    seg1_streams = {p["stream"] for p in onset_payloads if p["frame_index"] >= boundary}
+    assert seg0_streams == {0, 1}
+    assert seg1_streams == {0, 1}
+
+
 def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink):
     """A 'both' baseline runs one base-only reference before the oddball stream and one after, each
     framed by its own start/stop triggers + baseline_start/end (tagged with its phase)."""

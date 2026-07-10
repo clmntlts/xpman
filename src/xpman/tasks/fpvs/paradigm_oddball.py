@@ -1178,6 +1178,7 @@ def _run_dual_stream(
     distractor: "DistractorController | None",
     go_nogo: "GoNoGoController | None",
     position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None,
+    stream_segment_timeline: "list[list[Segment]] | None" = None,
 ) -> BaseOddballSequenceResult:
     """Present two (or more) simultaneous image streams **frame-driven** for one constant-duration
     segment: each stream onsets at its own cadence (``frame % frames_per_stim == 0``) and is held
@@ -1185,8 +1186,17 @@ def _run_dual_stream(
     to exactly ONE port code via :func:`resolve_frame_trigger` (coincident onsets -> a reserved code).
 
     This is a **separate code path** from the single-stream position-driven engine (which stays
-    byte-for-byte). A single segment (no per-stream sweep); photodiode tracks ``tracked_stream_index``
-    only; one trailing clear + one flip-log flush for the whole trial.
+    byte-for-byte). Photodiode tracks ``tracked_stream_index`` only; one trailing clear + one flip-log
+    flush for the whole trial.
+
+    ``stream_segment_timeline`` (v2, #4): a **shared step timeline** for a sweep x dual-stream -- an
+    ordered list of *time-segments*, each a list with one :class:`Segment` per stream (that step's
+    per-stream base frequency + oddball). Every stream changes frequency at the SAME segment boundaries
+    (shared durations), each getting its own per-segment ``frames_per_stim``. Presented back-to-back on
+    one continuous frame timeline with a single trial-global contrast envelope (fades only at the trial
+    ends, plateau across all steps -- like :func:`_run_oddball_segments`), pools + oddball position
+    re-initialised per time-segment per stream. When ``None`` (the default, non-sweep dual stream) the
+    ``stream_segments`` argument is the single time-segment -- byte-for-byte the v1 behavior.
 
     ``position_providers`` (v2, per #3): an optional list -- one entry per stream, in stream order --
     of per-stimulus jitter offset providers (each mirrors the single-stream ``position_provider``:
@@ -1196,38 +1206,69 @@ def _run_dual_stream(
     be seeded from its own decoupled sub-stream so the two streams jitter independently yet
     reproducibly (see ``task.py``).
     """
-    if len(streams) != len(stream_segments):
-        raise ValueError("_run_dual_stream needs one Segment per Stream")
+    # Normalize to a shared step timeline: a list of time-segments, each with one Segment per stream.
+    # A non-sweep dual stream is a timeline of length 1 (the `stream_segments` argument), which keeps
+    # every downstream computation byte-for-byte identical to v1.
+    timeline: list[list[Segment]] = stream_segment_timeline if stream_segment_timeline is not None else [stream_segments]
+    if not timeline:
+        raise ValueError("_run_dual_stream needs at least one time-segment")
+    for seg_list in timeline:
+        if len(streams) != len(seg_list):
+            raise ValueError("_run_dual_stream needs one Segment per Stream in every time-segment")
+    # Every time-segment shares the same duration across streams (validated on the Condition); use the
+    # first stream's Segment in each as the timeline's shared duration.
     if len(streams) < 2:
         raise ValueError("_run_dual_stream is for >= 2 streams (single stream uses _run_oddball_segments)")
     photodiode_params = photodiode_params or PhotodiodeParams()
+    multi = len(timeline) > 1
 
-    # Shared trial-global envelope (single segment): fade-in/out at the trial ends, plateau across it.
-    duration_seconds = stream_segments[0].duration_seconds
-    plateau_frames = round(duration_seconds * refresh_rate_hz)
-    total_frames = n_fade_in_frames + plateau_frames + n_fade_out_frames
+    # Shared trial-global envelope: fade-in/out only at the trial ends, ONE plateau spanning EVERY
+    # time-segment (so a sweep does not re-pump contrast at each step boundary -- like
+    # _run_oddball_segments). For a single time-segment this is exactly the v1 fade accounting.
+    total_plateau_frames = sum(round(seg_list[0].duration_seconds * refresh_rate_hz) for seg_list in timeline)
     envelope = _TrialEnvelope(
         start_frame_index=starting_frame_index,
         fade_in_frames=n_fade_in_frames,
-        plateau_frames=plateau_frames,
+        plateau_frames=total_plateau_frames,
         fade_out_frames=n_fade_out_frames,
     )
+    last_time_index = len(timeline) - 1
 
-    # Build per-stream runtimes. Pools are constructed in stream order (stream 0 base, stream 0
-    # oddball, stream 1 base, ...) so seeded trials are reproducible (design invariant #5).
-    runtimes: list[_StreamRuntime] = []
-    for index, (stream, seg) in enumerate(zip(streams, stream_segments)):
-        plan = _plan_oddball_segment(
-            seg,
-            refresh_rate_hz=refresh_rate_hz,
-            envelope=envelope,
-            segment_fade_in_frames=n_fade_in_frames,
-            segment_fade_out_frames=n_fade_out_frames,
-            modulation=stream.modulation,
+    # Plan every stream for every time-segment ahead of the timed loop. ``segment_plans[t][s]`` is the
+    # plan for stream s in time-segment t; each stream's fade share is on the first/last time-segment.
+    segment_plans: list[list[_SegmentPlan]] = []
+    for t, seg_list in enumerate(timeline):
+        segment_plans.append(
+            [
+                _plan_oddball_segment(
+                    seg,
+                    refresh_rate_hz=refresh_rate_hz,
+                    envelope=envelope,
+                    segment_fade_in_frames=n_fade_in_frames if t == 0 else 0,
+                    segment_fade_out_frames=n_fade_out_frames if t == last_time_index else 0,
+                    modulation=stream.modulation,
+                )
+                for stream, seg in zip(streams, seg_list)
+            ]
         )
+
+    # Each time-segment's frame span: its fade share + its plateau (both streams share the duration).
+    segment_frame_counts = [
+        (n_fade_in_frames if t == 0 else 0)
+        + round(seg_list[0].duration_seconds * refresh_rate_hz)
+        + (n_fade_out_frames if t == last_time_index else 0)
+        for t, seg_list in enumerate(timeline)
+    ]
+
+    # Build per-stream runtimes ONCE (persistent across time-segments). Their plan/pools are (re)set at
+    # each time-segment boundary; cumulative n_stimuli_shown / n_oddballs_shown accrue across the trial.
+    # The first time-segment's plans are installed here (stream 0 base, stream 0 oddball, stream 1 base,
+    # ... pool order -- design invariant #5).
+    runtimes: list[_StreamRuntime] = []
+    for index, stream in enumerate(streams):
         base_pool = _PoolSequencer(len(stream.base_stimuli), rng)
         oddball_pool = _PoolSequencer(len(stream.oddball_stimuli), rng)
-        runtimes.append(_StreamRuntime(stream, plan, base_pool, oddball_pool, index))
+        runtimes.append(_StreamRuntime(stream, segment_plans[0][index], base_pool, oddball_pool, index))
 
     # Per-stream jitter providers (v2, #3): one optional provider per stream, in stream order. A missing
     # list or a None entry -> that stream stays at its fixed position_pix (v1 behavior). Normalize to a
@@ -1250,12 +1291,13 @@ def _run_dual_stream(
         if reserved_codes is not None
         else {}
     )
+    first_seg_list = timeline[0]
     event_sink.log(
         "base_oddball_sequence_start",
         {
-            "requested_base_freq_hz": stream_segments[0].base_freq_hz,
+            "requested_base_freq_hz": first_seg_list[0].base_freq_hz,
             "achieved_base_freq_hz": runtimes[0].plan.achieved_base_hz,
-            "requested_oddball_freq_hz": stream_segments[0].oddball.oddball_freq_hz if stream_segments[0].oddball else None,
+            "requested_oddball_freq_hz": first_seg_list[0].oddball.oddball_freq_hz if first_seg_list[0].oddball else None,
             "achieved_oddball_freq_hz": runtimes[0].plan.achieved_oddball_hz,
             "n_streams": len(streams),
             "photodiode_tracks_stream": tracked_stream_index,
@@ -1280,152 +1322,204 @@ def _run_dual_stream(
     flip_log: list[tuple[str, dict, float]] = []
     aborted = False
     frames_presented = 0
+    segment_start_frame = starting_frame_index  # global frame each time-segment begins on
 
-    for frame_offset in range(total_frames):
-        if abort_check():
-            aborted = True
+    for time_index, seg_list in enumerate(timeline):
+        if aborted:
             break
-        global_frame_index = starting_frame_index + frame_offset
+        # Install this time-segment's per-stream plan and (re)initialise each stream's pools + oddball
+        # position, exactly as the single-stream sweep engine resets per segment (design invariant #5).
+        for index, rt in enumerate(runtimes):
+            rt.plan = segment_plans[time_index][index]
+            rt.base_pool = _PoolSequencer(len(rt.stream.base_stimuli), rng)
+            rt.oddball_pool = _PoolSequencer(len(rt.stream.oddball_stimuli), rng)
+            rt.position = 0
+        if multi:
+            first_plan = segment_plans[time_index][0]
+            event_sink.log(
+                "sweep_segment_start",
+                {
+                    "segment_index": time_index,
+                    "requested_base_freq_hz": seg_list[0].base_freq_hz,
+                    "achieved_base_freq_hz": first_plan.achieved_base_hz,
+                    "requested_oddball_freq_hz": seg_list[0].oddball.oddball_freq_hz if seg_list[0].oddball else None,
+                    "achieved_oddball_freq_hz": first_plan.achieved_oddball_hz,
+                    "frames_per_stimulus": first_plan.n_frames_per_stim,
+                    "start_frame_index": segment_start_frame,
+                    "streams": [
+                        {
+                            "stream": index,
+                            "achieved_base_freq_hz": segment_plans[time_index][index].achieved_base_hz,
+                            "frames_per_stimulus": segment_plans[time_index][index].n_frames_per_stim,
+                        }
+                        for index in range(len(runtimes))
+                    ],
+                },
+            )
+        segment_frames = segment_frame_counts[time_index]
+        segment_stimuli_before = sum(rt.n_stimuli_shown for rt in runtimes)
 
-        # Advance every stream that onsets on this frame; collect their onset codes for the combiner.
-        frame_onsets: list[StreamOnset] = []
-        onset_runtimes: list[_StreamRuntime] = []
-        for rt in runtimes:
-            if frame_offset % rt.plan.n_frames_per_stim != 0:
-                continue
-            rt.position += 1
-            is_oddball = rt.plan.position_is_oddball(rt.position)
-            if is_oddball:
-                rt.current_stim = rt.stream.oddball_stimuli[rt.oddball_pool.next()]
-                rt.current_code = rt.stream.oddball_trigger_code
+        for seg_frame_offset in range(segment_frames):
+            if abort_check():
+                aborted = True
+                break
+            global_frame_index = segment_start_frame + seg_frame_offset
+
+            # Advance every stream that onsets on this frame; collect their onset codes for the combiner.
+            frame_onsets: list[StreamOnset] = []
+            onset_runtimes: list[_StreamRuntime] = []
+            for rt in runtimes:
+                if seg_frame_offset % rt.plan.n_frames_per_stim != 0:
+                    continue
+                rt.position += 1
+                is_oddball = rt.plan.position_is_oddball(rt.position)
+                if is_oddball:
+                    rt.current_stim = rt.stream.oddball_stimuli[rt.oddball_pool.next()]
+                    rt.current_code = rt.stream.oddball_trigger_code
+                else:
+                    rt.current_stim = rt.stream.base_stimuli[rt.base_pool.next()]
+                    rt.current_code = rt.stream.base_trigger_code
+                # Per-stream position: the stream's fixed centre plus its own jitter offset (v2, #3),
+                # or just the fixed centre when this stream has no jitter provider (v1 behavior,
+                # byte-for-byte). Each stream's provider draws from its OWN decoupled sub-stream (seeded
+                # in task.py per stream_index), so the two streams jitter independently but reproducibly.
+                provider = providers[rt.stream_index]
+                if provider is not None:
+                    dx, dy = provider()
+                    rt.current_pos = (rt.stream.position_pix[0] + dx, rt.stream.position_pix[1] + dy)
+                    rt.current_jittered = True
+                else:
+                    rt.current_pos = rt.stream.position_pix
+                    rt.current_jittered = False
+                set_position = getattr(rt.current_stim, "set_position", None)
+                if set_position is not None:
+                    set_position(rt.current_pos)
+                rt.current_is_oddball = is_oddball
+                rt.current_stim_index = rt.position - 1
+                rt.n_stimuli_shown += 1
+                if is_oddball:
+                    rt.n_oddballs_shown += 1
+                frame_onsets.append(StreamOnset(rt.stream_index, rt.current_code, is_oddball))
+                onset_runtimes.append(rt)
+
+            # Overlay (distractor / go-no-go) code for this frame (scheduled off base-onset frames). A
+            # *triggered* overlay is rejected with a sweep x dual-stream (schema validator), so with a
+            # sweep overlay_code stays None; without a sweep a triggered overlay is scheduled off the
+            # shared single cadence. resolve_frame_trigger still raises if a stream onset + overlay collide.
+            overlay_code: int | None = None
+            distractor_event = distractor.event_starting_at(global_frame_index) if distractor is not None else None
+            go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
+            if distractor_event is not None and distractor is not None and distractor.trigger_code is not None:
+                overlay_code = distractor.trigger_code
+            elif go_nogo_event is not None and go_nogo is not None:
+                gcode = go_nogo.trigger_code_for(go_nogo_event)
+                if gcode is not None:
+                    overlay_code = gcode
+
+            action = resolve_frame_trigger(frame_onsets, reserved=reserved_codes, overlay_code=overlay_code)
+            if action[0] == "set_code":
+                window.callOnFlip(trigger.set_code, action[1])
             else:
-                rt.current_stim = rt.stream.base_stimuli[rt.base_pool.next()]
-                rt.current_code = rt.stream.base_trigger_code
-            # Per-stream position: the stream's fixed centre plus its own jitter offset (v2, #3), or
-            # just the fixed centre when this stream has no jitter provider (v1 behavior, byte-for-byte).
-            # Each stream's provider draws from its OWN decoupled sub-stream (seeded in task.py per
-            # stream_index), so the two streams jitter independently but reproducibly.
-            provider = providers[rt.stream_index]
-            if provider is not None:
-                dx, dy = provider()
-                rt.current_pos = (rt.stream.position_pix[0] + dx, rt.stream.position_pix[1] + dy)
-                rt.current_jittered = True
-            else:
-                rt.current_pos = rt.stream.position_pix
-                rt.current_jittered = False
-            set_position = getattr(rt.current_stim, "set_position", None)
-            if set_position is not None:
-                set_position(rt.current_pos)
-            rt.current_is_oddball = is_oddball
-            rt.current_stim_index = rt.position - 1
-            rt.n_stimuli_shown += 1
-            if is_oddball:
-                rt.n_oddballs_shown += 1
-            frame_onsets.append(StreamOnset(rt.stream_index, rt.current_code, is_oddball))
-            onset_runtimes.append(rt)
+                window.callOnFlip(trigger.clear_code)
 
-        # Overlay (distractor / go-no-go) code for this frame (scheduled off base-onset frames). In v1
-        # a *triggered* overlay is rejected with dual streams (schema validator), so overlay_code is
-        # normally None; resolve_frame_trigger still raises if a stream onset + overlay ever collide.
-        overlay_code: int | None = None
-        distractor_event = distractor.event_starting_at(global_frame_index) if distractor is not None else None
-        go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
-        if distractor_event is not None and distractor is not None and distractor.trigger_code is not None:
-            overlay_code = distractor.trigger_code
-        elif go_nogo_event is not None and go_nogo is not None:
-            gcode = go_nogo.trigger_code_for(go_nogo_event)
-            if gcode is not None:
-                overlay_code = gcode
+            # Photodiode follows the tracked stream's onsets only (v1 -- logged in the start event).
+            tracked = runtimes[tracked_stream_index]
+            is_tracked_onset = seg_frame_offset % tracked.plan.n_frames_per_stim == 0
+            if photodiode is not None and should_toggle(
+                photodiode_params,
+                frame_index=global_frame_index,
+                is_stimulus_onset=is_tracked_onset,
+                is_oddball_onset=is_tracked_onset and tracked.current_is_oddball,
+            ):
+                photodiode.toggle()
 
-        action = resolve_frame_trigger(frame_onsets, reserved=reserved_codes, overlay_code=overlay_code)
-        if action[0] == "set_code":
-            window.callOnFlip(trigger.set_code, action[1])
-        else:
-            window.callOnFlip(trigger.clear_code)
+            # Draw every stream's held stimulus at its position (+ its own contrast modulation).
+            for rt in runtimes:
+                if rt.current_stim is None:
+                    continue
+                if rt.plan.modulation_fn is not None:
+                    frame_in_cycle = seg_frame_offset % rt.plan.n_frames_per_stim
+                    rt.current_stim.set_modulation(rt.plan.modulation_fn(frame_in_cycle, global_frame_index))
+                rt.current_stim.draw()
+            if photodiode is not None:
+                photodiode.draw()
+            if distractor is not None and distractor.is_active(global_frame_index):
+                distractor.draw()
+            if go_nogo is not None:
+                go_nogo.draw_frame(global_frame_index)
 
-        # Photodiode follows the tracked stream's onsets only (v1 -- logged in the start event).
-        tracked = runtimes[tracked_stream_index]
-        is_tracked_onset = frame_offset % tracked.plan.n_frames_per_stim == 0
-        if photodiode is not None and should_toggle(
-            photodiode_params,
-            frame_index=global_frame_index,
-            is_stimulus_onset=is_tracked_onset,
-            is_oddball_onset=is_tracked_onset and tracked.current_is_oddball,
-        ):
-            photodiode.toggle()
+            flip_time = window.flip()
+            if flip_time is None:
+                flip_time = clock.get_time()
 
-        # Draw every stream's held stimulus at its position (+ its own contrast modulation).
-        for rt in runtimes:
-            if rt.current_stim is None:
-                continue
-            if rt.plan.modulation_fn is not None:
-                frame_in_cycle = frame_offset % rt.plan.n_frames_per_stim
-                rt.current_stim.set_modulation(rt.plan.modulation_fn(frame_in_cycle, global_frame_index))
-            rt.current_stim.draw()
-        if photodiode is not None:
-            photodiode.draw()
-        if distractor is not None and distractor.is_active(global_frame_index):
-            distractor.draw()
-        if go_nogo is not None:
-            go_nogo.draw_frame(global_frame_index)
+            # Log each stream's onset (with its `stream` index + intended code + image + position), then
+            # a single trigger_sent recording the ACTUAL combined code sent on the port.
+            for rt in onset_runtimes:
+                onset_event_type = "oddball_onset" if rt.current_is_oddball else "stimulus_onset"
+                event_sink.log(
+                    onset_event_type,
+                    {
+                        "stim_index": rt.current_stim_index,
+                        "frame_index": global_frame_index,
+                        "is_oddball": rt.current_is_oddball,
+                        "image": getattr(rt.current_stim, "identity", None),
+                        # Actual drawn position: the stream's centre plus any jitter offset. With no
+                        # jitter this equals position_pix (unchanged from v1); with jitter it is the
+                        # jittered position, matching how the single-stream path logs each onset (#3).
+                        "pos": [rt.current_pos[0], rt.current_pos[1]],
+                        "stream": rt.stream_index,
+                    },
+                    timestamp=flip_time,
+                )
+                onsets.append(
+                    OnsetRecord(time=flip_time, is_oddball=rt.current_is_oddball, stim_index=rt.current_stim_index)
+                )
+            if action[0] == "set_code":
+                event_sink.log(
+                    "trigger_sent",
+                    {
+                        "code": action[1],
+                        "streams": [rt.stream_index for rt in onset_runtimes],
+                        "is_coincidence": len([rt for rt in onset_runtimes if rt.current_code is not None]) > 1,
+                    },
+                    timestamp=flip_time,
+                )
+            if distractor_event is not None:
+                distractor_event.onset_time = flip_time
+                event_sink.log(
+                    "distractor_onset",
+                    {"index": distractor_event.index, "frame_index": global_frame_index},
+                    timestamp=flip_time,
+                )
+            if go_nogo_event is not None:
+                go_nogo_event.onset_time = flip_time
+                event_sink.log(
+                    "go_nogo_onset",
+                    {
+                        "index": go_nogo_event.index,
+                        "kind": go_nogo_event.kind,
+                        "signaling": list(go_nogo_event.signaling),
+                        "frame_index": global_frame_index,
+                    },
+                    timestamp=flip_time,
+                )
+            flip_log.append(("flip", {"frame_index": global_frame_index}, flip_time))
+            frames_presented += 1
 
-        flip_time = window.flip()
-        if flip_time is None:
-            flip_time = clock.get_time()
-
-        # Log each stream's onset (with its `stream` index + intended code + image + position), then a
-        # single trigger_sent recording the ACTUAL combined code sent on the port.
-        for rt in onset_runtimes:
-            onset_event_type = "oddball_onset" if rt.current_is_oddball else "stimulus_onset"
+        # End of this time-segment: advance the global frame cursor to the next segment's start and,
+        # for an actual sweep (>1 time-segment), emit per-segment provenance (mirrors the single-stream
+        # sweep engine's sweep_segment_end).
+        segment_start_frame += segment_frames
+        if multi:
             event_sink.log(
-                onset_event_type,
+                "sweep_segment_end",
                 {
-                    "stim_index": rt.current_stim_index,
-                    "frame_index": global_frame_index,
-                    "is_oddball": rt.current_is_oddball,
-                    "image": getattr(rt.current_stim, "identity", None),
-                    # Actual drawn position: the stream's centre plus any jitter offset. With no jitter
-                    # this equals position_pix (unchanged from v1); with jitter it is the jittered
-                    # position, matching how the single-stream path logs each onset's ``pos`` (#3).
-                    "pos": [rt.current_pos[0], rt.current_pos[1]],
-                    "stream": rt.stream_index,
+                    "segment_index": time_index,
+                    "n_stimuli_shown": sum(rt.n_stimuli_shown for rt in runtimes) - segment_stimuli_before,
+                    "end_frame_index": segment_start_frame,
+                    "aborted": aborted,
                 },
-                timestamp=flip_time,
             )
-            onsets.append(
-                OnsetRecord(time=flip_time, is_oddball=rt.current_is_oddball, stim_index=rt.current_stim_index)
-            )
-        if action[0] == "set_code":
-            event_sink.log(
-                "trigger_sent",
-                {
-                    "code": action[1],
-                    "streams": [rt.stream_index for rt in onset_runtimes],
-                    "is_coincidence": len([rt for rt in onset_runtimes if rt.current_code is not None]) > 1,
-                },
-                timestamp=flip_time,
-            )
-        if distractor_event is not None:
-            distractor_event.onset_time = flip_time
-            event_sink.log(
-                "distractor_onset",
-                {"index": distractor_event.index, "frame_index": global_frame_index},
-                timestamp=flip_time,
-            )
-        if go_nogo_event is not None:
-            go_nogo_event.onset_time = flip_time
-            event_sink.log(
-                "go_nogo_onset",
-                {
-                    "index": go_nogo_event.index,
-                    "kind": go_nogo_event.kind,
-                    "signaling": list(go_nogo_event.signaling),
-                    "frame_index": global_frame_index,
-                },
-                timestamp=flip_time,
-            )
-        flip_log.append(("flip", {"frame_index": global_frame_index}, flip_time))
-        frames_presented += 1
 
     trigger.clear_code()
     event_sink.log_many(flip_log)
@@ -1448,11 +1542,11 @@ def _run_dual_stream(
 
     first = runtimes[0]
     return BaseOddballSequenceResult(
-        requested_base_freq_hz=stream_segments[0].base_freq_hz,
-        achieved_base_freq_hz=first.plan.achieved_base_hz,
-        requested_oddball_freq_hz=stream_segments[0].oddball.oddball_freq_hz if stream_segments[0].oddball else 0.0,
-        achieved_oddball_freq_hz=first.plan.achieved_oddball_hz,
-        frames_per_stimulus=first.plan.n_frames_per_stim,
+        requested_base_freq_hz=first_seg_list[0].base_freq_hz,
+        achieved_base_freq_hz=segment_plans[0][0].achieved_base_hz,
+        requested_oddball_freq_hz=first_seg_list[0].oddball.oddball_freq_hz if first_seg_list[0].oddball else 0.0,
+        achieved_oddball_freq_hz=segment_plans[0][0].achieved_oddball_hz,
+        frames_per_stimulus=segment_plans[0][0].n_frames_per_stim,
         oddball_period_stimuli=first.plan.period,
         n_stimuli_shown=total_stimuli,
         n_oddballs_shown=total_oddballs,
