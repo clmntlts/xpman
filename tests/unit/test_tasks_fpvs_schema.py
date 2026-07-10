@@ -261,6 +261,148 @@ def test_valid_dual_stream_is_accepted():
     assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 7.0)
 
 
+# ---------------------------------------------------------------------------
+# Dual-stream v2 per-stream triggers + coincidence codes (#2)
+# ---------------------------------------------------------------------------
+
+
+def _dual_condition(**over):
+    """A valid dual-stream Condition (distinct positions, non-harmonic 6 & 7 Hz) with fields to
+    override for the coincidence-code tests."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    base = dict(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_trigger_code=over.pop("s2_base_code", None),
+            oddball_trigger_code=over.pop("s2_oddball_code", None),
+        ),
+    )
+    base.update(over)
+    return base
+
+
+def test_coincidence_codes_default_none_and_off_path_unaffected():
+    # Default: no per-stream triggers, no coincidence codes -> valid (v1 behavior preserved).
+    params = FPVSConditionParams(**_dual_condition())
+    assert not params.coincidence_codes.any_set()
+    assert params.second_stream.base_trigger_code is None
+
+
+def test_both_streams_triggered_require_full_coincidence_table():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Both streams triggered but coincidence table missing -> rejected.
+    with pytest.raises(ValidationError, match="all four coincidence_codes"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+    # Partial table -> also rejected (lists missing).
+    with pytest.raises(ValidationError, match="all four coincidence_codes"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(both_base=200, a_base_b_oddball=201),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_both_streams_triggered_with_disjoint_full_table_is_accepted():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        oddball=OddballParams(oddball_trigger_code=11),
+        coincidence_codes=CoincidenceCodes(
+            both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+        ),
+        **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+    )
+    table = params.coincidence_codes.as_reserved_table()
+    assert table == {
+        (False, False): 200,
+        (False, True): 201,
+        (True, False): 202,
+        (True, True): 203,
+    }
+
+
+def test_reserved_code_colliding_with_stream_code_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # 10 is the main stream's base code; reusing it as a reserved code is a collision.
+    with pytest.raises(ValidationError, match="collide"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=10, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_duplicate_reserved_codes_are_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    with pytest.raises(ValidationError, match="DISTINCT"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=200, a_base_b_oddball=200, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_coincidence_codes_without_both_streams_triggered_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Only the main stream is triggered -> a filled coincidence table would never be consulted, so it
+    # is flagged as a misconfiguration rather than silently ignored.
+    with pytest.raises(ValidationError, match="not both triggered"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(),  # second stream has NO trigger codes
+        )
+
+
+def test_reserved_field_out_of_8bit_range_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Field constraint (ge=1, le=255) rejects a 9-bit reserved code before any cross-field validator.
+    with pytest.raises(ValidationError):
+        CoincidenceCodes(both_base=256)
+
+
+def test_second_stream_trigger_codes_default_none():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    s = StreamParams()
+    assert s.base_trigger_code is None and s.oddball_trigger_code is None
+
+
+def test_coincidence_codes_inert_when_second_stream_disabled():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Second stream disabled: coincidence codes are inert and never checked (single-stream unaffected).
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        coincidence_codes=CoincidenceCodes(both_base=10),  # would collide IF checked
+    )
+    assert params.second_stream.enabled is False
+
+
 def test_response_task_is_off_by_default_and_oddball_referenced():
     """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
     its RT reference is the oddball onset (not the most-recent stimulus)."""

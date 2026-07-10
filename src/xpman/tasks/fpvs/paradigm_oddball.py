@@ -1146,6 +1146,13 @@ class _StreamRuntime:
     current_is_oddball: bool = False
     current_code: int | None = None
     current_stim_index: int = -1
+    #: Absolute pixel position the current stimulus is drawn at this onset -- the stream's fixed
+    #: ``position_pix`` plus its per-stimulus jitter offset (when a jitter provider is active), or just
+    #: ``position_pix`` when no jitter. Held between onsets so the drawn position and the logged onset
+    #: ``pos`` always agree. ``jittered`` records whether a jitter offset was actually applied (so the
+    #: onset log can mark centered-on-position vs jittered provenance).
+    current_pos: tuple[float, float] = (0.0, 0.0)
+    current_jittered: bool = False
     n_stimuli_shown: int = 0
     n_oddballs_shown: int = 0
 
@@ -1170,6 +1177,7 @@ def _run_dual_stream(
     rng: "numpy.random.Generator | None",
     distractor: "DistractorController | None",
     go_nogo: "GoNoGoController | None",
+    position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None,
 ) -> BaseOddballSequenceResult:
     """Present two (or more) simultaneous image streams **frame-driven** for one constant-duration
     segment: each stream onsets at its own cadence (``frame % frames_per_stim == 0``) and is held
@@ -1177,8 +1185,16 @@ def _run_dual_stream(
     to exactly ONE port code via :func:`resolve_frame_trigger` (coincident onsets -> a reserved code).
 
     This is a **separate code path** from the single-stream position-driven engine (which stays
-    byte-for-byte). v1: a single segment (no per-stream sweep), fixed positions (no jitter), photodiode
-    tracks ``tracked_stream_index`` only, one trailing clear + one flip-log flush for the whole trial.
+    byte-for-byte). A single segment (no per-stream sweep); photodiode tracks ``tracked_stream_index``
+    only; one trailing clear + one flip-log flush for the whole trial.
+
+    ``position_providers`` (v2, per #3): an optional list -- one entry per stream, in stream order --
+    of per-stimulus jitter offset providers (each mirrors the single-stream ``position_provider``:
+    called once per that stream's onset to get an ``(x, y)`` offset ADDED to the stream's
+    ``position_pix``). ``None`` for the whole list, or ``None`` for an individual stream, leaves that
+    stream at its fixed ``position_pix`` -- byte-for-byte the v1 behavior. Each stream's provider must
+    be seeded from its own decoupled sub-stream so the two streams jitter independently yet
+    reproducibly (see ``task.py``).
     """
     if len(streams) != len(stream_segments):
         raise ValueError("_run_dual_stream needs one Segment per Stream")
@@ -1213,6 +1229,27 @@ def _run_dual_stream(
         oddball_pool = _PoolSequencer(len(stream.oddball_stimuli), rng)
         runtimes.append(_StreamRuntime(stream, plan, base_pool, oddball_pool, index))
 
+    # Per-stream jitter providers (v2, #3): one optional provider per stream, in stream order. A missing
+    # list or a None entry -> that stream stays at its fixed position_pix (v1 behavior). Normalize to a
+    # list indexed by stream so the per-frame loop can look each stream's provider up cheaply.
+    providers: list[Callable[[], tuple[float, float]] | None] = list(position_providers or [])
+    providers += [None] * (len(streams) - len(providers))
+
+    # Reserved-code -> coincident-onset mapping, logged into the per-trial start event so an analyst can
+    # decode which combined code a coincidence carried (the codes are per-Condition, so this per-trial
+    # provenance record is where they belong -- run_metadata is Run-level and pre-trial). Keys are the
+    # two streams' (is_oddball, is_oddball) flags in ascending stream index, serialized as readable
+    # strings. Empty when no reserved table was supplied (at most one stream triggered -> no ambiguity).
+    reserved_mapping = (
+        {
+            "base+base": reserved_codes[(False, False)],
+            "base+oddball": reserved_codes[(False, True)],
+            "oddball+base": reserved_codes[(True, False)],
+            "oddball+oddball": reserved_codes[(True, True)],
+        }
+        if reserved_codes is not None
+        else {}
+    )
     event_sink.log(
         "base_oddball_sequence_start",
         {
@@ -1222,6 +1259,7 @@ def _run_dual_stream(
             "achieved_oddball_freq_hz": runtimes[0].plan.achieved_oddball_hz,
             "n_streams": len(streams),
             "photodiode_tracks_stream": tracked_stream_index,
+            "reserved_coincidence_codes": reserved_mapping,
             "streams": [
                 {
                     "stream": rt.stream_index,
@@ -1229,6 +1267,8 @@ def _run_dual_stream(
                     "achieved_oddball_freq_hz": rt.plan.achieved_oddball_hz,
                     "frames_per_stimulus": rt.plan.n_frames_per_stim,
                     "position_pix": [rt.stream.position_pix[0], rt.stream.position_pix[1]],
+                    "base_trigger_code": rt.stream.base_trigger_code,
+                    "oddball_trigger_code": rt.stream.oddball_trigger_code,
                 }
                 for rt in runtimes
             ],
@@ -1261,9 +1301,21 @@ def _run_dual_stream(
             else:
                 rt.current_stim = rt.stream.base_stimuli[rt.base_pool.next()]
                 rt.current_code = rt.stream.base_trigger_code
+            # Per-stream position: the stream's fixed centre plus its own jitter offset (v2, #3), or
+            # just the fixed centre when this stream has no jitter provider (v1 behavior, byte-for-byte).
+            # Each stream's provider draws from its OWN decoupled sub-stream (seeded in task.py per
+            # stream_index), so the two streams jitter independently but reproducibly.
+            provider = providers[rt.stream_index]
+            if provider is not None:
+                dx, dy = provider()
+                rt.current_pos = (rt.stream.position_pix[0] + dx, rt.stream.position_pix[1] + dy)
+                rt.current_jittered = True
+            else:
+                rt.current_pos = rt.stream.position_pix
+                rt.current_jittered = False
             set_position = getattr(rt.current_stim, "set_position", None)
             if set_position is not None:
-                set_position(rt.stream.position_pix)  # fixed per-stream position (no jitter in v1)
+                set_position(rt.current_pos)
             rt.current_is_oddball = is_oddball
             rt.current_stim_index = rt.position - 1
             rt.n_stimuli_shown += 1
@@ -1332,7 +1384,10 @@ def _run_dual_stream(
                     "frame_index": global_frame_index,
                     "is_oddball": rt.current_is_oddball,
                     "image": getattr(rt.current_stim, "identity", None),
-                    "pos": [rt.stream.position_pix[0], rt.stream.position_pix[1]],
+                    # Actual drawn position: the stream's centre plus any jitter offset. With no jitter
+                    # this equals position_pix (unchanged from v1); with jitter it is the jittered
+                    # position, matching how the single-stream path logs each onset's ``pos`` (#3).
+                    "pos": [rt.current_pos[0], rt.current_pos[1]],
                     "stream": rt.stream_index,
                 },
                 timestamp=flip_time,

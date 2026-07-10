@@ -1687,3 +1687,161 @@ def test_dual_stream_logs_each_stream_onset_with_position(mock_window, event_sin
     # Frame index is continuous across the 30-frame segment (one flip per frame, buffered batch).
     flip_frames = [json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "flip"]
     assert flip_frames == list(range(30))
+
+
+def test_dual_stream_no_reserved_table_never_double_pulses_and_logs_empty_mapping(
+    mock_window, event_sink, trigger, clock
+):
+    # Neither stream carries a code -> combiner returns None every coincidence, so a coincident frame
+    # is a single clear (never two set_codes), and the provenance mapping is empty.
+    left = Stream(base_stimuli=_identified_stims(["L0"]), oddball_stimuli=_identified_stims(["Lo"]),
+                  position_pix=(-100.0, 0.0))
+    right = Stream(base_stimuli=_identified_stims(["R0"]), oddball_stimuli=_identified_stims(["Ro"]),
+                   position_pix=(100.0, 0.0))
+    _, segments = _dual_streams()
+    window = _callonflip_recording_window(trigger)
+    _run_dual_stream(
+        window=window, streams=[left, right], stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=None,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None,
+    )
+    # No stream code anywhere -> only clear_code ops, never a set_code.
+    assert all(op[0] == "clear_code" for op in window.callonflip_ops)
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    assert start["reserved_coincidence_codes"] == {}
+
+
+def test_dual_stream_coincidence_emits_single_reserved_code_and_provenance_decodable(
+    mock_window, event_sink, trigger, clock
+):
+    streams, segments = _dual_streams()
+    window = _callonflip_recording_window(trigger)
+    _run_dual_stream(
+        window=window, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None,
+    )
+    # Exactly ONE callOnFlip registration per frame (never two pulses on one frame): 30 frames.
+    assert len(window.callonflip_ops) == 30
+    assert window.flip.call_count == 30
+    # The coincident base+base frames (0 and 10) resolved to the single reserved code, not codes 1 & 3.
+    codes = [op[1][0] for op in window.callonflip_ops if op[0] == "set_code"]
+    assert codes.count(200) == 2 and 1 not in codes
+    # Provenance table is present and decodable back to the reserved table.
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    assert start["reserved_coincidence_codes"] == {
+        "base+base": 200, "base+oddball": 201, "oddball+base": 202, "oddball+oddball": 203,
+    }
+    # Per-stream trigger codes are recorded too, so the whole scheme is invertible from the log.
+    assert [s["base_trigger_code"] for s in start["streams"]] == [1, 3]
+    assert [s["oddball_trigger_code"] for s in start["streams"]] == [2, 4]
+
+
+def test_dual_stream_per_stream_jitter_offsets_each_stream_own_center(
+    event_sink, trigger, clock
+):
+    import numpy as np
+
+    from xpman.tasks.fpvs.position import sample_position
+    from xpman.tasks.fpvs.schema import PositionJitterParams
+
+    jitter = PositionJitterParams(enabled=True, region="rectangle", x_range_pix=(-30.0, 30.0),
+                                  y_range_pix=(-30.0, 30.0))
+    # Two decoupled sub-streams (mirrors task.py's ctx.rng.spawn(2), stream_index order).
+    rngs = np.random.default_rng(1234).spawn(2)
+    providers = [lambda r=rngs[0]: sample_position(r, jitter), lambda r=rngs[1]: sample_position(r, jitter)]
+    streams, segments = _dual_streams()  # left center (-100,0), right center (100,0)
+    win = MagicMock(name="window")
+    win.flip.return_value = 0.0
+    _run_dual_stream(
+        window=win, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None, position_providers=providers,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    s0 = [p["pos"] for p in payloads if p["stream"] == 0]
+    s1 = [p["pos"] for p in payloads if p["stream"] == 1]
+    # Each stream jitters around its OWN center (within +/- 30 px), never the other's.
+    assert all(-130.0 <= x <= -70.0 and -30.0 <= y <= 30.0 for x, y in s0)
+    assert all(70.0 <= x <= 130.0 and -30.0 <= y <= 30.0 for x, y in s1)
+    # Jitter actually moved the images off their fixed centers (not all pinned to position_pix).
+    assert any((x, y) != (-100.0, 0.0) for x, y in s0)
+    assert any((x, y) != (100.0, 0.0) for x, y in s1)
+
+
+def _dual_jitter_positions(seed, event_sink, trigger, clock):
+    """Run a jittered dual-stream trial seeded from ``seed`` (spawn(2) like task.py) and return the
+    per-stream onset positions."""
+    import numpy as np
+
+    from xpman.tasks.fpvs.position import sample_position
+    from xpman.tasks.fpvs.schema import PositionJitterParams
+
+    jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=25.0)
+    rngs = np.random.default_rng(seed).spawn(2)
+    providers = [lambda r=rngs[0]: sample_position(r, jitter), lambda r=rngs[1]: sample_position(r, jitter)]
+    streams, segments = _dual_streams()
+    win = MagicMock(name="window")
+    win.flip.return_value = 0.0
+    _run_dual_stream(
+        window=win, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None, position_providers=providers,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    s0 = [tuple(p["pos"]) for p in payloads if p["stream"] == 0]
+    s1 = [tuple(p["pos"]) for p in payloads if p["stream"] == 1]
+    return s0, s1
+
+
+def test_dual_stream_jitter_is_reproducible_and_streams_independent(tmp_path, trigger, clock):
+    # Same seed -> identical per-stream jitter sequences (reproducible per (Instance, Subject)).
+    sink_a = EventSink(tmp_path / "a.csv", tmp_path / "a.parquet")
+    sink_b = EventSink(tmp_path / "b.csv", tmp_path / "b.parquet")
+    a0, a1 = _dual_jitter_positions(42, sink_a, trigger, clock)
+    b0, b1 = _dual_jitter_positions(42, sink_b, trigger, clock)
+    assert a0 == b0 and a1 == b1
+    # The two streams draw from independent sub-streams: their offset (from each center) sequences
+    # differ (not the same jitter mirrored on both sides).
+    off0 = [(x + 100.0, y) for x, y in a0]  # stream 0 center (-100, 0)
+    off1 = [(x - 100.0, y) for x, y in a1]  # stream 1 center (100, 0)
+    n = min(len(off0), len(off1))
+    assert off0[:n] != off1[:n]
+
+
+def test_dual_stream_no_providers_stays_at_fixed_positions(mock_window, event_sink, trigger, clock):
+    # position_providers=None -> both streams draw at their fixed position_pix (v1 behavior).
+    streams, segments = _dual_streams()
+    _run_dual_stream(
+        window=mock_window, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None, position_providers=None,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert all(p["pos"] == [-100.0, 0.0] for p in payloads if p["stream"] == 0)
+    assert all(p["pos"] == [100.0, 0.0] for p in payloads if p["stream"] == 1)
