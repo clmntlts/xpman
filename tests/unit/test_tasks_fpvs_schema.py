@@ -350,6 +350,53 @@ def test_migrated_v1_condition_validates_under_v2_model():
     assert params.position_jitter.enabled is False
 
 
+def test_migrate_is_not_called_on_the_instance_load_path(monkeypatch):
+    """Load-path contract (issue #8, decision (b)): frozen condition params are read back at run
+    time via FPVSConditionParams.model_validate() directly -- FPVSSchema.migrate is DESIGN-TIME
+    ONLY and must never fire when an Instance is loaded/run. Guard it: if run_trial ever started
+    calling migrate, this would trip. We drive run_trial far enough to reach the model_validate at
+    its top (a deliberately empty base pool makes it raise right after), and assert migrate stayed
+    untouched throughout."""
+    from unittest.mock import MagicMock
+
+    from xpman.tasks.fpvs.task import FPVSTask
+
+    task = FPVSTask()
+    calls: list[tuple] = []
+    real_migrate = FPVSSchema.migrate
+
+    def spy_migrate(self, old_version, data):
+        calls.append((old_version, data))
+        return real_migrate(self, old_version, data)
+
+    monkeypatch.setattr(FPVSSchema, "migrate", spy_migrate)
+
+    # Minimal ctx; run_trial validates trial_params (no migrate) before touching the pool, then
+    # fails on the empty pool -- proving the read boundary is model_validate, not migrate.
+    ctx = MagicMock()
+    task._image_entries = []
+    with pytest.raises(ValueError, match="matched no"):
+        task.run_trial(ctx, FPVSConditionParams().model_dump(), trial_index=0)
+
+    assert calls == [], "FPVSSchema.migrate must NOT be invoked on the Instance load path"
+
+
+def test_migrate_v3_to_v4_strip_is_destructive_and_stays_off_load_path():
+    """Why migrate is design-time only: its v3->v4 step is *destructive* (it strips the legacy
+    SepStim selector keys). model_validate simply ignores those same keys instead (extra=ignore),
+    so a frozen v3 Instance loads unchanged WITHOUT that destructive transform ever running -- the
+    lower-risk backward-compat mechanism that keeps old Instances reproducible."""
+    schema = FPVSSchema()
+    v3 = FPVSConditionParams().model_dump()
+    v3["base_selector"]["category"] = "face"  # a since-removed legacy SepStim key
+    # migrate() would purge it (destructive):
+    _, migrated = schema.migrate("3", v3)
+    assert "category" not in migrated["base_selector"]
+    # the load path (model_validate) instead ignores it, without mutating/migrating anything:
+    params = FPVSConditionParams.model_validate(v3)
+    assert params.base_selector.subdirectory is None  # loads fine, legacy key harmlessly dropped
+
+
 def test_stimulus_selector_defaults_to_whole_set():
     selector = StimulusSelector()
     assert selector.subdirectory is None

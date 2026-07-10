@@ -463,6 +463,16 @@ class FPVSTask(TaskModule):
         )
 
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
+        # LOAD-PATH CONTRACT (intentional): a frozen Instance's condition params are read back here
+        # by validating the stored dict directly -- FPVSSchema.migrate is deliberately NOT called on
+        # this path. model_validate's "ignore unknown keys, default missing keys" behavior IS the
+        # backward-compat mechanism: every schema bump so far is additive (new optional fields with
+        # defaults), so an old frozen dict validates unchanged and an old Instance keeps its exact
+        # behavior -- the reproducibility guarantee (docs/architecture.md). migrate() is design-time
+        # only (it also does a *destructive* v3->v4 legacy-key strip that we must NOT apply to a
+        # frozen snapshot); wiring it in here could change how existing Instances resolve. See
+        # FPVSSchema.migrate and ParameterSchema.migrate (tasks/base.py) for the full contract and
+        # what a genuinely breaking (non-additive) change would require.
         params = FPVSConditionParams.model_validate(trial_params)
 
         base_entries = _select_pool(self._image_entries, params.base_selector)

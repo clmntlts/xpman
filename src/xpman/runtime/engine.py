@@ -205,6 +205,11 @@ def execute_run(
         if "refresh_measured_successfully" in metadata:
             run.refresh_measured_successfully = metadata["refresh_measured_successfully"]
         session.commit()
+        # One-off, task-agnostic session warm-up, run exactly once per Run: after prepare()
+        # (resources exist) and before any trial. Tasks that need no warm-up inherit a no-op
+        # (TaskModule.on_before_run). See that hook's docstring for why FPVS familiarization is
+        # NOT hoisted here (it's coupled to trial-0's rng/pre-interval and must stay in run_trial).
+        task.on_before_run(ctx)
         for trial_index, trial_spec in enumerate(trial_sequence):
             if abort_check():
                 run.status = RunStatus.ABORTED

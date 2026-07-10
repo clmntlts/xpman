@@ -158,6 +158,28 @@ class TaskModule(ABC):
         """Called once per Run, before any trial, to load resources / build stimuli."""
         raise NotImplementedError
 
+    def on_before_run(self, ctx: TaskContext) -> None:
+        """Optional one-off session warm-up, run once per Run after ``prepare`` and before the
+        first trial. Default: no-op.
+
+        This is the task-agnostic home for one-time-per-Run setup that must happen *before* any
+        trial but that isn't resource construction (which belongs in ``prepare``) -- e.g. showing a
+        subject-facing familiarization / warm-up stream, an instructions screen, or a one-off
+        calibration. The engine invokes it exactly once, right after ``prepare(ctx)`` succeeds and
+        before the trial loop starts (see ``runtime/engine.py``), so a task no longer has to smuggle
+        such logic into a ``trial_index == 0`` branch of ``run_trial``.
+
+        Note on FPVS familiarization: FPVS deliberately does *not* use this hook (yet). Its
+        familiarization stream is interleaved *inside* trial 0 -- it runs after that trial's
+        randomized pre-stimulus interval and consumes trial-0's ``ctx.rng``-seeded base-pool shuffle,
+        and it is reported in trial 0's ``outcome_summary``. Hoisting it up here would move it ahead
+        of the pre-interval and change ``ctx.rng`` consumption order, both observable and both
+        forbidden by the byte-for-byte reproducibility guarantee. So FPVS keeps its in-trial
+        mechanism; this hook exists so *future* tasks (and any FPVS warm-up that is genuinely
+        run-level, not trial-0-coupled) have a clean, task-agnostic place to hang off.
+        """
+        return None
+
     @abstractmethod
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
         """Run a single trial and return its outcome summary.

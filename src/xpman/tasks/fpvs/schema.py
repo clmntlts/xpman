@@ -371,9 +371,16 @@ class FPVSSchema:
     _LEGACY_SELECTOR_KEYS = ("category", "angle_deg", "eccentricity_deg", "is_fs", "variant")
 
     def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
-        # NOTE: this hook is NOT yet on the load path -- frozen dicts are read via
-        # model_validate() directly (which simply ignores the removed keys). See
-        # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
+        # DESIGN-TIME ONLY -- by decision (issue #8), NOT on the Instance load path, and it must
+        # stay that way while every schema bump is additive. Frozen condition dicts are read back at
+        # run time by FPVSConditionParams.model_validate() directly (see task.py run_trial), whose
+        # ignore-unknown / default-missing behavior is the backward-compat contract that keeps old
+        # Instances reproducible. This method's v3->v4 step is *destructive* (it strips
+        # _LEGACY_SELECTOR_KEYS); applying that to a frozen snapshot could change how an existing
+        # Instance resolves, so it is deliberately kept off the read boundary. Its role is
+        # forward-migrating dev-only Instances at design time (and documenting the version lineage),
+        # NOT run-time loading. See ParameterSchema.migrate for the full contract and what a
+        # genuinely breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
         if old_version not in ("1", "2", "3", "4", "5"):
