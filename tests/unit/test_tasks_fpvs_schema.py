@@ -14,6 +14,41 @@ from xpman.tasks.fpvs.schema import (
 )
 
 
+def test_every_condition_param_field_has_a_description():
+    """GUI hover help (task #2): every FPVSConditionParams field -- recursively, including nested
+    models and list-of-model item fields -- must carry Field(description=...), because the schema
+    form builds each parameter's hover tooltip from it. A field with no description shows no help."""
+    import typing
+
+    from pydantic import BaseModel
+
+    def missing(model: type[BaseModel], prefix: str = "") -> list[str]:
+        gaps: list[str] = []
+        for name, field in model.model_fields.items():
+            if not field.description:
+                gaps.append(prefix + name)
+            for cand in [field.annotation, *typing.get_args(field.annotation)]:
+                if isinstance(cand, type) and issubclass(cand, BaseModel):
+                    gaps += missing(cand, prefix + name + ".")
+            if typing.get_origin(field.annotation) is list:
+                for cand in typing.get_args(field.annotation):
+                    if isinstance(cand, type) and issubclass(cand, BaseModel):
+                        gaps += missing(cand, prefix + name + "[].")
+        return gaps
+
+    gaps = sorted(set(missing(FPVSConditionParams)))
+    assert gaps == [], f"fields with no GUI hover help (add Field(description=...)): {gaps}"
+
+
+def test_every_condition_param_field_declares_a_gui_section():
+    """Logical organisation (task #1): every TOP-LEVEL FPVSConditionParams field must declare a GUI
+    section so the editor renders as labelled groups, not a flat wall. Nested fields are exempt (they
+    render inside their parent's box)."""
+    for name, field in FPVSConditionParams.model_fields.items():
+        extra = field.json_schema_extra
+        assert isinstance(extra, dict) and extra.get("section"), f"{name} has no GUI section"
+
+
 def test_condition_params_have_defaults_for_every_sub_model():
     params = FPVSConditionParams()
     assert params.base.base_freq_hz == 6.0
