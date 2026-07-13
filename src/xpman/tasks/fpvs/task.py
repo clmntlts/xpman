@@ -1136,6 +1136,20 @@ class FPVSTask(TaskModule):
                 lines.append(f"... and {len(scan_result.warnings) - 5} more scan warnings")
         return lines
 
+    def build_condition_preview(self, condition_params: dict) -> object | None:
+        """Schematic preview of this Condition: the on-screen spatial layout (streams, fixation,
+        go/no-go markers, photodiode, jitter regions) and the trial timeline (familiarization,
+        baseline, fades, sweep steps, oddball cadence). Returns ``(SpatialLayout, TrialSchematic)``
+        for the GUI's preview dialog, or ``None`` if the params don't validate (the dialog then falls
+        back to the text resource preview). Pure -- no hardware, no pixel IO, never raises."""
+        from xpman.tasks.fpvs.stimulus_preview import build_spatial_layout, build_trial_schematic
+
+        try:
+            params = FPVSConditionParams.model_validate(condition_params)
+        except ValidationError:
+            return None
+        return (build_spatial_layout(params), build_trial_schematic(params))
+
     def check_triggers(self, condition_params: dict) -> list[str]:
         """Design-time sanity warnings for a Condition (surfaced by the "Check Triggers..."
         action and the pre-freeze dialog). Covers trigger-code conflicts and a base-frequency

@@ -232,3 +232,17 @@ class TaskModule(ABC):
         provides no preview").
         """
         return []
+
+    def build_condition_preview(self, condition_params: dict) -> object | None:
+        """Optional SCHEMATIC (spatial + temporal) preview of one Condition, for the GUI to render
+        before anything is run.
+
+        Returns a task-defined, renderer-agnostic description of the Condition's on-screen layout and
+        trial timeline (or ``None`` -- the default -- meaning "no schematic; fall back to the text
+        resource preview"). Like :meth:`describe_condition_resources` this must be pure: no hardware,
+        no windows, no pixel IO, and it must not raise on content problems. The base class returns
+        ``None`` so the ABC stays free of any GUI/rendering dependency; a task that supports a schematic
+        (see :class:`xpman.tasks.fpvs.task.FPVSTask`) returns the layout/timeline objects its matching
+        GUI dialog knows how to draw.
+        """
+        return None
