@@ -49,6 +49,33 @@ def test_constructs_without_error_for_every_real_model(qtbot, model_cls):
     assert form.get_values() is not None
 
 
+def test_fpvs_condition_params_renders_labelled_sections(qtbot):
+    """FPVSConditionParams declares GUI sections (Field(json_schema_extra={"section": ...})); the form
+    renders them as titled section boxes in declaration order, so its ~19 nested groups read as five
+    logical sections instead of a flat wall. Round-trip is unaffected (keyed by field name)."""
+    form = SchemaForm(FPVSConditionParams, initial_values=FPVSConditionParams().model_dump())
+    qtbot.addWidget(form)
+    titles = [b.title() for b in form.findChildren(QGroupBox, "formSection")]
+    assert titles == [
+        "Stimulation",
+        "Trial timing & phases",
+        "Fixation & display",
+        "Responses & attention tasks",
+        "Dual bilateral stream",
+    ]
+    out = form.get_validated_model()
+    assert out.base.base_freq_hz == FPVSConditionParams().base.base_freq_hz
+    assert out.second_stream.enabled is False
+
+
+def test_model_without_sections_stays_flat(qtbot):
+    """Sectioning is opt-in: a model that declares no section (the dummy task, and every nested
+    sub-form) must render with NO section boxes -- byte-for-byte the prior flat behaviour."""
+    form = SchemaForm(DummyConditionParams)
+    qtbot.addWidget(form)
+    assert form.findChildren(QGroupBox, "formSection") == []
+
+
 def test_constructs_with_explicit_initial_values(qtbot):
     initial = {
         "flip_rate_hz": 3.0,

@@ -190,60 +190,32 @@ class SchemaForm(QWidget):
         outer_layout.setContentsMargins(4, 4, 4, 4)
         outer_layout.setSpacing(10)
 
-        form_layout = QFormLayout()
-        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form_layout.setHorizontalSpacing(16)
-        form_layout.setVerticalSpacing(8)
-        outer_layout.addLayout(form_layout)
-
-        for name, field_info in model_cls.model_fields.items():
-            annotation = field_info.annotation
-            is_optional, inner_annotation = _is_optional(annotation)
-
-            extra = field_info.json_schema_extra
-            if isinstance(extra, dict) and extra.get("hidden"):
-                # Not rendered; value preserved across get/set (see set_values/get_values).
-                self._hidden_fields.add(name)
-                continue
-
-            item_model = _list_item_model(inner_annotation)
-            if item_model is not None:
-                # list[BaseModel] (e.g. go/no-go markers): an add/remove list of inline sub-forms.
-                min_items = int(extra.get("min_items", 0)) if isinstance(extra, dict) else 0
-                pretty = prettify_field_name(name)
-                item_label = pretty[:-1] if pretty.endswith("s") else pretty
-                widget = _ModelListWidget(item_model, min_items=min_items, item_label=item_label)
-                widget.valueEdited.connect(self.valuesChanged.emit)
-                self._field_widgets[name] = widget
-                group = QGroupBox(pretty)
-                if field_info.description:
-                    group.setToolTip(field_info.description)
-                QVBoxLayout(group).addWidget(widget)
-                outer_layout.addWidget(group)
-                continue
-
-            if _is_model(inner_annotation):
-                # Nested BaseModel: its own titled QGroupBox with a recursively-built SchemaForm
-                # inside, so it reads as a visually distinct sub-section, not a flat wall of
-                # fields indistinguishable from this level's own fields.
-                group = self._build_nested_group(name, inner_annotation, field_info.description)
-                outer_layout.addWidget(group)
-                continue
-
-            widget = self._build_leaf_widget(inner_annotation, field_info)
-            if is_optional:
-                widget = OptionalFieldWidget(widget)
-
-            widget.valueEdited.connect(self.valuesChanged.emit)
-            self._field_widgets[name] = widget
-
-            label = QLabel(prettify_field_name(name))
-            tooltip = _build_tooltip(field_info.description, list(field_info.metadata))
-            if tooltip:
-                label.setToolTip(tooltip)
-                widget.setToolTip(tooltip)
-            form_layout.addRow(label, widget)
+        # A field may declare a GUI section via ``Field(json_schema_extra={"section": "..."})``. When
+        # any field does, this level's fields are grouped into titled section boxes (in first-appearance
+        # order); otherwise the whole model renders as one flat form -- byte-for-byte the prior behaviour,
+        # so models that don't opt in (and every nested sub-form) are unaffected.
+        sections = self._field_sections(model_cls)
+        if any(section_name is not None for section_name, _ in sections):
+            for section_name, field_names in sections:
+                if section_name is None:
+                    target_form = self._new_form_layout()
+                    outer_layout.addLayout(target_form)
+                    target_container = outer_layout
+                else:
+                    section_box = QGroupBox(section_name)
+                    section_box.setObjectName("formSection")
+                    target_container = QVBoxLayout(section_box)
+                    target_container.setContentsMargins(8, 8, 8, 8)
+                    target_form = self._new_form_layout()
+                    target_container.addLayout(target_form)
+                    outer_layout.addWidget(section_box)
+                for name in field_names:
+                    self._place(self._render_field(name, model_cls.model_fields[name]), target_form, target_container)
+        else:
+            form_layout = self._new_form_layout()
+            outer_layout.addLayout(form_layout)
+            for name, field_info in model_cls.model_fields.items():
+                self._place(self._render_field(name, field_info), form_layout, outer_layout)
 
         self.setLayout(outer_layout)
 
@@ -253,6 +225,92 @@ class SchemaForm(QWidget):
             self.set_values(self._default_values())
 
     # -- construction helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _field_sections(model_cls: type[BaseModel]) -> list[tuple[str | None, list[str]]]:
+        """Group a model's fields by their declared GUI ``section`` (from
+        ``Field(json_schema_extra={"section": ...})``), preserving field declaration order within a
+        section and section first-appearance order. Fields with no section land under ``None`` (a
+        leading, unboxed group). Returns ``[(section_name | None, [field_name, ...]), ...]``."""
+        order: list[str | None] = []
+        buckets: dict[str | None, list[str]] = {}
+        for name, field_info in model_cls.model_fields.items():
+            extra = field_info.json_schema_extra
+            section = extra.get("section") if isinstance(extra, dict) else None
+            if section not in buckets:
+                buckets[section] = []
+                order.append(section)
+            buckets[section].append(name)
+        return [(section, buckets[section]) for section in order]
+
+    @staticmethod
+    def _new_form_layout() -> QFormLayout:
+        form_layout = QFormLayout()
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form_layout.setHorizontalSpacing(16)
+        form_layout.setVerticalSpacing(8)
+        return form_layout
+
+    def _render_field(self, name: str, field_info: Any) -> tuple:
+        """Build the widget(s) for one field and register it in the widget/nested/hidden maps.
+        Returns a placement instruction the caller drops into the right layout: ``("hidden",)``,
+        ``("row", label, widget)`` (goes in a QFormLayout), or ``("group", groupbox)`` (goes in a
+        QVBoxLayout). Placement is decoupled from creation so the flat and sectioned layouts share
+        exactly the same widget-construction + registration logic."""
+        annotation = field_info.annotation
+        is_optional, inner_annotation = _is_optional(annotation)
+
+        extra = field_info.json_schema_extra
+        if isinstance(extra, dict) and extra.get("hidden"):
+            # Not rendered; value preserved across get/set (see set_values/get_values).
+            self._hidden_fields.add(name)
+            return ("hidden",)
+
+        item_model = _list_item_model(inner_annotation)
+        if item_model is not None:
+            # list[BaseModel] (e.g. go/no-go markers): an add/remove list of inline sub-forms.
+            min_items = int(extra.get("min_items", 0)) if isinstance(extra, dict) else 0
+            pretty = prettify_field_name(name)
+            item_label = pretty[:-1] if pretty.endswith("s") else pretty
+            widget = _ModelListWidget(item_model, min_items=min_items, item_label=item_label)
+            widget.valueEdited.connect(self.valuesChanged.emit)
+            self._field_widgets[name] = widget
+            group = QGroupBox(pretty)
+            if field_info.description:
+                group.setToolTip(field_info.description)
+            QVBoxLayout(group).addWidget(widget)
+            return ("group", group)
+
+        if _is_model(inner_annotation):
+            # Nested BaseModel: its own titled QGroupBox with a recursively-built SchemaForm inside,
+            # so it reads as a visually distinct sub-section, not a flat wall of fields.
+            group = self._build_nested_group(name, inner_annotation, field_info.description)
+            return ("group", group)
+
+        widget = self._build_leaf_widget(inner_annotation, field_info)
+        if is_optional:
+            widget = OptionalFieldWidget(widget)
+        widget.valueEdited.connect(self.valuesChanged.emit)
+        self._field_widgets[name] = widget
+
+        label = QLabel(prettify_field_name(name))
+        tooltip = _build_tooltip(field_info.description, list(field_info.metadata))
+        if tooltip:
+            label.setToolTip(tooltip)
+            widget.setToolTip(tooltip)
+        return ("row", label, widget)
+
+    @staticmethod
+    def _place(rendered: tuple, form_layout: QFormLayout, container_layout: Any) -> None:
+        """Drop a :meth:`_render_field` result into the right layout: rows into ``form_layout``,
+        group boxes into ``container_layout`` (below that section's/level's own scalar rows)."""
+        kind = rendered[0]
+        if kind == "row":
+            _, label, widget = rendered
+            form_layout.addRow(label, widget)
+        elif kind == "group":
+            container_layout.addWidget(rendered[1])
 
     def _with_defaults(self, values: dict) -> dict:
         """Overlay ``values`` on the model's real defaults so fields *absent* from a stored

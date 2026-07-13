@@ -66,7 +66,10 @@ class FamiliarizationParams(BaseModel):
     frequency_hz: float = Field(
         default=6.0, gt=0, description="Familiarization stimulation frequency, in Hz."
     )
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams,
+        description="Contrast modulation for the familiarization stream.",
+    )
     start_trigger_code: int | None = Field(
         default=None, ge=1, le=255, description="Trigger sent when familiarization starts."
     )
@@ -200,16 +203,24 @@ class StreamParams(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
-    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    base_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector, description="Which images make up this stream's base sequence."
+    )
+    oddball_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector, description="Which images are this stream's oddballs."
+    )
     base_freq_hz: float = Field(
         default=7.0, gt=0, description="This stream's base frequency (must differ non-harmonically from the main stream)."
     )
-    oddball: OddballParams = Field(default_factory=OddballParams)
+    oddball: OddballParams = Field(
+        default_factory=OddballParams, description="This stream's oddball placement (frequency or B/O pattern)."
+    )
     position_pix: tuple[float, float] = Field(
         default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
     )
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams, description="Contrast modulation for this stream."
+    )
     base_trigger_code: int | None = Field(
         default=None,
         ge=1,
@@ -299,36 +310,39 @@ class CoincidenceCodes(BaseModel):
 
 
 class FPVSConditionParams(BaseModel):
-    """Everything needed to run one FPVS trial."""
+    """Everything needed to run one FPVS trial.
 
-    base: BaseSequenceParams = Field(default_factory=BaseSequenceParams)
-    oddball: OddballParams = Field(default_factory=OddballParams)
-    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
-    timing: TimingParams = Field(default_factory=TimingParams)
-    familiarization: FamiliarizationParams = Field(default_factory=FamiliarizationParams)
-    baseline: BaselineParams = Field(default_factory=BaselineParams)
-    fixation: FixationParams = Field(default_factory=FixationParams)
-    photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
-    response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
-    position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
-    distractor: DistractorParams = Field(default_factory=DistractorParams)
-    go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
-    sweep: FrequencySweepParams = Field(default_factory=FrequencySweepParams)
-    stream_position_pix: tuple[float, float] = Field(
-        default=(0.0, 0.0),
-        description="Main stream's screen position (px from center); only applies when second_stream "
-        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+    Fields are declared grouped by the GUI ``section`` they render under (Stimulation → Trial
+    timing & phases → Fixation & display → Responses & attention tasks → Dual bilateral stream),
+    so the schema-driven Condition editor reads as labelled sections instead of a flat wall of
+    boxes. Section membership is metadata only (``json_schema_extra={"section": ...}``) -- it has
+    no effect on validation or on frozen Instances; reordering these fields is purely cosmetic."""
+
+    # -- Stimulation: the core periodic sequence --------------------------------------------
+    base: BaseSequenceParams = Field(
+        default_factory=BaseSequenceParams,
+        description="Core stimulation: the base frequency (Hz) and the trial duration.",
+        json_schema_extra={"section": "Stimulation"},
     )
-    second_stream: StreamParams = Field(
-        default_factory=StreamParams,
-        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+    oddball: OddballParams = Field(
+        default_factory=OddballParams,
+        description="Oddball placement: its frequency, or a base/oddball repetition pattern (e.g. BBBBO).",
+        json_schema_extra={"section": "Stimulation"},
     )
-    coincidence_codes: CoincidenceCodes = Field(
-        default_factory=CoincidenceCodes,
-        description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
-        "streams are triggered; see CoincidenceCodes).",
+    base_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector,
+        description="Which images make up the base stream (image folder + filename pattern).",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    oddball_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector,
+        description="Which images are the periodically-inserted oddballs (image folder + filename pattern).",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams,
+        description="Sinusoidal contrast modulation of each image (fades toward the background gray).",
+        json_schema_extra={"section": "Stimulation"},
     )
     background_gray: float = Field(
         default=0.5,
@@ -339,6 +353,82 @@ class FPVSConditionParams(BaseModel):
             "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
             "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
         ),
+        json_schema_extra={"section": "Stimulation"},
+    )
+
+    # -- Trial timing & phases --------------------------------------------------------------
+    timing: TimingParams = Field(
+        default_factory=TimingParams,
+        description="Trial timing: fade-in/out durations and pre-/inter-stimulus intervals.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    sweep: FrequencySweepParams = Field(
+        default_factory=FrequencySweepParams,
+        description="Stepped frequency sweep: present several constant-frequency steps in sequence instead of one.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    baseline: BaselineParams = Field(
+        default_factory=BaselineParams,
+        description="Add a base-only reference segment (no oddballs) before and/or after the oddball stream.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    familiarization: FamiliarizationParams = Field(
+        default_factory=FamiliarizationParams,
+        description="A one-off warm-up stream shown once at the start of the Run, before the first trial.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+
+    # -- Fixation & display -----------------------------------------------------------------
+    fixation: FixationParams = Field(
+        default_factory=FixationParams,
+        description="The fixation mark drawn over/near the stimulus.",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+    position_jitter: PositionJitterParams = Field(
+        default_factory=PositionJitterParams,
+        description="Randomize each image's position within a region (image only; the fixation stays put).",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+    photodiode: PhotodiodeParams = Field(
+        default_factory=PhotodiodeParams,
+        description="Photodiode sync patch for validating presentation timing against real hardware.",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+
+    # -- Responses & attention tasks --------------------------------------------------------
+    response: ResponseKeyParams = Field(
+        default_factory=ResponseKeyParams,
+        description="Active oddball-detection task (key press per oddball). Off by default -- standard FPVS is passive.",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+    distractor: DistractorParams = Field(
+        default_factory=DistractorParams,
+        description="Orthogonal attention-control task at fixation (the recommended behavioural check).",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+    go_nogo: GoNoGoParams = Field(
+        default_factory=GoNoGoParams,
+        description="Spatial go/no-go attention task using fixation-position markers.",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+
+    # -- Dual bilateral stream --------------------------------------------------------------
+    stream_position_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Main stream's screen position (px from center); only applies when second_stream "
+        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+        json_schema_extra={"section": "Dual bilateral stream"},
+    )
+    second_stream: StreamParams = Field(
+        default_factory=StreamParams,
+        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+        json_schema_extra={"section": "Dual bilateral stream"},
+    )
+    coincidence_codes: CoincidenceCodes = Field(
+        default_factory=CoincidenceCodes,
+        description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
+        "streams are triggered; see CoincidenceCodes).",
+        json_schema_extra={"section": "Dual bilateral stream"},
     )
 
     @model_validator(mode="after")
