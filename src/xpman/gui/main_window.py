@@ -780,7 +780,7 @@ class MainWindow(QMainWindow):
             from xpman.gui.dialogs.stimulus_preview_dialog import StimulusPreviewDialog
 
             layout, schematic = preview
-            dialog = StimulusPreviewDialog(node.label or "Condition", layout, schematic, lines, parent=self)
+            dialog = StimulusPreviewDialog(node.name or "Condition", layout, schematic, lines, parent=self)
             dialog.exec()
             return
 
