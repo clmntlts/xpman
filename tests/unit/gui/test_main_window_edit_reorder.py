@@ -372,6 +372,38 @@ def test_preview_stimuli_uses_live_form_values_when_condition_form_open(qtbot, s
     assert repo.get_condition(session, fixture["condition"].id).parameters_json["trigger_code"] == 1
 
 
+class _SchematicPreviewTask(_PreviewRecordingTask):
+    """A task that offers a schematic preview, exercising the StimulusPreviewDialog code path."""
+
+    def build_condition_preview(self, condition_params: dict):
+        from xpman.tasks.fpvs.schema import FPVSConditionParams
+        from xpman.tasks.fpvs.stimulus_preview import build_spatial_layout, build_trial_schematic
+
+        params = FPVSConditionParams()
+        return (build_spatial_layout(params), build_trial_schematic(params))
+
+
+def test_preview_stimuli_opens_schematic_dialog_when_task_provides_one(qtbot, session):
+    """When the task returns a schematic (not None), the preview opens the StimulusPreviewDialog --
+    not the text QMessageBox. Drives the real _preview_stimuli dialog branch (regression guard for
+    the node attribute it reads for the window title)."""
+    from xpman.gui.dialogs.stimulus_preview_dialog import StimulusPreviewDialog
+
+    task = _SchematicPreviewTask()
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([task]))
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    with patch.object(StimulusPreviewDialog, "exec", return_value=0) as mock_exec, patch.object(
+        QMessageBox, "information"
+    ) as mock_info:
+        window._preview_stimuli(node)
+
+    mock_exec.assert_called_once()  # the schematic dialog opened (path uses node.name)
+    mock_info.assert_not_called()  # and NOT the text fallback
+
+
 def test_preview_button_visible_only_for_condition_nodes(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)
