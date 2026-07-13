@@ -389,16 +389,21 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_triggered_overlay_with_dual_stream_sweep(self) -> "FPVSConditionParams":
-        # #4 lifted the blanket "sweep + triggered overlay" rejection: a single-stream sweep now
+    def _check_triggered_overlay_with_dual_stream(self) -> "FPVSConditionParams":
+        # #4 lifted the blanket "sweep + triggered overlay" rejection: a SINGLE-stream sweep now
         # schedules a triggered overlay PER SEGMENT (off each step's own base-onset cadence), so it
-        # never collides with the port. The one combination we still reject is a *triggered* overlay
-        # together with a sweep x DUAL stream: the two streams have DIFFERENT frames-per-stimulus per
-        # segment, so an overlay nudged off ONE stream's cadence could still land on the OTHER stream's
-        # onset -- there is no single cadence to schedule off. (Untriggered overlays are always fine;
-        # single-stream sweeps with a triggered overlay are fine; dual streams without a sweep already
-        # schedule triggered overlays off the shared single cadence.)
-        if not (self.sweep.enabled and self.second_stream.enabled):
+        # never collides with the port. But a *triggered* overlay still can't run with a DUAL stream at
+        # all: the overlay scheduler nudges events off ONE stream's base-onset cadence only (the main
+        # stream's), while separable dual streams are required to use non-harmonic base frequencies
+        # (_check_dual_stream_separable), so the SECOND stream has a different frames-per-stimulus. An
+        # overlay onset kept off the main stream's onsets can therefore still land on the second
+        # stream's onset frame -- and resolve_frame_trigger RAISES mid-trial when the second stream is
+        # also triggered (lost recording), or silently shares a flip with a visual onset when it isn't.
+        # So reject any triggered overlay while a second stream is enabled, whether or not there's a
+        # sweep. (Untriggered overlays are always fine; single-stream sweeps with a triggered overlay
+        # are fine.) Lifting this needs the scheduler to avoid the UNION of both streams' cadences --
+        # tracked as a follow-up (see the sweep-v3 issue).
+        if not self.second_stream.enabled:
             return self
         offenders: list[str] = []
         if self.distractor.enabled and self.distractor.trigger_code is not None:
@@ -409,10 +414,11 @@ class FPVSConditionParams(BaseModel):
             offenders.append("go_nogo")
         if offenders:
             raise ValueError(
-                f"a *triggered* {' & '.join(offenders)} overlay can't run with a sweep x dual-stream "
-                "(the two streams change frequency per step, so there is no single base-onset cadence "
-                "to schedule the trigger off). Clear the overlay's trigger code(s), disable the second "
-                "stream, or disable the sweep."
+                f"a *triggered* {' & '.join(offenders)} overlay can't run with a dual bilateral stream "
+                "(the overlay is scheduled off the main stream's base-onset cadence only, but the second "
+                "stream onsets at a different rate, so a marker could share a flip with -- or collide "
+                "with the port trigger of -- the second stream's onset). Clear the overlay's trigger "
+                "code(s), or disable the second stream."
             )
         return self
 

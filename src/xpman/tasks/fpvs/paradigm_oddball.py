@@ -1253,12 +1253,26 @@ def _run_dual_stream(
         )
 
     # Each time-segment's frame span: its fade share + its plateau (both streams share the duration).
-    segment_frame_counts = [
-        (n_fade_in_frames if t == 0 else 0)
-        + round(seg_list[0].duration_seconds * refresh_rate_hz)
-        + (n_fade_out_frames if t == last_time_index else 0)
-        for t, seg_list in enumerate(timeline)
-    ]
+    # For a SWEEP (multi time-segment) each span is FLOORED to the MAIN stream's whole cycles, exactly
+    # as plan_sweep_overlay_windows floors each step -- so the time-segment boundaries (the cumulative
+    # global frame indices) tile IDENTICALLY to the overlay windows built from the same main sweep. That
+    # keeps a distractor / go-no-go event scheduled in step i actually flashing during step i; using the
+    # raw budget here (which doesn't divide the per-step cadence) drifted the boundaries and misplaced or
+    # dropped overlay events near step edges. The single-segment (non-sweep) case keeps the raw budget:
+    # its overlay uses a floored _effective_frames <= this span, so every event still lands within the
+    # presented frames, and this preserves the byte-for-byte single-element-timeline behavior.
+    is_sweep_timeline = len(timeline) > 1
+    segment_frame_counts: list[int] = []
+    for t, seg_list in enumerate(timeline):
+        span = (
+            (n_fade_in_frames if t == 0 else 0)
+            + round(seg_list[0].duration_seconds * refresh_rate_hz)
+            + (n_fade_out_frames if t == last_time_index else 0)
+        )
+        if is_sweep_timeline:
+            main_fpc = frames_per_cycle(refresh_rate_hz, seg_list[0].base_freq_hz)
+            span = max(span // main_fpc, 1) * main_fpc
+        segment_frame_counts.append(span)
 
     # Build per-stream runtimes ONCE (persistent across time-segments). Their plan/pools are (re)set at
     # each time-segment boundary; cumulative n_stimuli_shown / n_oddballs_shown accrue across the trial.
@@ -1402,10 +1416,12 @@ def _run_dual_stream(
                 frame_onsets.append(StreamOnset(rt.stream_index, rt.current_code, is_oddball))
                 onset_runtimes.append(rt)
 
-            # Overlay (distractor / go-no-go) code for this frame (scheduled off base-onset frames). A
-            # *triggered* overlay is rejected with a sweep x dual-stream (schema validator), so with a
-            # sweep overlay_code stays None; without a sweep a triggered overlay is scheduled off the
-            # shared single cadence. resolve_frame_trigger still raises if a stream onset + overlay collide.
+            # Overlay (distractor / go-no-go) code for this frame (scheduled off the main stream's
+            # base-onset cadence). A *triggered* overlay is rejected whenever a second stream is enabled
+            # (schema validator _check_triggered_overlay_with_dual_stream), because the overlay is nudged
+            # off ONE stream's cadence only and the second stream onsets at a different rate -- so in a
+            # dual stream overlay_code is only ever set when the overlay is UNtriggered. resolve_frame_trigger
+            # is still the backstop: it raises if a stream onset code and an overlay code ever coincide.
             overlay_code: int | None = None
             distractor_event = distractor.event_starting_at(global_frame_index) if distractor is not None else None
             go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
