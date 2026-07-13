@@ -580,6 +580,48 @@ def test_empty_oddball_stimuli_raises(mock_window, base_stimuli, event_sink, tri
         )
 
 
+def test_flip_log_is_flushed_when_a_flip_raises_midtrial(base_stimuli, oddball_stimuli, trigger, clock, tmp_path):
+    """Crash-safety (review HIGH): the per-frame flip records are buffered and flushed only after the
+    loop. If window.flip() raises mid-trial, the try/finally must still flush what was buffered, so a
+    crashing trial leaves its partial per-frame timeline on disk (not just the inline onset events)."""
+    import csv
+
+    window = MagicMock(name="Window")
+    _pending: list = []
+    n_flips = {"count": 0}
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        n_flips["count"] += 1
+        if n_flips["count"] >= 25:  # a few stimuli in, then simulate a driver/GPU failure
+            raise RuntimeError("simulated flip failure mid-trial")
+        return n_flips["count"] / 60.0
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
+    window.size = (800, 600)
+
+    sink = EventSink(tmp_path / "crash" / "events.csv", tmp_path / "crash" / "events.parquet")
+    with pytest.raises(RuntimeError, match="simulated flip failure"):
+        run_base_oddball_sequence(
+            window=window,
+            base_stimuli=base_stimuli,
+            oddball_stimuli=oddball_stimuli,
+            base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=10.0),
+            oddball_params=OddballParams(oddball_freq_hz=1.2),
+            refresh_rate_hz=60.0,
+            trigger=trigger,
+            clock=clock,
+            event_sink=sink,
+        )
+    sink.close()
+    with sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert [r for r in rows if r["event_type"] == "flip"], "flip records must survive a mid-trial crash"
+
+
 def test_oddball_appears_at_every_kth_position(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
     # base=6Hz, oddball=1.2Hz -> period=5. 60Hz refresh, 10 frames/stim, 3s trial -> 18 stimuli.
     result = run_base_oddball_sequence(

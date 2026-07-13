@@ -25,6 +25,15 @@ def _windows(seed, *, avoid_base_onsets=False, frames_per_stim=10, **kw):
     return list(iter_event_windows(6000, frames_per_stim, **defaults))
 
 
+def test_avoid_base_onsets_terminates_at_one_frame_per_stimulus():
+    """Regression (review CRITICAL): at 1 frame/cycle EVERY frame is a base onset, so the off-onset
+    nudge (`while onset % frames_per_stim == 0`) would loop forever and HANG the run at trial setup.
+    The `frames_per_stim > 1` guard must make it terminate instead (such a config is separately
+    rejected by the frames-per-cycle floor; this is the backstop). list() would hang without the fix."""
+    windows = _windows(0, avoid_base_onsets=True, frames_per_stim=1)
+    assert windows  # it terminated and produced events rather than hanging
+
+
 def test_deterministic_for_same_seed():
     assert _windows(7) == _windows(7)
     assert len(_windows(7)) > 0

@@ -191,6 +191,31 @@ def _interval_frames(rng, interval_seconds: tuple[float, float], refresh_rate_hz
     return round(seconds * refresh_rate_hz)
 
 
+def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str, float]]:
+    """Every base frequency this Condition will ACTUALLY present, each with a human label -- so the
+    frames-per-cycle floor/ceiling checks can cover them all, not just ``params.base``. A sweep's
+    steps SUPERSEDE ``params.base``; a second stream (and its own sweep) and familiarization each add
+    their own presented frequency. Missing any of these is how a too-high sweep-step / second-stream
+    frequency used to slip past the < 2 frames/cycle hard floor."""
+    freqs: list[tuple[str, float]] = []
+    if params.sweep.enabled and params.sweep.steps:
+        freqs += [(f"sweep step {i + 1} base_freq_hz", s.base_freq_hz) for i, s in enumerate(params.sweep.steps)]
+    else:
+        freqs.append(("base_freq_hz", params.base.base_freq_hz))
+    if params.second_stream.enabled:
+        s2 = params.second_stream
+        if s2.sweep.enabled and s2.sweep.steps:
+            freqs += [
+                (f"second_stream sweep step {i + 1} base_freq_hz", s.base_freq_hz)
+                for i, s in enumerate(s2.sweep.steps)
+            ]
+        else:
+            freqs.append(("second_stream.base_freq_hz", s2.base_freq_hz))
+    if params.familiarization.enabled:
+        freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
+    return freqs
+
+
 def _run_familiarization(
     ctx: TaskContext,
     fam: FamiliarizationParams,
@@ -434,6 +459,17 @@ class FPVSTask(TaskModule):
             },
         )
 
+        # Turn on PsychoPy's own dropped-frame accounting so run_trial can report each trial's
+        # window.nDroppedFrames delta. Frame-counted FPVS trusts that each flip() is one refresh; a
+        # dropped frame silently phase-shifts every subsequent onset (an FFT-corrupting artifact) with
+        # no trace in the flip count -- surfacing nDroppedFrames makes a bad trial visible without the
+        # offline analyzer. Guarded + best-effort so mocked/offscreen test windows are unaffected.
+        if hasattr(ctx.window, "recordFrameIntervals"):
+            try:
+                ctx.window.recordFrameIntervals = True
+            except Exception:  # noqa: BLE001 - advisory instrumentation must never block a run
+                pass
+
         # Pixel-level sanity check of the stimulus pool (advisory; never fatal). Measures mean
         # luminance (for the per-trial background-gray cross-check in run_trial) and flags mixed
         # image dimensions. Skipped cleanly when no image is readable (n_inspected == 0), e.g.
@@ -526,19 +562,28 @@ class FPVSTask(TaskModule):
         photodiode = PhotodiodePatch(ctx.window, params.photodiode) if params.photodiode.enabled else None
 
         refresh = self._refresh_rate_hz
+        # Snapshot PsychoPy's cumulative dropped-frame counter so we can report this trial's delta in
+        # outcome_summary (None when the window doesn't track it, e.g. mocked/offscreen test windows).
+        dropped_before = getattr(ctx.window, "nDroppedFrames", None)
         # Hard floor (real refresh now known): fewer than 2 frames/cycle means the stimulus is
         # drawn every frame with no off-frame, so there is NO contrast modulation to tag -- fail
         # loudly here, before presenting anything, rather than recording a full run of
         # scientifically meaningless data (the classic mistyped 60-for-6-Hz case on a 60 Hz rig).
+        # Check EVERY frequency actually presented -- the main base OR each sweep step (a sweep
+        # supersedes params.base), the second stream (+ its sweep steps), and familiarization -- so a
+        # too-high sweep-step / second-stream frequency can't slip through with only params.base
+        # guarded. Also prevents the overlay scheduler's off-onset nudge from being handed a
+        # 1-frame/cycle cadence (which would otherwise loop forever) for a triggered overlay.
+        for label, freq in _presented_base_frequencies(params):
+            fpc = frames_per_cycle(refresh, freq)
+            if fpc < MIN_FRAMES_PER_CYCLE_ERROR:
+                raise ValueError(
+                    f"trial {trial_index}: {label} ({freq} Hz) is too high for this monitor's "
+                    f"{refresh:.1f} Hz refresh -- it resolves to {fpc} frame(s) per cycle, so no "
+                    "contrast modulation is possible (need at least 2 frames/cycle). Lower the "
+                    "frequency or check for a typo (e.g. 60 instead of 6)."
+                )
         base_frames_per_cycle = frames_per_cycle(refresh, params.base.base_freq_hz)
-        if base_frames_per_cycle < MIN_FRAMES_PER_CYCLE_ERROR:
-            raise ValueError(
-                f"trial {trial_index}: base_freq_hz ({params.base.base_freq_hz} Hz) is too high "
-                f"for this monitor's {refresh:.1f} Hz refresh -- it resolves to "
-                f"{base_frames_per_cycle} frame(s) per cycle, so no contrast modulation is "
-                "possible (need at least 2 frames/cycle). Lower base_freq_hz or check for a typo "
-                "(e.g. 60 instead of 6)."
-            )
         pre_frames = _interval_frames(ctx.rng, params.timing.pre_interval_seconds, refresh)
         post_frames = _interval_frames(ctx.rng, params.timing.post_interval_seconds, refresh)
         n_fade_in_frames = round(params.timing.fade_in_seconds * refresh)
@@ -996,9 +1041,23 @@ class FPVSTask(TaskModule):
                     },
                 )
 
+        # Per-trial dropped-frame count from PsychoPy's own accounting (delta over this trial), or None
+        # when the window doesn't track it. A non-zero value means the frame-counted timing slipped and
+        # the trial's onsets/frequencies may be phase-shifted -- flag it in the results rather than
+        # trusting the flip count. (See prepare(): recordFrameIntervals is enabled so this is live.)
+        dropped_after = getattr(ctx.window, "nDroppedFrames", None)
+        # isinstance(int) not "is not None": a MagicMock test window returns a mock attribute (not None),
+        # whose subtraction would leak a MagicMock into outcome_summary. Real PsychoPy tracks an int.
+        frames_dropped = (
+            dropped_after - dropped_before
+            if isinstance(dropped_before, int) and isinstance(dropped_after, int)
+            else None
+        )
+
         outcome_summary = {
                 "refresh_rate_hz": self._refresh_rate_hz,
                 "refresh_measured_successfully": self._refresh_measured_successfully,
+                "frames_dropped": frames_dropped,
                 "pool_mean_luminance": self._pool_mean_luminance,
                 "background_luminance_warning": background_luminance_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
