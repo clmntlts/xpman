@@ -772,6 +772,18 @@ class MainWindow(QMainWindow):
             params = condition.parameters_json or {}
 
         lines = task.describe_condition_resources(params, program.resource_main_directory)
+
+        # A task may offer a schematic (spatial layout + trial timeline) preview; render it when
+        # available, otherwise fall back to the plain text resource summary.
+        preview = task.build_condition_preview(params)
+        if preview is not None:
+            from xpman.gui.dialogs.stimulus_preview_dialog import StimulusPreviewDialog
+
+            layout, schematic = preview
+            dialog = StimulusPreviewDialog(node.label or "Condition", layout, schematic, lines, parent=self)
+            dialog.exec()
+            return
+
         message = "\n".join(lines) if lines else "This task does not provide a resource preview."
         QMessageBox.information(self, "Stimulus Preview", message)
 
