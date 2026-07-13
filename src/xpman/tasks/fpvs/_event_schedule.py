@@ -62,8 +62,12 @@ def iter_event_windows(
     while True:
         gap = int(rng.integers(min_gap, max_gap + 1))
         onset = cursor + gap
-        if avoid_base_onsets and frames_per_stim > 0:
+        if avoid_base_onsets and frames_per_stim > 1:
             # Only moves forward, so the min gap is preserved (never shrunk below the minimum).
+            # ``frames_per_stim > 1`` is REQUIRED, not just an optimisation: at 1 frame/cycle EVERY
+            # frame is a base onset, so ``onset % 1 == 0`` always and this loop would never terminate
+            # (it would hang the run at trial setup). A 1-frame/cycle stimulus is separately rejected
+            # by the frames-per-cycle floor in task.py; this guard is the backstop.
             while onset % frames_per_stim == 0:
                 onset += 1
         offset = onset + event_frames

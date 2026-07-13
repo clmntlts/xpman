@@ -2171,6 +2171,104 @@ def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, 
     assert not any(k.startswith("sweep_") for k in summary)
 
 
+def test_presented_base_frequencies_covers_sweep_second_stream_and_familiarization():
+    """Review CRITICAL: the frames-per-cycle floor must see EVERY presented frequency. The helper
+    returns the main base OR the sweep steps (which supersede it), plus the second stream and
+    familiarization."""
+    from xpman.tasks.fpvs.schema import FamiliarizationParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+    from xpman.tasks.fpvs.task import _presented_base_frequencies
+
+    assert _presented_base_frequencies(FPVSConditionParams()) == [("base_freq_hz", 6.0)]
+
+    swept = FPVSConditionParams(
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=8.0, duration_seconds=5.0)],
+        )
+    )
+    got = _presented_base_frequencies(swept)
+    assert [f for _, f in got] == [6.0, 8.0] and all("sweep step" in label for label, _ in got)
+
+    rich = FPVSConditionParams(
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        familiarization=FamiliarizationParams(enabled=True, frequency_hz=5.0),
+    )
+    values = dict(_presented_base_frequencies(rich))
+    assert 7.0 in values.values() and 5.0 in values.values()
+
+
+def test_run_trial_rejects_too_high_sweep_step(mock_window, stim_root, event_sink):
+    """Review CRITICAL: a sweep step near/above the refresh (1 frame/cycle) must hard-fail like the
+    base frequency does -- previously only params.base was checked, so a too-high step slipped through
+    (and could hang the run with a triggered overlay)."""
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[SweepStep(base_freq_hz=6.0, duration_seconds=0.5), SweepStep(base_freq_hz=60.0, duration_seconds=0.5)],
+        ),
+    )
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ), pytest.raises(ValueError, match="sweep step 2"):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+
+def test_run_trial_rejects_too_high_second_stream(mock_window, stim_root, event_sink):
+    """Review CRITICAL: the second stream's base frequency must also pass the frames-per-cycle floor."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=59.0,  # 59 Hz @ 60 Hz -> 1 frame/cycle; non-harmonic to 6 Hz (passes separability)
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ), pytest.raises(ValueError, match="second_stream.base_freq_hz"):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+
+def test_run_trial_reports_frames_dropped_when_window_tracks_it(mock_window, stim_root, event_sink):
+    """Review HIGH: outcome_summary carries the trial's PsychoPy nDroppedFrames delta as an int when
+    the window reports it (None for a window that doesn't). A dropped frame silently phase-shifts every
+    later onset, so surfacing it makes a bad trial visible in the results."""
+    mock_window.nDroppedFrames = 0  # a real int (not the MagicMock auto-attr) -> delta is computed
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 0.5
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+    assert result.outcome_summary["frames_dropped"] == 0
+
+
 def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock_window, stim_root, event_sink):
     """An UNtriggered distractor overlay runs alongside the two frame-driven streams: its events are
     logged and the sequence completes. A *triggered* overlay with a dual stream is rejected at
