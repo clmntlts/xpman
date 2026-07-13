@@ -56,14 +56,20 @@ class ResponseKeyParams(BaseModel):
     (behavioural) FPVS variant.
     """
 
-    enabled: bool = False
+    enabled: bool = Field(
+        default=False,
+        description="Enable the active oddball-response task (press a key on each oddball). Off = passive FPVS.",
+    )
     keys: list[str] = Field(
         default_factory=lambda: ["space"], description="Key name(s) counted as a response."
     )
     #: Defaults to the oddball onset, not the most-recent stimulus: at a 6 Hz base a response is
     #: several base stimuli late, so referencing RT to "most recent stimulus" is near-meaningless
     #: for oddball detection. The oddball onset is the only defensible default for this task.
-    rt_reference: RTReference = RTReference.MOST_RECENT_ODDBALL_ONSET
+    rt_reference: RTReference = Field(
+        default=RTReference.MOST_RECENT_ODDBALL_ONSET,
+        description="What each reaction time is measured from: the most recent oddball/stimulus onset, or trial start.",
+    )
     max_rt_seconds: float | None = Field(
         default=None,
         gt=0,
