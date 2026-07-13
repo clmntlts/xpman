@@ -197,15 +197,16 @@ def test_sweep_with_triggered_single_stream_overlay_is_allowed():
 
 
 def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
-    # #4: the one combination still rejected -- a triggered overlay together with a sweep x DUAL
-    # stream (the two streams have different per-step cadences, so no single cadence to nudge off).
+    # A triggered overlay together with a sweep x DUAL stream is rejected (a special case of the
+    # broader dual-stream rejection below: the streams have different cadences, so no single cadence
+    # to nudge the overlay off).
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
-    with pytest.raises(ValidationError, match="sweep x dual-stream"):
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
         FPVSConditionParams(
             stream_position_pix=(-200.0, 0.0),
             sweep=FrequencySweepParams(enabled=True, steps=main),
@@ -217,6 +218,31 @@ def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
             ),
             distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
         )
+
+
+def test_triggered_overlay_with_dual_stream_is_rejected():
+    # Review finding (HIGH): a *triggered* distractor/go-no-go overlay must be rejected with a dual
+    # bilateral stream even WITHOUT a sweep. The overlay is nudged off the MAIN stream's base-onset
+    # cadence only, but a separable second stream onsets at a different (non-harmonic) rate, so the
+    # marker could share a flip with the second stream's onset -- and if that stream is triggered,
+    # resolve_frame_trigger would raise mid-trial. Distractor and go-no-go are both covered.
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    def _dual(**overlay):
+        return FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+            **overlay,
+        )
+
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
+        _dual(distractor=DistractorParams(enabled=True, trigger_code=99, keys=["a"]))
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
+        _dual(go_nogo=GoNoGoParams(enabled=True, go_trigger_code=99, keys=["a"]))
+    # An UNtriggered overlay with a dual stream is still allowed (no port to collide with).
+    _dual(distractor=DistractorParams(enabled=True, keys=["a"]))
 
 
 def test_sweep_with_untriggered_overlay_is_allowed():

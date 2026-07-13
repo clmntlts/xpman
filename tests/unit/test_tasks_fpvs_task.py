@@ -1045,6 +1045,69 @@ def test_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_ro
     assert order_on == order_off  # enabling jitter left the pool-shuffle order untouched
 
 
+def test_dual_stream_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_root, tmp_path):
+    """Review finding (#3, MED): dual-stream analogue of the decoupling guard above. task.run_trial
+    draws the two jitter sub-streams via ctx.rng.spawn(2), which does NOT advance ctx.rng, so enabling
+    per-stream jitter must leave BOTH streams' pool-shuffle (presentation) order byte-for-byte vs a
+    non-jittered run at the same seed. Exercised through run_trial (not _run_dual_stream directly) so
+    it covers the real ordering of spawn(2) relative to the base/oddball pool shuffles."""
+    import json
+
+    from xpman.hardware.clock import Clock
+    from xpman.hardware.trigger_null import NullTrigger
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    def _fresh_ctx(sink):
+        return TaskContext(
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            rng=np.random.default_rng(7777),  # identical seed for both runs
+            subject=SubjectInfo(id=1, first_name="T", last_name="S"),
+            instance_params={},
+            resource_dir=str(stim_root),
+            event_sink=sink,
+            abort_check=lambda: False,
+        )
+
+    base_params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    base_params.base.trial_duration_seconds = 2.0
+
+    disabled = base_params.model_copy(deep=True)
+    enabled = base_params.model_copy(deep=True)
+    enabled.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=50.0)
+
+    def _order(params, name):
+        sink = EventSink(tmp_path / name / "events.csv", tmp_path / name / "events.parquet")
+        task = FPVSTask()
+        ctx = _fresh_ctx(sink)
+        task.prepare(ctx)
+        rows = _run_trial_and_read_events(task, ctx, params)
+        onsets = [
+            json.loads(r["payload_json"])
+            for r in rows
+            if r["event_type"] in ("stimulus_onset", "oddball_onset")
+        ]
+        # (stream, image) per onset: both streams' pool order AND their interleaving.
+        return [(p["stream"], p["image"]) for p in onsets]
+
+    order_off = _order(disabled, "off")
+    order_on = _order(enabled, "on")
+    assert order_off  # sanity: something was presented
+    assert order_on == order_off  # per-stream pool-shuffle order unchanged by enabling jitter
+
+
 def test_check_triggers_warns_on_large_position_jitter():
     task = FPVSTask()
     params = FPVSConditionParams()
@@ -1791,6 +1854,80 @@ def test_run_trial_shared_timeline_sweep_dual_stream_presents_both_streams(mock_
     assert seg1_streams == {0, 1}
 
 
+def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_window, stim_root, event_sink):
+    """Review finding (#4, MED): the dual-stream sweep engine must floor each time-segment to the MAIN
+    stream's whole cycles EXACTLY as plan_sweep_overlay_windows does, so a (non-triggered) distractor
+    scheduled in step i flashes during step i. Step 0 uses a 30-frame budget that is NOT a multiple of
+    the 7 Hz cadence (9 frames/cycle @ 60 Hz -> floored to 27), so the old raw-budget bug (boundary at
+    30) is caught."""
+    import json
+
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep, plan_sweep_overlay_windows
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=7.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.4)),
+        SweepStep(base_freq_hz=11.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.2)),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=9.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.5)),
+        SweepStep(base_freq_hz=13.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.6)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=9.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+        # UNtriggered distractor -- a triggered overlay is rejected with any dual stream.
+        distractor=DistractorParams(
+            enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.15, guard_seconds=0.0
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["aborted"] is False
+    rows = _read_events(event_sink)
+
+    # The engine's per-segment boundaries must equal the overlay scheduler's cumulative windows.
+    windows = plan_sweep_overlay_windows(params.sweep, refresh_hz=60.0, n_fade_in_frames=0, n_fade_out_frames=0)
+    expected_starts = [w.start_frame for w in windows]  # floored-cumulative boundaries, e.g. [0, 27]
+    raw_boundary = round(main_steps[0].duration_seconds * 60.0)  # 30: the pre-fix raw-budget boundary
+    assert expected_starts[1] != raw_boundary  # flooring actually moves the boundary here (drift-sensitive)
+    seg_starts = sorted(
+        json.loads(r["payload_json"])["start_frame_index"]
+        for r in rows
+        if r["event_type"] == "sweep_segment_start"
+    )
+    assert seg_starts == expected_starts  # engine tiles exactly like the overlay windows (was raw before)
+
+    # Every scheduled distractor event fired within the presented frames (none dropped past the end).
+    total_frames = windows[-1].start_frame + windows[-1].frame_count
+    distractor_frames = [
+        json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "distractor_onset"
+    ]
+    assert distractor_frames  # at least one event actually ran
+    assert all(0 <= f < total_frames for f in distractor_frames)
+
+
 def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink):
     """A 'both' baseline runs one base-only reference before the oddball stream and one after, each
     framed by its own start/stop triggers + baseline_start/end (tagged with its phase)."""
@@ -2034,9 +2171,11 @@ def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, 
     assert not any(k.startswith("sweep_") for k in summary)
 
 
-def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, stim_root, event_sink):
-    """A distractor overlay runs alongside the two frame-driven streams: its events are logged and
-    its trigger fires (the streams send no code in v1, so the overlay code goes through cleanly)."""
+def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock_window, stim_root, event_sink):
+    """An UNtriggered distractor overlay runs alongside the two frame-driven streams: its events are
+    logged and the sequence completes. A *triggered* overlay with a dual stream is rejected at
+    validation (see test_triggered_overlay_with_dual_stream_is_rejected) because the overlay is nudged
+    off the main stream's cadence only, so it could share a flip with the second stream's onset."""
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
 
@@ -2056,7 +2195,7 @@ def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, sti
             oddball_selector=StimulusSelector(subdirectory="objects"),
         ),
         distractor=DistractorParams(
-            enabled=True, trigger_code=99, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
+            enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
         ),
     )
     params.base.trial_duration_seconds = 1.0
@@ -2072,7 +2211,6 @@ def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, sti
 
     types = [r["event_type"] for r in _read_events(event_sink)]
     assert "distractor_onset" in types  # the overlay ran during the dual-stream sequence
-    assert 99 in trigger.codes_sent  # its trigger fired (no stream code to collide with in v1)
     assert result.outcome_summary["aborted"] is False
 
 
