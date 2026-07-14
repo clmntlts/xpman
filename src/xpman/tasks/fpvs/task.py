@@ -1544,4 +1544,25 @@ class FPVSTask(TaskModule):
             # (Position jitter is now supported per stream for dual streams -- #3 -- so the former
             # "jitter ignored" advisory no longer applies. Each stream jitters around its OWN centre.)
 
+            # Dual-stream SWEEP whole-cycle alignment (#23): each step's frame span is floored to the
+            # MAIN stream's whole cycles (see paradigm_oddball._run_dual_stream), so a SECOND-stream
+            # frequency that doesn't divide that span has its last cycle in the step silently
+            # truncated, shortening its effective analysis window for that step. The two sweeps share a
+            # step timeline (the Condition validator enforces equal step durations), so we pair steps
+            # by index and check at the nominal refresh (the real one isn't known here, matching the
+            # base-frequency ceiling check above).
+            if params.sweep.enabled and s2.sweep.enabled:
+                for i, (main_step, s2_step) in enumerate(zip(params.sweep.steps, s2.sweep.steps)):
+                    main_fpc = max(round(NOMINAL_REFRESH_HZ / main_step.base_freq_hz), 1)
+                    s2_fpc = max(round(NOMINAL_REFRESH_HZ / s2_step.base_freq_hz), 1)
+                    floored_span = max(round(main_step.duration_seconds * NOMINAL_REFRESH_HZ) // main_fpc, 1) * main_fpc
+                    if floored_span % s2_fpc != 0:
+                        warnings.append(
+                            f"dual-stream sweep step {i}: the second stream ({s2_step.base_freq_hz:g} Hz) "
+                            f"does not complete whole cycles -- the step span is aligned to the main stream "
+                            f"({main_step.base_freq_hz:g} Hz), leaving it ~{floored_span / s2_fpc:.2f} cycles "
+                            "(last one truncated). Choose a step duration that is a whole number of BOTH "
+                            "streams' cycle lengths so each stream's per-segment analysis window is clean."
+                        )
+
         return warnings
