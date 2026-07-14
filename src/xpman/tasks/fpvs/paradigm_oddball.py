@@ -1351,6 +1351,7 @@ def _run_dual_stream(
     aborted = False
     frames_presented = 0
     segment_start_frame = starting_frame_index  # global frame each time-segment begins on
+    segment_outcomes: list[SegmentOutcome] = []  # per-time-segment metrics for a sweep (#14)
 
     try:
         for time_index, seg_list in enumerate(timeline):
@@ -1387,6 +1388,7 @@ def _run_dual_stream(
                 )
             segment_frames = segment_frame_counts[time_index]
             segment_stimuli_before = sum(rt.n_stimuli_shown for rt in runtimes)
+            segment_oddballs_before = sum(rt.n_oddballs_shown for rt in runtimes)
 
             for seg_frame_offset in range(segment_frames):
                 if abort_check():
@@ -1542,11 +1544,28 @@ def _run_dual_stream(
             # sweep engine's sweep_segment_end).
             segment_start_frame += segment_frames
             if multi:
+                _seg_stimuli = sum(rt.n_stimuli_shown for rt in runtimes) - segment_stimuli_before
+                _seg_oddballs = sum(rt.n_oddballs_shown for rt in runtimes) - segment_oddballs_before
+                # Per-step provenance for the results summary (#14): parity with the single-stream
+                # sweep's per_segment. The per-segment achieved frequency is the MAIN stream's for this
+                # segment (as the aggregate result fields already report stream 0); each stream's own
+                # per-segment frequency is in the sweep_segment_start event's `streams` list.
+                _seg_plan0 = segment_plans[time_index][0]
+                segment_outcomes.append(
+                    SegmentOutcome(
+                        segment_index=time_index,
+                        achieved_base_freq_hz=_seg_plan0.achieved_base_hz,
+                        achieved_oddball_freq_hz=_seg_plan0.achieved_oddball_hz,
+                        n_stimuli_shown=_seg_stimuli,
+                        n_oddballs_shown=_seg_oddballs,
+                    )
+                )
                 event_sink.log(
                     "sweep_segment_end",
                     {
                         "segment_index": time_index,
-                        "n_stimuli_shown": sum(rt.n_stimuli_shown for rt in runtimes) - segment_stimuli_before,
+                        "n_stimuli_shown": _seg_stimuli,
+                        "n_oddballs_shown": _seg_oddballs,
                         "end_frame_index": segment_start_frame,
                         "aborted": aborted,
                     },
@@ -1604,6 +1623,9 @@ def _run_dual_stream(
             )
             for rt in runtimes
         ),
+        # Per-time-segment breakdown for a dual-stream SWEEP (#14): parity with the single-stream sweep,
+        # so the flat results table gets sweep_seg{i}_* columns. Empty for a single time-segment.
+        per_segment=tuple(segment_outcomes),
     )
 
 
