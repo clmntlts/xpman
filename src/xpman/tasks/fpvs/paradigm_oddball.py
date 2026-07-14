@@ -828,6 +828,12 @@ def _plan_oddball_segment(
     # This segment's own frame budget: its share of the trial fades + its own plateau. The stimulus
     # count floor-divides that budget by its frames-per-stimulus (per-segment truncation is expected --
     # design invariant #6). For one segment this equals the old fade_in + plateau + fade_out total.
+    # Fade-out tail (cosmetic): because each segment floor-divides its OWN budget by its OWN
+    # frames-per-stimulus, the presented frame total can fall a couple frames short of the nominal
+    # fade-out window, so the last presented frame of a trial (or of a sweep's final segment) may end
+    # at a small non-zero contrast (~7% in one example) rather than exactly 0. This is the same
+    # truncation the single-segment path has always had, and the fade region is windowed out of the
+    # per-segment FFT, so it does not affect the measured tagged response -- it is purely visual.
     segment_plateau_frames = round(segment.duration_seconds * refresh_rate_hz)
     segment_total_frames = segment_fade_in_frames + segment_plateau_frames + segment_fade_out_frames
     n_stimuli_to_show = max(segment_total_frames // n_frames_per_stim, 1)
