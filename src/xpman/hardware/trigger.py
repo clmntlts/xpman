@@ -59,13 +59,29 @@ class TriggerSender(ABC):
             raise ValueError(f"reset_after must be >= 0, got {reset_after!r}")
         self.reset_after = reset_after
 
+    @staticmethod
+    def _validate_code(code: int) -> int:
+        """Bounds-check a trigger code to the 8 data bits (0-255) before a backend drives it.
+
+        An out-of-range code is a caller bug: every real code is 1-255 (0 is the cleared state).
+        Historically only ``SerialTrigger`` guarded its write, masking ``code & 0xFF`` -- so a >255
+        code silently WRAPPED on serial (e.g. 256 -> 0, a spurious clear; 511 -> 255) while the
+        parallel and null backends passed it straight through. That is a backend-specific, silent
+        corruption of the EEG event stream. Validating here and calling it from every backend's
+        ``set_code`` makes an out-of-range code fail loudly and identically everywhere (#26).
+        """
+        if not 0 <= code <= 255:
+            raise ValueError(f"trigger code must be an 8-bit value 0-255, got {code!r}")
+        return code
+
     @abstractmethod
     def set_code(self, code: int) -> None:
         """Set ``code`` on the data pins and return immediately -- no hold, no reset.
 
         Non-blocking: the caller is responsible for a later ``clear_code`` (typically at the top
         of the next frame). Must fit in one byte (0-255); standard parallel port data pins (2-9)
-        carry 8 bits.
+        carry 8 bits. Implementations validate via :meth:`_validate_code` so an out-of-range code
+        raises identically across backends.
         """
         raise NotImplementedError
 
@@ -149,7 +165,7 @@ class ParallelPortTrigger(TriggerSender):
 
     def set_code(self, code: int) -> None:
         """Drive ``code`` onto the data pins (non-blocking)."""
-        self._port.setData(code)
+        self._port.setData(self._validate_code(code))
 
     def clear_code(self) -> None:
         """Reset the data pins to 0."""

@@ -60,10 +60,16 @@ def test_set_code_writes_single_byte():
         ctx.mock_serial_instance.write.assert_called_once_with(bytes([7]))
 
 
-def test_set_code_masks_to_one_byte():
+def test_set_code_raises_on_out_of_range_instead_of_masking():
+    """#26: an out-of-range code must RAISE (parity with parallel/null), not silently wrap via
+    ``& 0xFF`` -- masking turned 511 into 0xFF and 256 into a spurious clear, corrupting the EEG
+    event stream on serial only. Nothing is written when the code is rejected."""
     with _MockedSerial(port="COM4") as ctx:
-        ctx.trigger.set_code(0x1FF)  # 511 -> low byte 0xFF
-        ctx.mock_serial_instance.write.assert_called_once_with(bytes([0xFF]))
+        with pytest.raises(ValueError, match="0-255"):
+            ctx.trigger.set_code(0x1FF)  # 511 -- out of the 8-bit range
+        ctx.mock_serial_instance.write.assert_not_called()
+        with pytest.raises(ValueError, match="0-255"):
+            ctx.trigger.set_code(-1)
 
 
 def test_clear_code_is_noop_when_auto_pulse():

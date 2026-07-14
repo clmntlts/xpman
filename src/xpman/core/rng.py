@@ -19,6 +19,23 @@ We derive the seed from ``(instance.id, instance.checksum, experiment_id, subjec
 
 The **full** SHA-256 digest is used as the seed (not truncated to 32 bits): the collapse would
 otherwise give birthday-collision odds across a lab's runs -- see ``derive_seed``.
+
+Known reproducibility caveat -- stimulus IDENTITY order depends on the measured refresh (#20):
+the seed above makes every *decision* derived from this RNG reproducible, but the specific image
+identities shown are NOT fully refresh-independent. The base/oddball image pools re-permute on
+each wraparound by drawing from this same run RNG (``tasks/fpvs/paradigm_oddball._PoolSequencer``),
+and the number of wraparounds within a trial is ``n_stimuli_to_show``, which depends on the
+measured monitor refresh. So the two pools' wraparound permutations interleave in the shared draw
+stream according to run timing, and across trials the initial per-trial pool order (also drawn
+from this RNG) shifts with the accumulated wraparound draws. The net effect: "same (Instance,
+Subject) => identical image-identity sequence" holds only when the refresh rate ALSO matches (a
+different-Hz monitor reshuffles which identities land where). What this does NOT affect is the
+periodic base/oddball STRUCTURE that the FPVS analysis actually measures -- the base cadence,
+oddball placement (every Kth / by pattern), frequencies, and trigger stream are all fixed by the
+Condition, independent of identity order -- so this is a replication-exactness limitation, not a
+signal-validity one. The refresh-independent fix (dedicated ``rng.spawn()`` sub-streams per pool,
+like jitter/distractor/go-no-go already use) is deferred to its own change because it re-derives
+the whole per-Run RNG spawn-order and the golden regression net; see issue #20.
 """
 
 from __future__ import annotations

@@ -113,14 +113,19 @@ def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ``outcome_summary_json`` keys vary by task type; different Results in the same Run are
     expected to share the same shape in practice, but this normalizes defensively so a
     ragged/inconsistent schema can't make ``pa.Table.from_pylist`` raise or misbehave.
+
+    Column ORDER is deterministic (#26): the fixed context columns first, in their declared
+    ``_CONTEXT_COLUMNS`` order, then every remaining ``outcome_summary`` key sorted alphabetically.
+    A first-seen union instead made the column order depend on which Result happened to be row 0
+    and on which heterogeneous outcome keys appeared -- so the same logical Run could export with a
+    different column layout run to run (values were always correct; only the ordering was unstable).
     """
-    all_keys: list[str] = []
-    seen = set()
+    present: set[str] = set()
     for row in rows:
-        for key in row:
-            if key not in seen:
-                seen.add(key)
-                all_keys.append(key)
+        present.update(row)
+    context_keys = [key for key in _CONTEXT_COLUMNS if key in present]
+    outcome_keys = sorted(present - set(_CONTEXT_COLUMNS))
+    all_keys = context_keys + outcome_keys
     return [{key: row.get(key) for key in all_keys} for row in rows]
 
 
