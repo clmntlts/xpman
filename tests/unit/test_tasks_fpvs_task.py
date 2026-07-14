@@ -1222,6 +1222,58 @@ def test_check_triggers_no_position_warning_when_disabled():
     assert not any("position_jitter" in w for w in warnings)
 
 
+def test_check_triggers_warns_dual_stream_jitter_can_cross_midline():
+    """#25: jitter is added to each stream's position with no clamp, so a jitter extent >= half the
+    inter-stream separation can push a stream across the midline. Streams 400 px apart, disk radius
+    250 px (>= 200) -> warn."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=250.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("cross the midline" in w for w in warnings)
+
+
+def test_check_triggers_no_crossover_for_small_dual_stream_jitter():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=50.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("cross the midline" in w for w in warnings)
+
+
+def test_check_triggers_warns_jitter_can_reach_photodiode_patch():
+    """#25: with an explicit patch position, warn if jitter can bring a stimulus onto the patch
+    (which would corrupt the timing trace). Patch at (100, 0), disk jitter radius 100 around the
+    centred stream -> the image centre can reach the patch."""
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    params = FPVSConditionParams(
+        photodiode=PhotodiodeParams(enabled=True, position_pix=(100.0, 0.0), size_pix=50.0),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=100.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("photodiode patch" in w for w in warnings)
+
+
+def test_check_triggers_no_photodiode_overlap_when_patch_far():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    params = FPVSConditionParams(
+        photodiode=PhotodiodeParams(enabled=True, position_pix=(2000.0, 2000.0), size_pix=50.0),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=100.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("photodiode patch" in w for w in warnings)
+
+
 # ---------------------------------------------------------------------------
 # describe_condition_resources()
 # ---------------------------------------------------------------------------
