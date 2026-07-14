@@ -8,11 +8,13 @@ no metadata mixed into data rows, every row is fully self-describing.
 Scope note: this is deliberately *not* one row per raw event. The raw per-flip/per-trigger
 event stream already lives in its own tidy Parquet/CSV file per Run (written incrementally
 by ``runtime.logging_sink.EventSink``), referenced from each row here via the
-``events_file_path`` column. Re-deriving which Trial an individual raw event belongs to
-would require solving trial-boundary correlation that isn't reliably available from the
-raw stream alone -- whereas one-row-per-Result is exactly the "results table" a researcher
-wants for statistics (per-trial accuracy/RT/etc.), and full per-flip detail remains just
-one file open away via ``events_file_path`` for anyone who needs it.
+``events_file_path`` column. That events file is shared by every Trial in the Run, but the
+engine brackets each Trial in it with ``trial_start``/``trial_end`` markers carrying the same
+``trial_index`` (and ``condition_id``) this table uses -- so a raw event can be attributed to
+its Result by finding the ``trial_start``/``trial_end`` pair its timestamp falls within (see
+issue #22). We still export one row per Result rather than per raw event because that is exactly
+the "results table" a researcher wants for statistics (per-trial accuracy/RT/etc.), with full
+per-flip detail one file open away via ``events_file_path`` for anyone who needs it.
 
 Parquet is the primary format; CSV is a plain-text sibling with identical rows/columns so
 a non-Python lab member can open results directly in Excel. See docs/architecture.md.
