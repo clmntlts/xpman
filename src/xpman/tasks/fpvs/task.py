@@ -957,13 +957,33 @@ class FPVSTask(TaskModule):
 
         valid_rts = [s.rt_seconds for s in scored_responses if s.is_valid and s.rt_seconds is not None]
 
+        # Bound overlay (distractor / go-no-go) responses to the MAIN oddball sequence's own time span
+        # (#19): the keyboard is cleared once at trial start and read once at the end, so a press during
+        # familiarization, a baseline segment, or the pre/post fixation intervals -- phases with no
+        # overlay event to match -- would otherwise be miscounted as a spontaneous FALSE ALARM. The
+        # onsets carry flip times (the same timeline as the events and the presses); a valid response
+        # can't precede the first onset (events are guarded in from the start) and can trail the last
+        # onset by up to one stimulus + its response window, so bound to that.
+        _seq_onsets = sequence_result.onsets
+        _one_stim_s = base_frames_per_cycle / refresh
+
+        def _during_main_sequence(presses, response_window_seconds):
+            if not _seq_onsets:
+                return []  # nothing was presented (aborted before the first onset) -> no responses
+            start = _seq_onsets[0].time
+            end = _seq_onsets[-1].time + _one_stim_s + response_window_seconds
+            return [r for r in presses if start <= r.time <= end]
+
         # Distractor task scoring (signal detection), if it ran. Its presses come from the SAME
         # single collector (partitioned by key), and are scored against the distractor events (not
         # stimulus onsets). Only fired events count, so an aborted trial doesn't inflate the miss
         # count. See distractor.py.
         distractor_score = None
         if distractor_controller is not None:
-            distractor_responses = [r for r in all_presses if r.key_name in set(distractor_keys)]
+            distractor_responses = _during_main_sequence(
+                [r for r in all_presses if r.key_name in set(distractor_keys)],
+                params.distractor.response_window_seconds,
+            )
             distractor_score = score_distractor_responses(
                 distractor_responses, distractor_controller.events, params.distractor
             )
@@ -984,7 +1004,10 @@ class FPVSTask(TaskModule):
         # partitioned by the go/no-go keys; scored against the go/no-go events. See go_nogo.py.
         go_nogo_score = None
         if go_nogo_controller is not None:
-            go_nogo_responses = [r for r in all_presses if r.key_name in set(params.go_nogo.keys)]
+            go_nogo_responses = _during_main_sequence(
+                [r for r in all_presses if r.key_name in set(params.go_nogo.keys)],
+                params.go_nogo.response_window_seconds,
+            )
             go_nogo_score = score_go_nogo(
                 go_nogo_responses, go_nogo_controller.events, params.go_nogo
             )

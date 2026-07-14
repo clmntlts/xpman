@@ -401,17 +401,23 @@ def _present_stimulus(
         )
         go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
         go_nogo_code = go_nogo.trigger_code_for(go_nogo_event) if go_nogo_event is not None else None
-        # One registration per frame, in priority order: a base/oddball onset first, then the
-        # overlay tasks (distractor, then go/no-go) whose events the scheduler placed on NON-base-onset
-        # frames so they never fight the stimulus trigger; otherwise the routine clear. (The
-        # distractor and go/no-go tasks are advised mutually exclusive -- see check_triggers -- so
-        # their events don't normally coincide; if they did, the distractor takes this frame.)
-        if is_onset and trigger_code is not None:
-            window.callOnFlip(trigger.set_code, trigger_code)
-        elif distractor_event is not None and distractor.trigger_code is not None:
-            window.callOnFlip(trigger.set_code, distractor.trigger_code)
+        # Resolve to EXACTLY ONE port registration per frame via the SAME function the dual-stream
+        # engine uses, so both paths fail loud identically. A base/oddball onset carrying a code and an
+        # overlay code on the same frame is a collision: resolve_frame_trigger RAISES rather than
+        # silently dropping the overlay marker (issue #17) -- a dropped marker is invisible until
+        # analysis. The scheduler places triggered overlays off base-onset frames precisely so this
+        # can't happen, so a raise means that guarantee broke. Distractor takes priority over go/no-go
+        # for the overlay code (as before; they're advised mutually exclusive). Non-colliding frames
+        # are byte-for-byte unchanged -- guarded by the callOnFlip + golden regression tests.
+        overlay_code = None
+        if distractor_event is not None and distractor.trigger_code is not None:
+            overlay_code = distractor.trigger_code
         elif go_nogo_event is not None and go_nogo_code is not None:
-            window.callOnFlip(trigger.set_code, go_nogo_code)
+            overlay_code = go_nogo_code
+        frame_onset = [StreamOnset(0, trigger_code, is_oddball)] if is_onset else []
+        action = resolve_frame_trigger(frame_onset, overlay_code=overlay_code)
+        if action[0] == "set_code":
+            window.callOnFlip(trigger.set_code, action[1])
         else:
             window.callOnFlip(trigger.clear_code)
 
