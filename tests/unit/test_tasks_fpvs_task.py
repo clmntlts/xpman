@@ -2365,3 +2365,53 @@ def test_distractor_press_before_main_sequence_is_not_a_false_alarm(mock_window,
 
     # Without the #19 fix this early press has no event to match and is counted as a spontaneous FA.
     assert result.outcome_summary["distractor_n_false_alarms"] == 0
+
+
+def test_run_trial_triggered_distractor_with_dual_stream(mock_window, stim_root, event_sink):
+    """#13: a triggered distractor overlay now runs with a (non-sweep) dual stream -- its events are
+    scheduled off the UNION of BOTH streams' onset cadences, so no marker shares a flip with a stream
+    onset (which would raise mid-trial), and its trigger fires."""
+    import json
+
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,  # 60/7 -> 9 frames/stim, vs the main 6 Hz -> 10 frames/stim
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+        distractor=DistractorParams(
+            enabled=True, trigger_code=99, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
+        ),
+    )
+    params.base.trial_duration_seconds = 1.0
+
+    trigger = NullTrigger(reset_after=0.0)
+    ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)  # must NOT raise a collision
+
+    rows = _read_events(event_sink)
+    distractor_frames = [
+        json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "distractor_onset"
+    ]
+    assert distractor_frames  # some triggered distractor events fired
+    # Every distractor onset avoids BOTH streams' base-onset frames (10 f/stim and 9 f/stim @ 60 Hz).
+    assert all(f % 10 != 0 and f % 9 != 0 for f in distractor_frames)
+    assert 99 in trigger.codes_sent  # its trigger fired
+    assert result.outcome_summary["aborted"] is False

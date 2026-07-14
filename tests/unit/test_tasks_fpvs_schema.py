@@ -241,7 +241,7 @@ def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
 
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
-    with pytest.raises(ValidationError, match="dual bilateral stream"):
+    with pytest.raises(ValidationError, match="dual-stream"):
         FPVSConditionParams(
             stream_position_pix=(-200.0, 0.0),
             sweep=FrequencySweepParams(enabled=True, steps=main),
@@ -255,12 +255,11 @@ def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
         )
 
 
-def test_triggered_overlay_with_dual_stream_is_rejected():
-    # Review finding (HIGH): a *triggered* distractor/go-no-go overlay must be rejected with a dual
-    # bilateral stream even WITHOUT a sweep. The overlay is nudged off the MAIN stream's base-onset
-    # cadence only, but a separable second stream onsets at a different (non-harmonic) rate, so the
-    # marker could share a flip with the second stream's onset -- and if that stream is triggered,
-    # resolve_frame_trigger would raise mid-trial. Distractor and go-no-go are both covered.
+def test_triggered_overlay_with_nonsweep_dual_stream_is_allowed():
+    # #13: a *triggered* distractor/go-no-go overlay is now ALLOWED with a (non-sweep) dual stream --
+    # the overlay is scheduled off the UNION of both streams' fixed base-onset cadences, so a marker
+    # never shares a flip with either stream's onset. (A dual-stream SWEEP is still rejected -- see
+    # test_triggered_overlay_with_sweep_dual_stream_is_rejected.)
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
     from xpman.tasks.fpvs.schema import StreamParams
@@ -272,12 +271,11 @@ def test_triggered_overlay_with_dual_stream_is_rejected():
             **overlay,
         )
 
-    with pytest.raises(ValidationError, match="dual bilateral stream"):
-        _dual(distractor=DistractorParams(enabled=True, trigger_code=99, keys=["a"]))
-    with pytest.raises(ValidationError, match="dual bilateral stream"):
-        _dual(go_nogo=GoNoGoParams(enabled=True, go_trigger_code=99, keys=["a"]))
-    # An UNtriggered overlay with a dual stream is still allowed (no port to collide with).
-    _dual(distractor=DistractorParams(enabled=True, keys=["a"]))
+    # Neither of these raises now (validation succeeds).
+    assert _dual(distractor=DistractorParams(enabled=True, trigger_code=99, keys=["a"])).second_stream.enabled
+    assert _dual(go_nogo=GoNoGoParams(enabled=True, go_trigger_code=99, keys=["a"])).second_stream.enabled
+    # An UNtriggered overlay with a dual stream remains allowed too.
+    assert _dual(distractor=DistractorParams(enabled=True, keys=["a"])).distractor.enabled
 
 
 def test_sweep_with_untriggered_overlay_is_allowed():
