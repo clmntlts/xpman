@@ -122,7 +122,7 @@ class GoNoGoScore:
 
 def schedule_go_nogo_events(
     total_frames: int,
-    frames_per_stim: int,
+    frames_per_stim: "int | tuple[int, ...]",
     params: GoNoGoParams,
     rng: "numpy.random.Generator",
     refresh_hz: float,
