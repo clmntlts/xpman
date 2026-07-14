@@ -219,10 +219,12 @@ hardware review. They converge. Resolutions below are now binding on Wave 1/2.
    them).
 4. **Overlay schedule span = Σ presented frames across segments** (not `base.trial_duration_seconds`).
    And `iter_event_windows`'s off-base-onset nudge uses a single `frames_per_stim`, which **changes
-   per segment** — a real correctness gap. **v1 decision:** fix the overlay span to the segment sum
-   (always needed), and **reject triggered overlays (distractor/go-no-go with a `trigger_code`) when
-   `sweep.enabled`** via a validator; per-segment overlay scheduling is deferred. Non-triggered
-   overlays during sweep are allowed (no nudge needed).
+   per segment** — a real correctness gap. **v1 decision** fixed the overlay span to the segment sum
+   and deferred per-segment nudging by rejecting triggered overlays under `sweep.enabled` via a
+   validator. **Now implemented:** `iter_event_windows_over_segments` nudges off each step's own
+   cadence (single-stream sweep), and for a dual-stream sweep each `SegmentWindow.frames_per_stim`
+   carries BOTH streams' per-step cadences so the nudge dodges their union (#27) — the validator is
+   removed and triggered overlays run with any sweep. Non-triggered overlays were always allowed.
 5. **RNG interleaving order is pinned:** within a stream, `base_pool` constructed before
    `oddball_pool` and advanced in ascending position order (today's exact order); across streams,
    stream index ascending then base-before-oddball. The single-stream path must draw identical values

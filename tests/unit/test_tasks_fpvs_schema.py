@@ -231,35 +231,36 @@ def test_sweep_with_triggered_single_stream_overlay_is_allowed():
     assert params.sweep.enabled and params.distractor.trigger_code == 50
 
 
-def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
-    # A triggered overlay together with a sweep x DUAL stream is rejected (a special case of the
-    # broader dual-stream rejection below: the streams have different cadences, so no single cadence
-    # to nudge the overlay off).
+def test_triggered_overlay_with_sweep_dual_stream_is_allowed():
+    # #27: a *triggered* overlay now runs with a sweep x DUAL stream too. task.py builds the
+    # per-segment overlay windows carrying BOTH streams' per-step cadences, so the scheduler nudges
+    # markers off the UNION per step and one never shares a flip with either stream's onset.
+    # Previously rejected by _check_triggered_overlay_with_dual_stream_sweep (now removed).
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
-    with pytest.raises(ValidationError, match="dual-stream"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=main),
-            second_stream=StreamParams(
-                enabled=True,
-                base_freq_hz=7.0,
-                position_pix=(200.0, 0.0),
-                sweep=FrequencySweepParams(enabled=True, steps=second),
-            ),
-            distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
-        )
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second),
+        ),
+        distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
+    )
+    assert params.distractor.trigger_code == 50 and params.second_stream.sweep.enabled
 
 
 def test_triggered_overlay_with_nonsweep_dual_stream_is_allowed():
     # #13: a *triggered* distractor/go-no-go overlay is now ALLOWED with a (non-sweep) dual stream --
     # the overlay is scheduled off the UNION of both streams' fixed base-onset cadences, so a marker
-    # never shares a flip with either stream's onset. (A dual-stream SWEEP is still rejected -- see
-    # test_triggered_overlay_with_sweep_dual_stream_is_rejected.)
+    # never shares a flip with either stream's onset. (A dual-stream SWEEP with a triggered overlay is
+    # now also allowed -- see test_triggered_overlay_with_sweep_dual_stream_is_allowed, #27.)
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
     from xpman.tasks.fpvs.schema import StreamParams
@@ -494,6 +495,45 @@ def test_reserved_code_colliding_with_stream_code_is_rejected():
             ),
             **_dual_condition(s2_base_code=20, s2_oddball_code=21),
         )
+
+
+def test_reserved_code_colliding_with_second_stream_code_is_rejected():
+    # #16: the collision check must scan BOTH streams' codes, not only stream 0. Here a reserved
+    # code reuses the SECOND stream's oddball code (21); a check that accidentally only scanned the
+    # main stream's codes (10/11) would wrongly accept it.
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    with pytest.raises(ValidationError, match="collide"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=200, a_base_b_oddball=21, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_disjoint_full_table_accepted_at_8bit_boundaries():
+    # #16: accept a valid table whose reserved codes sit at the 8-bit extremes (1 and 255) alongside
+    # mid-range stream codes -- guards the boundary of the disjointness/range check, not just the
+    # comfortable mid-range values the other accept test uses.
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        oddball=OddballParams(oddball_trigger_code=11),
+        coincidence_codes=CoincidenceCodes(
+            both_base=1, a_base_b_oddball=2, a_oddball_b_base=254, both_oddball=255
+        ),
+        **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+    )
+    assert params.coincidence_codes.as_reserved_table() == {
+        (False, False): 1,
+        (False, True): 2,
+        (True, False): 254,
+        (True, True): 255,
+    }
 
 
 def test_duplicate_reserved_codes_are_rejected():

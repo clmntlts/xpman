@@ -1222,6 +1222,58 @@ def test_check_triggers_no_position_warning_when_disabled():
     assert not any("position_jitter" in w for w in warnings)
 
 
+def test_check_triggers_warns_dual_stream_jitter_can_cross_midline():
+    """#25: jitter is added to each stream's position with no clamp, so a jitter extent >= half the
+    inter-stream separation can push a stream across the midline. Streams 400 px apart, disk radius
+    250 px (>= 200) -> warn."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=250.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("cross the midline" in w for w in warnings)
+
+
+def test_check_triggers_no_crossover_for_small_dual_stream_jitter():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=50.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("cross the midline" in w for w in warnings)
+
+
+def test_check_triggers_warns_jitter_can_reach_photodiode_patch():
+    """#25: with an explicit patch position, warn if jitter can bring a stimulus onto the patch
+    (which would corrupt the timing trace). Patch at (100, 0), disk jitter radius 100 around the
+    centred stream -> the image centre can reach the patch."""
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    params = FPVSConditionParams(
+        photodiode=PhotodiodeParams(enabled=True, position_pix=(100.0, 0.0), size_pix=50.0),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=100.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("photodiode patch" in w for w in warnings)
+
+
+def test_check_triggers_no_photodiode_overlap_when_patch_far():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    params = FPVSConditionParams(
+        photodiode=PhotodiodeParams(enabled=True, position_pix=(2000.0, 2000.0), size_pix=50.0),
+        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=100.0),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("photodiode patch" in w for w in warnings)
+
+
 # ---------------------------------------------------------------------------
 # describe_condition_resources()
 # ---------------------------------------------------------------------------
@@ -1974,7 +2026,8 @@ def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_w
             oddball_selector=StimulusSelector(subdirectory="objects"),
             sweep=FrequencySweepParams(enabled=True, steps=second_steps),
         ),
-        # UNtriggered distractor -- a triggered overlay is rejected with any dual stream.
+        # UNtriggered distractor here (a triggered one is also supported now -- #27 -- and is covered
+        # by test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay).
         distractor=DistractorParams(
             enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.15, guard_seconds=0.0
         ),
@@ -2280,6 +2333,58 @@ def test_presented_base_frequencies_covers_sweep_second_stream_and_familiarizati
     assert 7.0 in values.values() and 5.0 in values.values()
 
 
+def test_check_triggers_warns_dual_stream_sweep_second_stream_not_whole_cycles():
+    """#23: in a dual-stream sweep each step's frame span is floored to the MAIN stream's whole
+    cycles, so a second-stream frequency that doesn't divide that span has its last cycle truncated.
+    main 6 Hz (10 frames/cycle @60), second 7 Hz (9 frames/cycle): a 1 s step is 60 frames = 6 whole
+    main cycles but 6.67 second-stream cycles -> warn."""
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main_steps = [SweepStep(base_freq_hz=6.0, duration_seconds=1.0) for _ in range(2)]
+    second_steps = [SweepStep(base_freq_hz=7.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.4)) for _ in range(2)]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("does not complete whole cycles" in w for w in warnings)
+
+
+def test_check_triggers_clean_dual_stream_sweep_when_both_divide_evenly():
+    """No whole-cycle warning when both streams' per-step frequencies divide the 60-frame step span
+    evenly: main 6 Hz (10 f/c) & 4 Hz (15 f/c), second 5 Hz (12 f/c) & 3 Hz (20 f/c)."""
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=1.0),
+        SweepStep(base_freq_hz=4.0, duration_seconds=1.0),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=5.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+        SweepStep(base_freq_hz=3.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=0.75)),
+    ]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=5.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("does not complete whole cycles" in w for w in warnings)
+
+
 def test_run_trial_rejects_too_high_sweep_step(mock_window, stim_root, event_sink):
     """Review CRITICAL: a sweep step near/above the refresh (1 frame/cycle) must hard-fail like the
     base frequency does -- previously only params.base was checked, so a too-high step slipped through
@@ -2353,9 +2458,8 @@ def test_run_trial_reports_frames_dropped_when_window_tracks_it(mock_window, sti
 
 def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock_window, stim_root, event_sink):
     """An UNtriggered distractor overlay runs alongside the two frame-driven streams: its events are
-    logged and the sequence completes. A *triggered* overlay with a dual stream is rejected at
-    validation (see test_triggered_overlay_with_dual_stream_is_rejected) because the overlay is nudged
-    off the main stream's cadence only, so it could share a flip with the second stream's onset."""
+    logged and the sequence completes. (Triggered overlays with a dual stream -- non-sweep #13 and
+    sweep #27 -- are covered separately; here the point is that an untriggered overlay composes.)"""
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
 
@@ -2392,6 +2496,65 @@ def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock
     types = [r["event_type"] for r in _read_events(event_sink)]
     assert "distractor_onset" in types  # the overlay ran during the dual-stream sequence
     assert result.outcome_summary["aborted"] is False
+
+
+def test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay(mock_window, stim_root, event_sink):
+    """#27: a TRIGGERED distractor overlay now runs with a dual-stream SWEEP. The per-segment overlay
+    windows carry BOTH streams' per-step cadences, so markers are nudged off the UNION and never share
+    a flip with either stream's onset -- if one did, resolve_frame_trigger would raise. The second
+    stream carries a trigger code so such a collision WOULD be caught; a clean run is the proof."""
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=1.0),
+        SweepStep(base_freq_hz=5.0, duration_seconds=1.0),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=7.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.4)),
+        SweepStep(base_freq_hz=4.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            base_trigger_code=40,  # coded, so a marker landing on its onset would raise
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+        distractor=DistractorParams(
+            enabled=True,
+            trigger_code=50,
+            keys=["a"],
+            min_interval_seconds=0.1,
+            max_interval_seconds=0.15,
+            guard_seconds=0.0,
+        ),
+    )
+
+    trigger = NullTrigger(reset_after=0.0)
+    ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)  # must NOT raise a collision
+
+    assert result.outcome_summary["aborted"] is False
+    types = [r["event_type"] for r in _read_events(event_sink)]
+    assert "distractor_onset" in types  # the triggered overlay actually scheduled events
+    assert types.count("sweep_segment_start") == 2  # ran as a per-segment dual-stream sweep
 
 
 def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_root):

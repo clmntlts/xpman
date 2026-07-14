@@ -58,7 +58,15 @@ _BUSY_TIMEOUT_MS = 5000
 def _enable_sqlite_pragmas(dbapi_connection, connection_record) -> None:  # noqa: ANN001
     """Per-connection pragmas: foreign-key enforcement, WAL mode, a real busy timeout (so
     concurrent writers wait rather than instantly erroring), and synchronous=NORMAL (safe and
-    the recommended durability level under WAL)."""
+    the recommended durability level under WAL).
+
+    Durability scope (#26): ``synchronous=NORMAL`` under WAL guarantees a committed transaction
+    survives an *application* crash (the scenario the per-trial commit crash-safety is written for
+    -- see ``runtime.engine.execute_run``), but NOT a power loss or OS crash between the commit and
+    the next checkpoint, where the last transactions can be lost. That is an accepted trade-off for
+    the write throughput a run needs; ``synchronous=FULL`` would be the choice if power-loss
+    durability were ever required. The event-log CSV (``runtime.logging_sink``) is the separate,
+    plain-text crash-safety trail for the raw stream and is likewise flush-, not fsync-, backed."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
