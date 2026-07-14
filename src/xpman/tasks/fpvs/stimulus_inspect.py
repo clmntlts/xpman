@@ -11,7 +11,13 @@ It checks two FPVS-specific assumptions that are otherwise silent:
   fades toward its own mean luminance -- i.e. the window's background gray must match the stimulus
   set's mean luminance (see ``tasks/fpvs/modulation.py`` and ``task.py``'s ``background_gray``). A
   large divergence means the "contrast" modulation is really introducing a luminance artifact at
-  the base frequency, which lands right in the FPVS response.
+  the base frequency, which lands right in the FPVS response. Because the base and oddball pools are
+  different categories with potentially different means, ``task.py`` inspects each resolved pool
+  *separately* (issue #18): a per-pool divergence from the background injects an artifact at that
+  pool's rate, and -- most importantly -- a difference *between* the two pool means makes every
+  oddball onset a luminance step recurring at exactly the oddball frequency, mimicking the
+  categorization response. This function stays pool-agnostic; the per-pool split is orchestrated by
+  the caller.
 - **Uniform dimensions.** ``task.py`` builds each ``ImageStim`` with no explicit ``size``, so
   PsychoPy renders it at its native pixel dimensions. Heterogeneous source dimensions therefore
   become heterogeneous on-screen (retinal) sizes -- a low-level confound the paradigm assumes away.

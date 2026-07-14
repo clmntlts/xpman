@@ -390,6 +390,10 @@ class FPVSTask(TaskModule):
         self._refresh_rate_hz: float = FALLBACK_REFRESH_RATE_HZ
         self._refresh_measured_successfully: bool = False
         self._pool_mean_luminance: float | None = None
+        #: Per-pool mean luminance, keyed by (selector.subdirectory, selector.filename_pattern) so a
+        #: resolved base/oddball pool's pixels are decoded once per distinct selector per Run, not
+        #: every trial (issue #18). Populated lazily in run_trial via _pool_mean_luminance_for.
+        self._pool_luminance_cache: dict[tuple[str | None, str | None], float | None] = {}
         self._response_collector: ResponseCollector | None = None
         #: Cache of built ImageStim (GPU texture) keyed by image path, reused across trials --
         #: building one uploads a texture, so rebuilding the whole pool every trial is what makes
@@ -501,6 +505,27 @@ class FPVSTask(TaskModule):
         ctx.event_sink.log(
             "prepare", {"task_id": self.task_id, "n_images_found": len(self._image_entries)}
         )
+
+    def _pool_mean_luminance_for(
+        self, entries: list[ImageEntry], selector: StimulusSelector
+    ) -> float | None:
+        """Mean luminance of one resolved pool, inspected once per distinct selector per Run (cached).
+
+        The whole-directory inspection in prepare() yields a single aggregate that blends the base and
+        oddball categories together. But those pools (e.g. objects vs faces) can differ in mean
+        luminance, and it is the per-pool number -- and the gap between the two -- that reveals a
+        luminance confound landing on the base/oddball frequency (issue #18). Keyed by the selector's
+        fields because _select_pool is a pure function of the fixed per-Run entries and the selector,
+        so the pixel decode runs once per distinct pool across the whole Run rather than every trial.
+        Returns None for an unreadable pool (inspect_pool never raises), which disables the checks that
+        read it -- matching the whole-set path's "None means don't advise" behaviour."""
+        key = (selector.subdirectory, selector.filename_pattern)
+        if key not in self._pool_luminance_cache:
+            inspection = inspect_pool(
+                [entry.path for entry in entries], sample_size=_STIMULUS_INSPECT_SAMPLE
+            )
+            self._pool_luminance_cache[key] = inspection.mean_luminance
+        return self._pool_luminance_cache[key]
 
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
         # LOAD-PATH CONTRACT (intentional): a frozen Instance's condition params are read back here
@@ -1062,8 +1087,45 @@ class FPVSTask(TaskModule):
                 },
             )
 
-        # Background-vs-luminance cross-check: opacity modulation is true contrast modulation only
-        # if the background gray matches the images' mean luminance (measured once in prepare).
+        # Per-pool luminance cross-check (advisory; None disables it). Opacity modulation is true
+        # CONTRAST modulation only when a pool fades toward its own mean luminance == the background
+        # gray. The base and oddball pools are DIFFERENT categories with potentially different means,
+        # so inspect them separately (issue #18) -- the aggregate whole-set mean below hides this:
+        #   - Each pool vs background_gray: a mismatched pool's fade injects a luminance artifact at
+        #     THAT pool's presentation rate (base pool -> base freq; oddball pool -> oddball freq).
+        #   - Base pool vs oddball pool: if their means differ, every oddball onset is also a luminance
+        #     STEP recurring at exactly the oddball frequency -- a low-level luminance transient
+        #     masquerading as the high-level categorization response, the confound that matters most.
+        base_pool_luminance = self._pool_mean_luminance_for(base_entries, params.base_selector)
+        oddball_pool_luminance = self._pool_mean_luminance_for(oddball_entries, params.oddball_selector)
+
+        def _diverges_from_background(value: float | None) -> bool:
+            return (
+                value is not None
+                and abs(value - params.background_gray) > LUMINANCE_DIVERGENCE_THRESHOLD
+            )
+
+        base_pool_luminance_warning = _diverges_from_background(base_pool_luminance)
+        oddball_pool_luminance_warning = _diverges_from_background(oddball_pool_luminance)
+        pool_luminance_mismatch_warning = (
+            base_pool_luminance is not None
+            and oddball_pool_luminance is not None
+            and abs(base_pool_luminance - oddball_pool_luminance) > LUMINANCE_DIVERGENCE_THRESHOLD
+        )
+        if base_pool_luminance_warning or oddball_pool_luminance_warning or pool_luminance_mismatch_warning:
+            ctx.event_sink.log(
+                "pool_luminance_divergence",
+                {
+                    "base_pool_mean_luminance": base_pool_luminance,
+                    "oddball_pool_mean_luminance": oddball_pool_luminance,
+                    "background_gray": params.background_gray,
+                    "base_vs_background_warning": base_pool_luminance_warning,
+                    "oddball_vs_background_warning": oddball_pool_luminance_warning,
+                    "base_vs_oddball_mismatch_warning": pool_luminance_mismatch_warning,
+                },
+            )
+
+        # Whole-set aggregate cross-check (kept for continuity; the per-pool checks above are finer).
         # A large gap means the modulation injects a luminance artifact at the base frequency.
         # Advisory; None (unmeasurable pool) disables the check.
         background_luminance_warning = False
@@ -1099,6 +1161,11 @@ class FPVSTask(TaskModule):
                 "frames_dropped": frames_dropped,
                 "pool_mean_luminance": self._pool_mean_luminance,
                 "background_luminance_warning": background_luminance_warning,
+                "base_pool_mean_luminance": base_pool_luminance,
+                "oddball_pool_mean_luminance": oddball_pool_luminance,
+                "base_pool_luminance_warning": base_pool_luminance_warning,
+                "oddball_pool_luminance_warning": oddball_pool_luminance_warning,
+                "pool_luminance_mismatch_warning": pool_luminance_mismatch_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
                 "n_oddballs_shown": sequence_result.n_oddballs_shown,
                 "requested_base_freq_hz": sequence_result.requested_base_freq_hz,
