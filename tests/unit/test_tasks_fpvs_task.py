@@ -2280,6 +2280,58 @@ def test_presented_base_frequencies_covers_sweep_second_stream_and_familiarizati
     assert 7.0 in values.values() and 5.0 in values.values()
 
 
+def test_check_triggers_warns_dual_stream_sweep_second_stream_not_whole_cycles():
+    """#23: in a dual-stream sweep each step's frame span is floored to the MAIN stream's whole
+    cycles, so a second-stream frequency that doesn't divide that span has its last cycle truncated.
+    main 6 Hz (10 frames/cycle @60), second 7 Hz (9 frames/cycle): a 1 s step is 60 frames = 6 whole
+    main cycles but 6.67 second-stream cycles -> warn."""
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main_steps = [SweepStep(base_freq_hz=6.0, duration_seconds=1.0) for _ in range(2)]
+    second_steps = [SweepStep(base_freq_hz=7.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.4)) for _ in range(2)]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert any("does not complete whole cycles" in w for w in warnings)
+
+
+def test_check_triggers_clean_dual_stream_sweep_when_both_divide_evenly():
+    """No whole-cycle warning when both streams' per-step frequencies divide the 60-frame step span
+    evenly: main 6 Hz (10 f/c) & 4 Hz (15 f/c), second 5 Hz (12 f/c) & 3 Hz (20 f/c)."""
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=1.0),
+        SweepStep(base_freq_hz=4.0, duration_seconds=1.0),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=5.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+        SweepStep(base_freq_hz=3.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=0.75)),
+    ]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=5.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+    warnings = FPVSTask().check_triggers(params.model_dump())
+    assert not any("does not complete whole cycles" in w for w in warnings)
+
+
 def test_run_trial_rejects_too_high_sweep_step(mock_window, stim_root, event_sink):
     """Review CRITICAL: a sweep step near/above the refresh (1 frame/cycle) must hard-fail like the
     base frequency does -- previously only params.base was checked, so a too-high step slipped through
