@@ -53,6 +53,14 @@ class FlipIntervalStats:
     stddev_interval_s: float | None
     n_outliers: int
     nominal_frame_period_s: float
+    #: Median inter-flip interval and the refresh it implies (1 / median) -- an INDEPENDENT,
+    #: empirical estimate of the monitor's true frame period, computed only from the logged flip
+    #: timestamps and NOT from the assumed refresh (#26). The median (not the mean) is used so
+    #: occasional dropped-frame outliers -- long intervals -- don't inflate it. Comparing this to
+    #: the assumed ``nominal_frame_period_s`` surfaces a wrong-but-plausible refresh (e.g. frame
+    #: math assumed 60 Hz on a monitor actually running 120 Hz), which would otherwise be invisible.
+    median_interval_s: float | None = None
+    empirical_refresh_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +130,19 @@ class VerificationReport:
                 f"outliers(>{_OUTLIER_FACTOR}x nominal)={fi.n_outliers}  "
                 f"nominal_frame_period={fi.nominal_frame_period_s * 1000:.2f}ms"
             )
+            if fi.empirical_refresh_hz is not None:
+                nominal_hz = 1.0 / fi.nominal_frame_period_s if fi.nominal_frame_period_s else 0.0
+                diverges = nominal_hz and abs(fi.empirical_refresh_hz - nominal_hz) / nominal_hz > 0.05
+                warn = (
+                    f"  <-- DIVERGES from the assumed {nominal_hz:.2f}Hz by >5%: the refresh used "
+                    "for frame math is likely wrong, so achieved frequencies are off"
+                    if diverges
+                    else ""
+                )
+                lines.append(
+                    f"  empirical refresh (1/median inter-flip)={fi.empirical_refresh_hz:.2f}Hz  "
+                    f"(median={fi.median_interval_s * 1000:.2f}ms){warn}"
+                )
 
         lines += [
             "",
@@ -240,12 +261,19 @@ def _compute_flip_interval_stats(events_sorted: list[dict[str, Any]], nominal_fr
             n_outliers=0, nominal_frame_period_s=nominal_frame_period_s,
         )
     n_outliers = sum(1 for interval in intervals if interval > _OUTLIER_FACTOR * nominal_frame_period_s)
+    # Median inter-flip interval -> empirical refresh: median resists the dropped-frame outliers that
+    # would drag the mean toward a slower apparent refresh, so 1/median is a robust estimate of the
+    # true frame period, independent of the assumed nominal (#26).
+    median_interval_s = statistics.median(intervals)
+    empirical_refresh_hz = (1.0 / median_interval_s) if median_interval_s > 0 else None
     return FlipIntervalStats(
         n_flips=n_flips,
         mean_interval_s=statistics.fmean(intervals),
         stddev_interval_s=statistics.stdev(intervals) if len(intervals) > 1 else 0.0,
         n_outliers=n_outliers,
         nominal_frame_period_s=nominal_frame_period_s,
+        median_interval_s=median_interval_s,
+        empirical_refresh_hz=empirical_refresh_hz,
     )
 
 

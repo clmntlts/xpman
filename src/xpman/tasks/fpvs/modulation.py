@@ -155,6 +155,15 @@ def envelope_at_frame(
     ``n_plateau`` frames, ramps 1 -> 0 across the ``n_fade_out`` frames. Frames at or past the
     end return 0.0. With no fades (``n_fade_in == n_fade_out == 0``) it is 1.0 throughout the
     plateau -- i.e. the current no-fade behavior.
+
+    Endpoint asymmetry is intentional (#26). Both ramps use ``(k + 1)/n`` so each *reaches its
+    full endpoint on its own last frame*: the fade-IN hits exactly 1.0 on its final frame (but
+    starts at ``1/n_fade_in``, not 0), and the fade-OUT hits exactly 0.0 on its final frame (but
+    starts at ``1 - 1/n_fade_out``, not 1.0). The alternative ``k/(n-1)`` would pin both raw
+    endpoints (0 and 1) but waste a frame holding 0 at each edge; forcing frame 0 to envelope 0 is
+    also pointless here because the per-cycle contrast table already carries the within-cycle
+    zero-crossing. A consequence is the cosmetic non-zero-contrast tail noted in
+    ``paradigm_oddball._plan_oddball_segment`` when a segment's frame budget doesn't divide evenly.
     """
     if global_frame < 0:
         return 0.0

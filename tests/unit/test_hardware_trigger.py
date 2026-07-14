@@ -80,6 +80,26 @@ def test_set_code_and_clear_code_do_not_wait():
         assert ctx.mock_port_instance.setData.call_args_list == [((7,), {}), ((0,), {})]
 
 
+def test_set_code_rejects_out_of_range_across_backends():
+    """#26: an out-of-range code raises identically on every backend (parity with serial's new
+    behaviour), so a caller bug is loud everywhere rather than a silent, backend-specific wrap."""
+    from xpman.hardware.trigger_null import NullTrigger
+
+    null = NullTrigger()
+    for bad in (256, -1, 1000):
+        with pytest.raises(ValueError, match="0-255"):
+            null.set_code(bad)
+    assert null.sent == []  # nothing recorded when the code is rejected
+    null.set_code(255)  # boundary is accepted
+    null.set_code(0)
+    assert [s.code for s in null.sent] == [255, 0]
+
+    with _MockedParallelPort() as ctx:
+        with pytest.raises(ValueError, match="0-255"):
+            ctx.trigger.set_code(256)
+        ctx.mock_port_instance.setData.assert_not_called()
+
+
 class _MockedParallelPort:
     """Context manager patching psychopy.parallel.ParallelPort and psychopy.core.wait for the
     full lifetime of a ParallelPortTrigger (construction *and* send_trigger calls), since

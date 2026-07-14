@@ -83,17 +83,21 @@ class SerialTrigger(TriggerSender):
             ) from exc
 
     def set_code(self, code: int) -> None:
-        """Write ``code`` (masked to one byte, 0-255) to the port (non-blocking).
+        """Write ``code`` (a single byte, 0-255) to the port (non-blocking).
 
         On an ``auto_pulse`` device this is the whole trigger: the device pulses in hardware and
         returns to 0 on its own, so no clear follows.
+
+        An out-of-range code now RAISES (via :meth:`_validate_code`) instead of being masked with
+        ``& 0xFF`` -- masking silently wrapped a >255 code (256 -> a spurious clear) here while the
+        parallel/null backends did not, so the same bug behaved differently per backend (#26).
 
         A write failure (device unplugged mid-run, driver error) is deliberately **not** swallowed
         -- it propagates, so the engine marks the Run CRASHED and the experimenter learns
         immediately. Silently continuing would leave the EEG with missing/wrong trigger markers,
         invisible until analysis, which is far worse for the science than a loud, timestamped stop.
         """
-        self._serial.write(bytes([code & 0xFF]))
+        self._serial.write(bytes([self._validate_code(code)]))
 
     def clear_code(self) -> None:
         """Return the trigger lines to 0.

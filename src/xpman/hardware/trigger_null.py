@@ -41,7 +41,7 @@ class NullTrigger(TriggerSender):
 
     def set_code(self, code: int) -> None:
         """Record ``code`` with the current timestamp. Does not touch any real hardware."""
-        self.sent.append(SentTrigger(code=code, timestamp=time.perf_counter()))
+        self.sent.append(SentTrigger(code=self._validate_code(code), timestamp=time.perf_counter()))
 
     def clear_code(self) -> None:
         """No-op: resetting the virtual pins to 0 is not a recorded event."""
