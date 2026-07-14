@@ -46,10 +46,9 @@ class DummyTask(TaskModule):
         flips_completed = 0
         is_white = False
 
-        ctx.event_sink.log(
-            "trial_start", {"trial_index": trial_index, "n_flips_requested": n_flips}
-        )
-
+        # trial_start/trial_end boundary markers are emitted by runtime.engine (see issue #22),
+        # so this task does not log its own -- n_flips_requested/flips_completed are already in the
+        # returned outcome_summary below.
         for flip_index in range(n_flips):
             if ctx.abort_check():
                 break
@@ -93,10 +92,6 @@ class DummyTask(TaskModule):
 
         # Reset the port after the final flip (its clear is registered on a flip that never comes).
         ctx.trigger.clear_code()
-
-        ctx.event_sink.log(
-            "trial_end", {"trial_index": trial_index, "flips_completed": flips_completed}
-        )
 
         return TrialResult(
             outcome_summary={
