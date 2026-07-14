@@ -1045,6 +1045,69 @@ def test_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_ro
     assert order_on == order_off  # enabling jitter left the pool-shuffle order untouched
 
 
+def test_dual_stream_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_root, tmp_path):
+    """Review finding (#3, MED): dual-stream analogue of the decoupling guard above. task.run_trial
+    draws the two jitter sub-streams via ctx.rng.spawn(2), which does NOT advance ctx.rng, so enabling
+    per-stream jitter must leave BOTH streams' pool-shuffle (presentation) order byte-for-byte vs a
+    non-jittered run at the same seed. Exercised through run_trial (not _run_dual_stream directly) so
+    it covers the real ordering of spawn(2) relative to the base/oddball pool shuffles."""
+    import json
+
+    from xpman.hardware.clock import Clock
+    from xpman.hardware.trigger_null import NullTrigger
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    def _fresh_ctx(sink):
+        return TaskContext(
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            rng=np.random.default_rng(7777),  # identical seed for both runs
+            subject=SubjectInfo(id=1, first_name="T", last_name="S"),
+            instance_params={},
+            resource_dir=str(stim_root),
+            event_sink=sink,
+            abort_check=lambda: False,
+        )
+
+    base_params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    base_params.base.trial_duration_seconds = 2.0
+
+    disabled = base_params.model_copy(deep=True)
+    enabled = base_params.model_copy(deep=True)
+    enabled.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=50.0)
+
+    def _order(params, name):
+        sink = EventSink(tmp_path / name / "events.csv", tmp_path / name / "events.parquet")
+        task = FPVSTask()
+        ctx = _fresh_ctx(sink)
+        task.prepare(ctx)
+        rows = _run_trial_and_read_events(task, ctx, params)
+        onsets = [
+            json.loads(r["payload_json"])
+            for r in rows
+            if r["event_type"] in ("stimulus_onset", "oddball_onset")
+        ]
+        # (stream, image) per onset: both streams' pool order AND their interleaving.
+        return [(p["stream"], p["image"]) for p in onsets]
+
+    order_off = _order(disabled, "off")
+    order_on = _order(enabled, "on")
+    assert order_off  # sanity: something was presented
+    assert order_on == order_off  # per-stream pool-shuffle order unchanged by enabling jitter
+
+
 def test_check_triggers_warns_on_large_position_jitter():
     task = FPVSTask()
     params = FPVSConditionParams()
@@ -1620,6 +1683,250 @@ def test_run_trial_sweep_presents_steps_as_segments(mock_window, stim_root, even
     assert "base_oddball_sequence_end" in types
     assert result.outcome_summary["aborted"] is False
 
+    # #10: the flat results summary carries a compact per-segment breakdown (one column set per step),
+    # so per-step stats are exportable without opening the raw event file.
+    summary = result.outcome_summary
+    assert summary["sweep_n_segments"] == 2
+    assert summary["sweep_seg0_achieved_base_freq_hz"] == pytest.approx(6.0)
+    assert summary["sweep_seg1_achieved_base_freq_hz"] == pytest.approx(12.0)
+    assert summary["sweep_seg0_achieved_oddball_freq_hz"] == pytest.approx(1.2)
+    assert summary["sweep_seg0_n_stimuli_shown"] > 0
+    assert summary["sweep_seg1_n_stimuli_shown"] > 0
+    # aggregate n_stimuli_shown is the sum of the per-segment counts
+    assert (
+        summary["sweep_seg0_n_stimuli_shown"] + summary["sweep_seg1_n_stimuli_shown"]
+        == summary["n_stimuli_shown"]
+    )
+    assert "sweep_seg0_n_oddballs_shown" in summary
+    # per-STREAM keys are absent -- a sweep is single-stream
+    assert not any(k.startswith("stream") for k in summary)
+
+
+def test_run_trial_sweep_outcome_summary_per_segment_keys(mock_window, stim_root, event_sink):
+    """A three-step sweep surfaces sweep_seg0/1/2_* columns and sweep_n_segments == 3."""
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=15.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+            ],
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    summary = result.outcome_summary
+    assert summary["sweep_n_segments"] == 3
+    for i, base in enumerate((6.0, 10.0, 15.0)):
+        assert summary[f"sweep_seg{i}_achieved_base_freq_hz"] == pytest.approx(base)
+        assert summary[f"sweep_seg{i}_n_stimuli_shown"] > 0
+
+
+def test_run_trial_triggered_distractor_during_sweep_never_collides(mock_window, stim_root, event_sink):
+    """#4 acceptance: a *triggered* distractor runs during a multi-step sweep, and no distractor onset
+    lands on a base/oddball onset frame of ANY step (its trigger can never fight the port)."""
+    import json
+
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=12.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+            ],
+        ),
+    )
+    params.distractor.enabled = True
+    params.distractor.trigger_code = 55
+    params.distractor.min_interval_seconds = 0.4
+    params.distractor.max_interval_seconds = 1.0
+    params.distractor.guard_seconds = 0.5
+    params.distractor.keys = ["a"]
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["distractor_enabled"] is True
+    assert result.outcome_summary["distractor_n_events"] >= 1
+
+    rows = _read_events(event_sink)
+    # Frame indices of every stimulus/oddball onset (per step) and every distractor onset.
+    onset_frames = {
+        json.loads(r["payload_json"])["frame_index"]
+        for r in rows
+        if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    }
+    distractor_frames = [
+        json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "distractor_onset"
+    ]
+    assert distractor_frames  # some fired
+    # The core guarantee: no triggered distractor onset shares a flip with any base/oddball onset.
+    assert not (set(distractor_frames) & onset_frames)
+
+
+def test_run_trial_shared_timeline_sweep_dual_stream_presents_both_streams(mock_window, stim_root, event_sink):
+    """#4 acceptance: a shared-timeline sweep x dual-stream drives BOTH streams across every segment,
+    with per-segment provenance and both streams changing frequency at the shared boundary."""
+    import json
+
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        SweepStep(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.4)),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=7.5, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.5)),
+        SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.0)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.5,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["aborted"] is False
+    rows = _read_events(event_sink)
+    types = [r["event_type"] for r in rows]
+    assert types.count("base_oddball_sequence_start") == 1
+    assert types.count("sweep_segment_start") == 2  # one per shared time-segment
+    assert types.count("sweep_segment_end") == 2
+    # Both streams present onsets, and both appear in BOTH time-segments.
+    onset_payloads = [
+        json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    ]
+    boundary = min(
+        json.loads(r["payload_json"])["start_frame_index"]
+        for r in rows
+        if r["event_type"] == "sweep_segment_start" and json.loads(r["payload_json"])["segment_index"] == 1
+    )
+    seg0_streams = {p["stream"] for p in onset_payloads if p["frame_index"] < boundary}
+    seg1_streams = {p["stream"] for p in onset_payloads if p["frame_index"] >= boundary}
+    assert seg0_streams == {0, 1}
+    assert seg1_streams == {0, 1}
+
+
+def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_window, stim_root, event_sink):
+    """Review finding (#4, MED): the dual-stream sweep engine must floor each time-segment to the MAIN
+    stream's whole cycles EXACTLY as plan_sweep_overlay_windows does, so a (non-triggered) distractor
+    scheduled in step i flashes during step i. Step 0 uses a 30-frame budget that is NOT a multiple of
+    the 7 Hz cadence (9 frames/cycle @ 60 Hz -> floored to 27), so the old raw-budget bug (boundary at
+    30) is caught."""
+    import json
+
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep, plan_sweep_overlay_windows
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=7.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.4)),
+        SweepStep(base_freq_hz=11.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.2)),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=9.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.5)),
+        SweepStep(base_freq_hz=13.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.6)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=9.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+        # UNtriggered distractor -- a triggered overlay is rejected with any dual stream.
+        distractor=DistractorParams(
+            enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.15, guard_seconds=0.0
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["aborted"] is False
+    rows = _read_events(event_sink)
+
+    # The engine's per-segment boundaries must equal the overlay scheduler's cumulative windows.
+    windows = plan_sweep_overlay_windows(params.sweep, refresh_hz=60.0, n_fade_in_frames=0, n_fade_out_frames=0)
+    expected_starts = [w.start_frame for w in windows]  # floored-cumulative boundaries, e.g. [0, 27]
+    raw_boundary = round(main_steps[0].duration_seconds * 60.0)  # 30: the pre-fix raw-budget boundary
+    assert expected_starts[1] != raw_boundary  # flooring actually moves the boundary here (drift-sensitive)
+    seg_starts = sorted(
+        json.loads(r["payload_json"])["start_frame_index"]
+        for r in rows
+        if r["event_type"] == "sweep_segment_start"
+    )
+    assert seg_starts == expected_starts  # engine tiles exactly like the overlay windows (was raw before)
+
+    # Every scheduled distractor event fired within the presented frames (none dropped past the end).
+    total_frames = windows[-1].start_frame + windows[-1].frame_count
+    distractor_frames = [
+        json.loads(r["payload_json"])["frame_index"] for r in rows if r["event_type"] == "distractor_onset"
+    ]
+    assert distractor_frames  # at least one event actually ran
+    assert all(0 <= f < total_frames for f in distractor_frames)
+
 
 def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink):
     """A 'both' baseline runs one base-only reference before the oddball stream and one after, each
@@ -1711,10 +2018,262 @@ def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, even
     assert streams_seen == {0, 1}  # both streams presented onsets
     assert result.outcome_summary["aborted"] is False
 
+    # #10: the flat results summary carries a per-stream breakdown (each stream's achieved tagged
+    # frequency + counts), so stream-1's frequency is exportable without opening the raw event file.
+    # Cross-check against the start event's per-stream achieved freqs (the refresh-quantized values).
+    stream_freqs = {s["stream"]: s["achieved_base_freq_hz"] for s in payload["streams"]}
+    summary = result.outcome_summary
+    assert summary["n_streams"] == 2
+    assert summary["stream0_achieved_base_freq_hz"] == pytest.approx(stream_freqs[0])
+    assert summary["stream1_achieved_base_freq_hz"] == pytest.approx(stream_freqs[1])
+    # the two streams ran at distinct (non-harmonic) base rates -- the whole point of a second stream
+    assert summary["stream0_achieved_base_freq_hz"] != summary["stream1_achieved_base_freq_hz"]
+    assert summary["stream0_n_stimuli_shown"] > 0
+    assert summary["stream1_n_stimuli_shown"] > 0
+    assert "stream0_achieved_oddball_freq_hz" in summary
+    assert "stream1_n_oddballs_shown" in summary
+    # per-stream stimulus counts sum to the aggregate
+    assert (
+        summary["stream0_n_stimuli_shown"] + summary["stream1_n_stimuli_shown"]
+        == summary["n_stimuli_shown"]
+    )
+    # no sweep keys on a (non-sweep) dual-stream trial
+    assert not any(k.startswith("sweep_") for k in summary)
 
-def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, stim_root, event_sink):
-    """A distractor overlay runs alongside the two frame-driven streams: its events are logged and
-    its trigger fires (the streams send no code in v1, so the overlay code goes through cleanly)."""
+
+def test_run_trial_dual_stream_triggers_and_jitter_wired(mock_window, stim_root, event_sink):
+    """#2 + #3 end-to-end: both streams triggered -> the reserved coincidence table reaches the engine
+    (recorded in provenance) and per-stream jitter is applied so each stream's onsets scatter around
+    its own centre."""
+    import json
+
+    from xpman.tasks.fpvs.schema import (
+        BaseSequenceParams as _Base,
+        CoincidenceCodes,
+        OddballParams as _Odd,
+        PositionJitterParams,
+        StreamParams,
+    )
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base=_Base(base_trigger_code=10, trial_duration_seconds=0.5),
+        oddball=_Odd(oddball_trigger_code=11),
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            base_trigger_code=20,
+            oddball_trigger_code=21,
+        ),
+        coincidence_codes=CoincidenceCodes(
+            both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+        ),
+        position_jitter=PositionJitterParams(
+            enabled=True, region="rectangle", x_range_pix=(-40.0, 40.0), y_range_pix=(-40.0, 40.0)
+        ),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    # #2: reserved table + per-stream codes reached the engine and are decodable from provenance.
+    assert start["reserved_coincidence_codes"] == {
+        "base+base": 200, "base+oddball": 201, "oddball+base": 202, "oddball+oddball": 203,
+    }
+    assert [s["base_trigger_code"] for s in start["streams"]] == [10, 20]
+    assert [s["oddball_trigger_code"] for s in start["streams"]] == [11, 21]
+    # #3: each stream jitters around its own centre (-200 / +200 within +/-40 px), and actually moved.
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    s0 = [p["pos"] for p in payloads if p["stream"] == 0]
+    s1 = [p["pos"] for p in payloads if p["stream"] == 1]
+    assert s0 and s1
+    assert all(-240.0 <= x <= -160.0 for x, _ in s0)
+    assert all(160.0 <= x <= 240.0 for x, _ in s1)
+    assert any((x, y) != (-200.0, 0.0) for x, y in s0)
+    assert any((x, y) != (200.0, 0.0) for x, y in s1)
+
+
+def test_run_trial_dual_stream_no_triggers_stays_v1(mock_window, stim_root, event_sink):
+    """Default-off guard (#2): no per-stream trigger codes -> no reserved table (empty provenance
+    mapping), no per-stimulus trigger_sent events -- byte-for-byte v1 dual-stream behavior."""
+    import json
+
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    assert start["reserved_coincidence_codes"] == {}
+    assert all(s["base_trigger_code"] is None and s["oddball_trigger_code"] is None for s in start["streams"])
+    assert not any(r["event_type"] == "trigger_sent" for r in rows)
+
+
+def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, stim_root, event_sink):
+    """Default-off guard (#10): a plain single-stream, non-sweep trial's outcome_summary carries NONE
+    of the new per-stream / per-segment keys -- frozen Instances stay byte-for-byte."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    summary = result.outcome_summary
+    assert "n_streams" not in summary
+    assert "sweep_n_segments" not in summary
+    assert not any(k.startswith("stream") for k in summary)
+    assert not any(k.startswith("sweep_") for k in summary)
+
+
+def test_presented_base_frequencies_covers_sweep_second_stream_and_familiarization():
+    """Review CRITICAL: the frames-per-cycle floor must see EVERY presented frequency. The helper
+    returns the main base OR the sweep steps (which supersede it), plus the second stream and
+    familiarization."""
+    from xpman.tasks.fpvs.schema import FamiliarizationParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+    from xpman.tasks.fpvs.task import _presented_base_frequencies
+
+    assert _presented_base_frequencies(FPVSConditionParams()) == [("base_freq_hz", 6.0)]
+
+    swept = FPVSConditionParams(
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=8.0, duration_seconds=5.0)],
+        )
+    )
+    got = _presented_base_frequencies(swept)
+    assert [f for _, f in got] == [6.0, 8.0] and all("sweep step" in label for label, _ in got)
+
+    rich = FPVSConditionParams(
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        familiarization=FamiliarizationParams(enabled=True, frequency_hz=5.0),
+    )
+    values = dict(_presented_base_frequencies(rich))
+    assert 7.0 in values.values() and 5.0 in values.values()
+
+
+def test_run_trial_rejects_too_high_sweep_step(mock_window, stim_root, event_sink):
+    """Review CRITICAL: a sweep step near/above the refresh (1 frame/cycle) must hard-fail like the
+    base frequency does -- previously only params.base was checked, so a too-high step slipped through
+    (and could hang the run with a triggered overlay)."""
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[SweepStep(base_freq_hz=6.0, duration_seconds=0.5), SweepStep(base_freq_hz=60.0, duration_seconds=0.5)],
+        ),
+    )
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ), pytest.raises(ValueError, match="sweep step 2"):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+
+def test_run_trial_rejects_too_high_second_stream(mock_window, stim_root, event_sink):
+    """Review CRITICAL: the second stream's base frequency must also pass the frames-per-cycle floor."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=59.0,  # 59 Hz @ 60 Hz -> 1 frame/cycle; non-harmonic to 6 Hz (passes separability)
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ), pytest.raises(ValueError, match="second_stream.base_freq_hz"):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+
+def test_run_trial_reports_frames_dropped_when_window_tracks_it(mock_window, stim_root, event_sink):
+    """Review HIGH: outcome_summary carries the trial's PsychoPy nDroppedFrames delta as an int when
+    the window reports it (None for a window that doesn't). A dropped frame silently phase-shifts every
+    later onset, so surfacing it makes a bad trial visible in the results."""
+    mock_window.nDroppedFrames = 0  # a real int (not the MagicMock auto-attr) -> delta is computed
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+    )
+    params.base.trial_duration_seconds = 0.5
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+    assert result.outcome_summary["frames_dropped"] == 0
+
+
+def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock_window, stim_root, event_sink):
+    """An UNtriggered distractor overlay runs alongside the two frame-driven streams: its events are
+    logged and the sequence completes. A *triggered* overlay with a dual stream is rejected at
+    validation (see test_triggered_overlay_with_dual_stream_is_rejected) because the overlay is nudged
+    off the main stream's cadence only, so it could share a flip with the second stream's onset."""
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
 
@@ -1734,7 +2293,7 @@ def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, sti
             oddball_selector=StimulusSelector(subdirectory="objects"),
         ),
         distractor=DistractorParams(
-            enabled=True, trigger_code=99, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
+            enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
         ),
     )
     params.base.trial_duration_seconds = 1.0
@@ -1750,11 +2309,12 @@ def test_run_trial_dual_stream_composes_with_distractor_overlay(mock_window, sti
 
     types = [r["event_type"] for r in _read_events(event_sink)]
     assert "distractor_onset" in types  # the overlay ran during the dual-stream sequence
-    assert 99 in trigger.codes_sent  # its trigger fired (no stream code to collide with in v1)
     assert result.outcome_summary["aborted"] is False
 
 
-def test_check_triggers_warns_jitter_ignored_under_dual_stream(stim_root):
+def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_root):
+    # #3: dual streams now support per-stream jitter, so the former "jitter is IGNORED" advisory must
+    # be gone (each stream jitters around its own centre instead).
     from xpman.tasks.fpvs.schema import PositionJitterParams, StreamParams
 
     params = FPVSConditionParams(
@@ -1763,4 +2323,4 @@ def test_check_triggers_warns_jitter_ignored_under_dual_stream(stim_root):
         position_jitter=PositionJitterParams(enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0)),
     )
     warnings = FPVSTask().check_triggers(params.model_dump())
-    assert any("jitter is IGNORED" in w for w in warnings)
+    assert not any("IGNORED" in w for w in warnings)

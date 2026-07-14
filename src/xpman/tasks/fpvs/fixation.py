@@ -36,11 +36,16 @@ class FixationParams(BaseModel):
     """Parameters for a fixation stimulus. All fields have defaults; every field is meant to
     be overridable per Condition."""
 
-    shape: FixationShape = FixationShape.CROSS
-    position_pix: tuple[float, float] = (0.0, 0.0)
+    shape: FixationShape = Field(
+        default=FixationShape.CROSS,
+        description="Fixation mark to draw: a crossing 'cross', flanking 'bars', or 'none'.",
+    )
+    position_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0), description="Fixation position (x, y) in pixels from screen center."
+    )
     size_pix: float = Field(default=20.0, gt=0, description="Cross arm length / bar length, in pixels.")
-    line_width_pix: float = Field(default=2.0, gt=0)
-    color: str = "white"
+    line_width_pix: float = Field(default=2.0, gt=0, description="Stroke width of the fixation lines, in pixels.")
+    color: str = Field(default="white", description="Fixation line color (PsychoPy color name or hex).")
     bar_gap_pix: float = Field(
         default=10.0, ge=0, description="Bars only: gap between the two bars (e.g. above/below the stimulus)."
     )
@@ -52,8 +57,13 @@ class FixationParams(BaseModel):
     show_background_rect: bool = Field(
         default=False, description="Draw a filled rectangle behind the fixation shape for contrast."
     )
-    background_rect_size_pix: tuple[float, float] = (30.0, 30.0)
-    background_color: str = "black"
+    background_rect_size_pix: tuple[float, float] = Field(
+        default=(30.0, 30.0),
+        description="Size (width, height) in pixels of the optional background rectangle behind the fixation.",
+    )
+    background_color: str = Field(
+        default="black", description="Fill color of the optional background rectangle."
+    )
 
 
 class FixationStimulus(Protocol):

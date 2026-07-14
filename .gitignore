@@ -9,7 +9,10 @@ dist/
 # Local data — never shared, never committed
 data/*.db
 data/*.db-*
+data/*.db.bak
 data/runs/
+# Stray per-run exports written next to the DB during manual/dev launches
+data/run_*_results.csv
 
 # Editors
 .vscode/

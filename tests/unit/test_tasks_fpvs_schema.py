@@ -14,6 +14,41 @@ from xpman.tasks.fpvs.schema import (
 )
 
 
+def test_every_condition_param_field_has_a_description():
+    """GUI hover help (task #2): every FPVSConditionParams field -- recursively, including nested
+    models and list-of-model item fields -- must carry Field(description=...), because the schema
+    form builds each parameter's hover tooltip from it. A field with no description shows no help."""
+    import typing
+
+    from pydantic import BaseModel
+
+    def missing(model: type[BaseModel], prefix: str = "") -> list[str]:
+        gaps: list[str] = []
+        for name, field in model.model_fields.items():
+            if not field.description:
+                gaps.append(prefix + name)
+            for cand in [field.annotation, *typing.get_args(field.annotation)]:
+                if isinstance(cand, type) and issubclass(cand, BaseModel):
+                    gaps += missing(cand, prefix + name + ".")
+            if typing.get_origin(field.annotation) is list:
+                for cand in typing.get_args(field.annotation):
+                    if isinstance(cand, type) and issubclass(cand, BaseModel):
+                        gaps += missing(cand, prefix + name + "[].")
+        return gaps
+
+    gaps = sorted(set(missing(FPVSConditionParams)))
+    assert gaps == [], f"fields with no GUI hover help (add Field(description=...)): {gaps}"
+
+
+def test_every_condition_param_field_declares_a_gui_section():
+    """Logical organisation (task #1): every TOP-LEVEL FPVSConditionParams field must declare a GUI
+    section so the editor renders as labelled groups, not a flat wall. Nested fields are exempt (they
+    render inside their parent's box)."""
+    for name, field in FPVSConditionParams.model_fields.items():
+        extra = field.json_schema_extra
+        assert isinstance(extra, dict) and extra.get("section"), f"{name} has no GUI section"
+
+
 def test_condition_params_have_defaults_for_every_sub_model():
     params = FPVSConditionParams()
     assert params.base.base_freq_hz == 6.0
@@ -182,17 +217,67 @@ def test_migrate_v5_to_v6_is_additive_passthrough():
     assert data == v5  # sweep default (disabled) fills in on validation
 
 
-def test_sweep_with_triggered_overlay_is_rejected():
+def test_sweep_with_triggered_single_stream_overlay_is_allowed():
+    # #4: a triggered overlay during a SINGLE-stream sweep is now allowed -- it is scheduled per
+    # segment (off each step's own base-onset cadence), so it never collides with the port.
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
-    # A *triggered* overlay during a sweep can collide with a per-step base/oddball trigger -> rejected.
-    with pytest.raises(ValidationError, match="triggered"):
+    params = FPVSConditionParams(
+        sweep=FrequencySweepParams(enabled=True, steps=steps),
+        distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
+    )
+    assert params.sweep.enabled and params.distractor.trigger_code == 50
+
+
+def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
+    # A triggered overlay together with a sweep x DUAL stream is rejected (a special case of the
+    # broader dual-stream rejection below: the streams have different cadences, so no single cadence
+    # to nudge the overlay off).
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
         FPVSConditionParams(
-            sweep=FrequencySweepParams(enabled=True, steps=steps),
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
             distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
         )
+
+
+def test_triggered_overlay_with_dual_stream_is_rejected():
+    # Review finding (HIGH): a *triggered* distractor/go-no-go overlay must be rejected with a dual
+    # bilateral stream even WITHOUT a sweep. The overlay is nudged off the MAIN stream's base-onset
+    # cadence only, but a separable second stream onsets at a different (non-harmonic) rate, so the
+    # marker could share a flip with the second stream's onset -- and if that stream is triggered,
+    # resolve_frame_trigger would raise mid-trial. Distractor and go-no-go are both covered.
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    def _dual(**overlay):
+        return FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+            **overlay,
+        )
+
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
+        _dual(distractor=DistractorParams(enabled=True, trigger_code=99, keys=["a"]))
+    with pytest.raises(ValidationError, match="dual bilateral stream"):
+        _dual(go_nogo=GoNoGoParams(enabled=True, go_trigger_code=99, keys=["a"]))
+    # An UNtriggered overlay with a dual stream is still allowed (no port to collide with).
+    _dual(distractor=DistractorParams(enabled=True, keys=["a"]))
 
 
 def test_sweep_with_untriggered_overlay_is_allowed():
@@ -236,18 +321,84 @@ def test_dual_stream_rejects_identical_positions():
         )
 
 
-def test_dual_stream_rejects_sweep_combo():
+def test_dual_stream_rejects_one_sided_sweep():
+    # #4: a sweep x dual-stream needs BOTH streams sweeping on a shared timeline. Main stream sweeping
+    # while the second holds a fixed frequency (its sweep disabled) is rejected.
     from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
-    with pytest.raises(ValidationError, match="second stream"):
+    with pytest.raises(ValidationError, match="both.*enabled|BOTH"):
         FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
             sweep=FrequencySweepParams(
                 enabled=True,
                 steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)],
             ),
             second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
         )
+
+
+def test_dual_stream_rejects_independent_per_stream_sweep_timelines():
+    # #4: independent per-stream sweeps (mismatched step durations) are rejected -- both streams must
+    # change frequency at the SAME segment boundaries (shared timeline).
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=4.0), SweepStep(base_freq_hz=4.0, duration_seconds=6.0)]
+    with pytest.raises(ValidationError, match="share ONE step timeline"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
+        )
+
+
+def test_dual_stream_rejects_harmonic_sweep_step():
+    # #4: each step's paired base frequencies must be spectrally separable, like the single-freq case.
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=10.0, duration_seconds=5.0)]  # step 1: 5 & 10 = harmonic
+    with pytest.raises(ValidationError, match="harmonically related"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main),
+            second_stream=StreamParams(
+                enabled=True,
+                base_freq_hz=7.0,
+                position_pix=(200.0, 0.0),
+                sweep=FrequencySweepParams(enabled=True, steps=second),
+            ),
+        )
+
+
+def test_shared_timeline_sweep_dual_stream_is_accepted():
+    # #4: a shared-timeline sweep x dual-stream (matching step counts + durations, non-harmonic per
+    # step, distinct positions) is accepted.
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second),
+        ),
+    )
+    assert params.sweep.enabled and params.second_stream.sweep.enabled
+    assert [s.duration_seconds for s in params.sweep.steps] == [s.duration_seconds for s in params.second_stream.sweep.steps]
 
 
 def test_valid_dual_stream_is_accepted():
@@ -259,6 +410,148 @@ def test_valid_dual_stream_is_accepted():
     )
     assert params.second_stream.enabled is True
     assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 7.0)
+
+
+# ---------------------------------------------------------------------------
+# Dual-stream v2 per-stream triggers + coincidence codes (#2)
+# ---------------------------------------------------------------------------
+
+
+def _dual_condition(**over):
+    """A valid dual-stream Condition (distinct positions, non-harmonic 6 & 7 Hz) with fields to
+    override for the coincidence-code tests."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    base = dict(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_trigger_code=over.pop("s2_base_code", None),
+            oddball_trigger_code=over.pop("s2_oddball_code", None),
+        ),
+    )
+    base.update(over)
+    return base
+
+
+def test_coincidence_codes_default_none_and_off_path_unaffected():
+    # Default: no per-stream triggers, no coincidence codes -> valid (v1 behavior preserved).
+    params = FPVSConditionParams(**_dual_condition())
+    assert not params.coincidence_codes.any_set()
+    assert params.second_stream.base_trigger_code is None
+
+
+def test_both_streams_triggered_require_full_coincidence_table():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Both streams triggered but coincidence table missing -> rejected.
+    with pytest.raises(ValidationError, match="all four coincidence_codes"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+    # Partial table -> also rejected (lists missing).
+    with pytest.raises(ValidationError, match="all four coincidence_codes"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(both_base=200, a_base_b_oddball=201),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_both_streams_triggered_with_disjoint_full_table_is_accepted():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        oddball=OddballParams(oddball_trigger_code=11),
+        coincidence_codes=CoincidenceCodes(
+            both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+        ),
+        **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+    )
+    table = params.coincidence_codes.as_reserved_table()
+    assert table == {
+        (False, False): 200,
+        (False, True): 201,
+        (True, False): 202,
+        (True, True): 203,
+    }
+
+
+def test_reserved_code_colliding_with_stream_code_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # 10 is the main stream's base code; reusing it as a reserved code is a collision.
+    with pytest.raises(ValidationError, match="collide"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=10, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_duplicate_reserved_codes_are_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    with pytest.raises(ValidationError, match="DISTINCT"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=200, a_base_b_oddball=200, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        )
+
+
+def test_coincidence_codes_without_both_streams_triggered_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Only the main stream is triggered -> a filled coincidence table would never be consulted, so it
+    # is flagged as a misconfiguration rather than silently ignored.
+    with pytest.raises(ValidationError, match="not both triggered"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            oddball=OddballParams(oddball_trigger_code=11),
+            coincidence_codes=CoincidenceCodes(
+                both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
+            ),
+            **_dual_condition(),  # second stream has NO trigger codes
+        )
+
+
+def test_reserved_field_out_of_8bit_range_is_rejected():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Field constraint (ge=1, le=255) rejects a 9-bit reserved code before any cross-field validator.
+    with pytest.raises(ValidationError):
+        CoincidenceCodes(both_base=256)
+
+
+def test_second_stream_trigger_codes_default_none():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    s = StreamParams()
+    assert s.base_trigger_code is None and s.oddball_trigger_code is None
+
+
+def test_coincidence_codes_inert_when_second_stream_disabled():
+    from xpman.tasks.fpvs.schema import CoincidenceCodes
+
+    # Second stream disabled: coincidence codes are inert and never checked (single-stream unaffected).
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        coincidence_codes=CoincidenceCodes(both_base=10),  # would collide IF checked
+    )
+    assert params.second_stream.enabled is False
 
 
 def test_response_task_is_off_by_default_and_oddball_referenced():
@@ -348,6 +641,53 @@ def test_migrated_v1_condition_validates_under_v2_model():
     _, migrated = schema.migrate("1", v1_condition)
     params = FPVSConditionParams.model_validate(migrated)
     assert params.position_jitter.enabled is False
+
+
+def test_migrate_is_not_called_on_the_instance_load_path(monkeypatch):
+    """Load-path contract (issue #8, decision (b)): frozen condition params are read back at run
+    time via FPVSConditionParams.model_validate() directly -- FPVSSchema.migrate is DESIGN-TIME
+    ONLY and must never fire when an Instance is loaded/run. Guard it: if run_trial ever started
+    calling migrate, this would trip. We drive run_trial far enough to reach the model_validate at
+    its top (a deliberately empty base pool makes it raise right after), and assert migrate stayed
+    untouched throughout."""
+    from unittest.mock import MagicMock
+
+    from xpman.tasks.fpvs.task import FPVSTask
+
+    task = FPVSTask()
+    calls: list[tuple] = []
+    real_migrate = FPVSSchema.migrate
+
+    def spy_migrate(self, old_version, data):
+        calls.append((old_version, data))
+        return real_migrate(self, old_version, data)
+
+    monkeypatch.setattr(FPVSSchema, "migrate", spy_migrate)
+
+    # Minimal ctx; run_trial validates trial_params (no migrate) before touching the pool, then
+    # fails on the empty pool -- proving the read boundary is model_validate, not migrate.
+    ctx = MagicMock()
+    task._image_entries = []
+    with pytest.raises(ValueError, match="matched no"):
+        task.run_trial(ctx, FPVSConditionParams().model_dump(), trial_index=0)
+
+    assert calls == [], "FPVSSchema.migrate must NOT be invoked on the Instance load path"
+
+
+def test_migrate_v3_to_v4_strip_is_destructive_and_stays_off_load_path():
+    """Why migrate is design-time only: its v3->v4 step is *destructive* (it strips the legacy
+    SepStim selector keys). model_validate simply ignores those same keys instead (extra=ignore),
+    so a frozen v3 Instance loads unchanged WITHOUT that destructive transform ever running -- the
+    lower-risk backward-compat mechanism that keeps old Instances reproducible."""
+    schema = FPVSSchema()
+    v3 = FPVSConditionParams().model_dump()
+    v3["base_selector"]["category"] = "face"  # a since-removed legacy SepStim key
+    # migrate() would purge it (destructive):
+    _, migrated = schema.migrate("3", v3)
+    assert "category" not in migrated["base_selector"]
+    # the load path (model_validate) instead ignores it, without mutating/migrating anything:
+    params = FPVSConditionParams.model_validate(v3)
+    assert params.base_selector.subdirectory is None  # loads fine, legacy key harmlessly dropped
 
 
 def test_stimulus_selector_defaults_to_whole_set():

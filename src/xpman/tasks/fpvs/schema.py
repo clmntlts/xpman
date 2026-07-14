@@ -24,6 +24,7 @@ from xpman.tasks.fpvs.photodiode import PhotodiodeParams
 from xpman.tasks.fpvs.response import ResponseKeyParams
 from xpman.tasks.fpvs.streams import bases_harmonically_related
 from xpman.tasks.fpvs.sweep import FrequencySweepParams
+from xpman.tasks.fpvs.trigger_combine import check_reserved_code_collisions
 
 
 class StimulusSelector(BaseModel):
@@ -65,7 +66,10 @@ class FamiliarizationParams(BaseModel):
     frequency_hz: float = Field(
         default=6.0, gt=0, description="Familiarization stimulation frequency, in Hz."
     )
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams,
+        description="Contrast modulation for the familiarization stream.",
+    )
     start_trigger_code: int | None = Field(
         default=None, ge=1, le=255, description="Trigger sent when familiarization starts."
     )
@@ -188,23 +192,54 @@ class StreamParams(BaseModel):
     base + oddball frequency, screen position, and contrast modulation, and shares the trial duration,
     fades, and central fixation with the main (first) stream.
 
-    v1 sends **no per-stimulus EEG triggers** for either stream (the two frequency tags are recovered
-    in the frequency domain by FFT, and the photodiode tracks the first stream's timing), so there are
-    no per-onset trigger codes here. The two base frequencies must be spectrally separable -- distinct
-    and NOT harmonically related (enforced on the Condition); pick e.g. 6 Hz and 7 Hz.
+    The two frequency tags are recovered in the frequency domain by FFT, and the photodiode tracks the
+    first stream's timing. **Per-stream EEG triggers are optional (v2, default off):** set
+    ``base_trigger_code`` / ``oddball_trigger_code`` to emit an 8-bit code on this stream's onsets;
+    leaving both ``None`` reproduces v1 (no triggers, byte-for-byte). When BOTH streams send triggers,
+    frames where both onset together resolve to a single reserved coincidence code (see
+    ``FPVSConditionParams.coincidence_codes``) -- one port, one pulse. The two base frequencies must be
+    spectrally separable -- distinct and NOT harmonically related (enforced on the Condition); pick e.g.
+    6 Hz and 7 Hz.
     """
 
     enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
-    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
+    base_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector, description="Which images make up this stream's base sequence."
+    )
+    oddball_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector, description="Which images are this stream's oddballs."
+    )
     base_freq_hz: float = Field(
         default=7.0, gt=0, description="This stream's base frequency (must differ non-harmonically from the main stream)."
     )
-    oddball: OddballParams = Field(default_factory=OddballParams)
+    oddball: OddballParams = Field(
+        default_factory=OddballParams, description="This stream's oddball placement (frequency or B/O pattern)."
+    )
     position_pix: tuple[float, float] = Field(
         default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
     )
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams, description="Contrast modulation for this stream."
+    )
+    base_trigger_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description="Trigger code sent on every base-image onset of THIS stream. None sends no trigger.",
+    )
+    oddball_trigger_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description="Trigger code sent on every oddball-image onset of THIS stream. None sends no trigger.",
+    )
+    sweep: FrequencySweepParams = Field(
+        default_factory=FrequencySweepParams,
+        description="This stream's per-step frequencies for a sweep x dual-stream (v2, #4). Enabled "
+        "only together with the main sweep, and on a SHARED timeline: same number of steps and the "
+        "same per-step durations as the Condition's sweep (only the base/oddball frequencies differ "
+        "per stream). Disabled by default; when off this stream uses its single base_freq_hz/oddball.",
+    )
 
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "StreamParams":
@@ -216,32 +251,98 @@ class StreamParams(BaseModel):
         return self
 
 
-class FPVSConditionParams(BaseModel):
-    """Everything needed to run one FPVS trial."""
+class CoincidenceCodes(BaseModel):
+    """Reserved 8-bit codes for the 2x2 coincident-onset cases of dual bilateral streams. When both
+    streams onset on the *same* monitor frame there is only one port and one pulse, so the pair's
+    ``(stream-A is_oddball, stream-B is_oddball)`` combination maps to ONE reserved code instead of two
+    fighting pulses (see ``tasks/fpvs/trigger_combine.py``). The four fields name that 2x2:
 
-    base: BaseSequenceParams = Field(default_factory=BaseSequenceParams)
-    oddball: OddballParams = Field(default_factory=OddballParams)
-    base_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    oddball_selector: StimulusSelector = Field(default_factory=StimulusSelector)
-    modulation: ModulationParams = Field(default_factory=ModulationParams)
-    timing: TimingParams = Field(default_factory=TimingParams)
-    familiarization: FamiliarizationParams = Field(default_factory=FamiliarizationParams)
-    baseline: BaselineParams = Field(default_factory=BaselineParams)
-    fixation: FixationParams = Field(default_factory=FixationParams)
-    photodiode: PhotodiodeParams = Field(default_factory=PhotodiodeParams)
-    response: ResponseKeyParams = Field(default_factory=ResponseKeyParams)
-    position_jitter: PositionJitterParams = Field(default_factory=PositionJitterParams)
-    distractor: DistractorParams = Field(default_factory=DistractorParams)
-    go_nogo: GoNoGoParams = Field(default_factory=GoNoGoParams)
-    sweep: FrequencySweepParams = Field(default_factory=FrequencySweepParams)
-    stream_position_pix: tuple[float, float] = Field(
-        default=(0.0, 0.0),
-        description="Main stream's screen position (px from center); only applies when second_stream "
-        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+    - ``both_base`` -> both streams show a base image on this frame ``(False, False)``.
+    - ``a_base_b_oddball`` -> stream A base, stream B oddball ``(False, True)``.
+    - ``a_oddball_b_base`` -> stream A oddball, stream B base ``(True, False)``.
+    - ``both_oddball`` -> both streams show an oddball ``(True, True)``.
+
+    "A" is the main (first) stream, "B" the ``second_stream`` -- i.e. ascending stream index. These are
+    only consulted when BOTH streams have trigger codes set; with at most one triggered stream no
+    coincidence is ambiguous and no reserved code is needed. All optional (default None = unset); the
+    Condition validator requires the full set once both streams are triggered, and that every reserved
+    code is a valid 8-bit int disjoint from the stream codes (see ``_check_coincidence_codes``).
+    """
+
+    both_base: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (base, base) coincident onset."
     )
-    second_stream: StreamParams = Field(
-        default_factory=StreamParams,
-        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+    a_base_b_oddball: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (base, oddball) coincident onset."
+    )
+    a_oddball_b_base: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (oddball, base) coincident onset."
+    )
+    both_oddball: int | None = Field(
+        default=None, ge=1, le=255, description="Reserved code for (oddball, oddball) coincident onset."
+    )
+
+    def all_set(self) -> bool:
+        """True when all four reserved codes are set (a complete 2x2 coincidence table)."""
+        return all(
+            c is not None
+            for c in (self.both_base, self.a_base_b_oddball, self.a_oddball_b_base, self.both_oddball)
+        )
+
+    def any_set(self) -> bool:
+        """True when at least one reserved code is set (used to detect a partially-filled table)."""
+        return any(
+            c is not None
+            for c in (self.both_base, self.a_base_b_oddball, self.a_oddball_b_base, self.both_oddball)
+        )
+
+    def as_reserved_table(self) -> "dict[tuple[bool, bool], int]":
+        """The four codes as the ``ReservedCodeTable`` ``trigger_combine`` consumes, keyed by the two
+        streams' ``(is_oddball, is_oddball)`` flags in ascending stream-index order. Requires
+        :meth:`all_set` (call only once the validator has confirmed a complete table)."""
+        assert self.all_set()  # validator guarantees this before we build the runtime table
+        return {
+            (False, False): self.both_base,  # type: ignore[dict-item]
+            (False, True): self.a_base_b_oddball,  # type: ignore[dict-item]
+            (True, False): self.a_oddball_b_base,  # type: ignore[dict-item]
+            (True, True): self.both_oddball,  # type: ignore[dict-item]
+        }
+
+
+class FPVSConditionParams(BaseModel):
+    """Everything needed to run one FPVS trial.
+
+    Fields are declared grouped by the GUI ``section`` they render under (Stimulation → Trial
+    timing & phases → Fixation & display → Responses & attention tasks → Dual bilateral stream),
+    so the schema-driven Condition editor reads as labelled sections instead of a flat wall of
+    boxes. Section membership is metadata only (``json_schema_extra={"section": ...}``) -- it has
+    no effect on validation or on frozen Instances; reordering these fields is purely cosmetic."""
+
+    # -- Stimulation: the core periodic sequence --------------------------------------------
+    base: BaseSequenceParams = Field(
+        default_factory=BaseSequenceParams,
+        description="Core stimulation: the base frequency (Hz) and the trial duration.",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    oddball: OddballParams = Field(
+        default_factory=OddballParams,
+        description="Oddball placement: its frequency, or a base/oddball repetition pattern (e.g. BBBBO).",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    base_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector,
+        description="Which images make up the base stream (image folder + filename pattern).",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    oddball_selector: StimulusSelector = Field(
+        default_factory=StimulusSelector,
+        description="Which images are the periodically-inserted oddballs (image folder + filename pattern).",
+        json_schema_extra={"section": "Stimulation"},
+    )
+    modulation: ModulationParams = Field(
+        default_factory=ModulationParams,
+        description="Sinusoidal contrast modulation of each image (fades toward the background gray).",
+        json_schema_extra={"section": "Stimulation"},
     )
     background_gray: float = Field(
         default=0.5,
@@ -252,6 +353,82 @@ class FPVSConditionParams(BaseModel):
             "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
             "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
         ),
+        json_schema_extra={"section": "Stimulation"},
+    )
+
+    # -- Trial timing & phases --------------------------------------------------------------
+    timing: TimingParams = Field(
+        default_factory=TimingParams,
+        description="Trial timing: fade-in/out durations and pre-/inter-stimulus intervals.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    sweep: FrequencySweepParams = Field(
+        default_factory=FrequencySweepParams,
+        description="Stepped frequency sweep: present several constant-frequency steps in sequence instead of one.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    baseline: BaselineParams = Field(
+        default_factory=BaselineParams,
+        description="Add a base-only reference segment (no oddballs) before and/or after the oddball stream.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+    familiarization: FamiliarizationParams = Field(
+        default_factory=FamiliarizationParams,
+        description="A one-off warm-up stream shown once at the start of the Run, before the first trial.",
+        json_schema_extra={"section": "Trial timing & phases"},
+    )
+
+    # -- Fixation & display -----------------------------------------------------------------
+    fixation: FixationParams = Field(
+        default_factory=FixationParams,
+        description="The fixation mark drawn over/near the stimulus.",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+    position_jitter: PositionJitterParams = Field(
+        default_factory=PositionJitterParams,
+        description="Randomize each image's position within a region (image only; the fixation stays put).",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+    photodiode: PhotodiodeParams = Field(
+        default_factory=PhotodiodeParams,
+        description="Photodiode sync patch for validating presentation timing against real hardware.",
+        json_schema_extra={"section": "Fixation & display"},
+    )
+
+    # -- Responses & attention tasks --------------------------------------------------------
+    response: ResponseKeyParams = Field(
+        default_factory=ResponseKeyParams,
+        description="Active oddball-detection task (key press per oddball). Off by default -- standard FPVS is passive.",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+    distractor: DistractorParams = Field(
+        default_factory=DistractorParams,
+        description="Orthogonal attention-control task at fixation (the recommended behavioural check).",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+    go_nogo: GoNoGoParams = Field(
+        default_factory=GoNoGoParams,
+        description="Spatial go/no-go attention task using fixation-position markers.",
+        json_schema_extra={"section": "Responses & attention tasks"},
+    )
+
+    # -- Dual bilateral stream --------------------------------------------------------------
+    stream_position_pix: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Main stream's screen position (px from center); only applies when second_stream "
+        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
+        json_schema_extra={"section": "Dual bilateral stream"},
+    )
+    second_stream: StreamParams = Field(
+        default_factory=StreamParams,
+        description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
+        json_schema_extra={"section": "Dual bilateral stream"},
+    )
+    coincidence_codes: CoincidenceCodes = Field(
+        default_factory=CoincidenceCodes,
+        description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
+        "streams are triggered; see CoincidenceCodes).",
+        json_schema_extra={"section": "Dual bilateral stream"},
     )
 
     @model_validator(mode="after")
@@ -302,13 +479,21 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_sweep_overlay_triggers(self) -> "FPVSConditionParams":
-        # v1 scope: a *triggered* distractor/go-no-go overlay places its events off base-onset frames
-        # using a SINGLE frames-per-stimulus, but a frequency sweep changes that per segment -- so a
-        # triggered overlay could land on a base/oddball onset inside some step and fight the port.
-        # Until per-segment overlay scheduling exists, reject the combination at save/freeze time.
-        # Non-triggered overlays during a sweep are fine (no port collision to avoid).
-        if not self.sweep.enabled:
+    def _check_triggered_overlay_with_dual_stream(self) -> "FPVSConditionParams":
+        # #4 lifted the blanket "sweep + triggered overlay" rejection: a SINGLE-stream sweep now
+        # schedules a triggered overlay PER SEGMENT (off each step's own base-onset cadence), so it
+        # never collides with the port. But a *triggered* overlay still can't run with a DUAL stream at
+        # all: the overlay scheduler nudges events off ONE stream's base-onset cadence only (the main
+        # stream's), while separable dual streams are required to use non-harmonic base frequencies
+        # (_check_dual_stream_separable), so the SECOND stream has a different frames-per-stimulus. An
+        # overlay onset kept off the main stream's onsets can therefore still land on the second
+        # stream's onset frame -- and resolve_frame_trigger RAISES mid-trial when the second stream is
+        # also triggered (lost recording), or silently shares a flip with a visual onset when it isn't.
+        # So reject any triggered overlay while a second stream is enabled, whether or not there's a
+        # sweep. (Untriggered overlays are always fine; single-stream sweeps with a triggered overlay
+        # are fine.) Lifting this needs the scheduler to avoid the UNION of both streams' cadences --
+        # tracked as a follow-up (see the sweep-v3 issue).
+        if not self.second_stream.enabled:
             return self
         offenders: list[str] = []
         if self.distractor.enabled and self.distractor.trigger_code is not None:
@@ -319,21 +504,50 @@ class FPVSConditionParams(BaseModel):
             offenders.append("go_nogo")
         if offenders:
             raise ValueError(
-                f"a frequency sweep can't run with a *triggered* {' & '.join(offenders)} overlay in "
-                "v1 (its off-base-onset nudge assumes one frame rate, which a sweep changes per "
-                "step). Clear the overlay's trigger code(s), or disable the sweep."
+                f"a *triggered* {' & '.join(offenders)} overlay can't run with a dual bilateral stream "
+                "(the overlay is scheduled off the main stream's base-onset cadence only, but the second "
+                "stream onsets at a different rate, so a marker could share a flip with -- or collide "
+                "with the port trigger of -- the second stream's onset). Clear the overlay's trigger "
+                "code(s), or disable the second stream."
             )
         return self
 
     @model_validator(mode="after")
     def _check_dual_stream_separable(self) -> "FPVSConditionParams":
-        # Dual bilateral streams must be spectrally separable and spatially distinct, and (v1) can't
-        # combine with a sweep. Enforced at save/freeze time so an un-analysable pairing can't be run.
+        # Dual bilateral streams must be spectrally separable and spatially distinct. A sweep x
+        # dual-stream is allowed (#4) but ONLY on a SHARED step timeline: both streams change frequency
+        # at the same segment boundaries (same number of steps, same per-step durations); only the
+        # per-step frequencies differ. Independent per-stream sweeps (different step counts / durations)
+        # are still rejected -- they can't be presented on one continuous frame timeline. Enforced at
+        # save/freeze time so an un-analysable pairing can't be run.
         if not self.second_stream.enabled:
             return self
-        if self.sweep.enabled:
-            raise ValueError("a frequency sweep and a second stream can't both be enabled in v1")
-        if bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
+        if self.sweep.enabled or self.second_stream.sweep.enabled:
+            if not (self.sweep.enabled and self.second_stream.sweep.enabled):
+                raise ValueError(
+                    "a sweep x dual-stream needs BOTH the main sweep and second_stream.sweep enabled "
+                    "on a shared timeline -- enable both, or neither. (One stream sweeping while the "
+                    "other holds a fixed frequency is not supported.)"
+                )
+            main_durations = [s.duration_seconds for s in self.sweep.steps]
+            second_durations = [s.duration_seconds for s in self.second_stream.sweep.steps]
+            if main_durations != second_durations:
+                raise ValueError(
+                    "a sweep x dual-stream must share ONE step timeline: the two streams' sweep steps "
+                    f"must have the same count and per-step durations (got main {main_durations} vs "
+                    f"second {second_durations}). Independent per-stream sweeps are not supported -- "
+                    "only the per-step frequencies may differ between streams."
+                )
+            # Each step's paired base frequencies must be spectrally separable, like the single-freq
+            # dual-stream case -- a step where the two streams are harmonically related is un-analysable.
+            for i, (a, b) in enumerate(zip(self.sweep.steps, self.second_stream.sweep.steps)):
+                if bases_harmonically_related(a.base_freq_hz, b.base_freq_hz):
+                    raise ValueError(
+                        f"sweep step {i}: the two stream base frequencies ({a.base_freq_hz}, "
+                        f"{b.base_freq_hz}) are equal or harmonically related -- their tagged responses "
+                        "can't be separated. Use non-harmonic frequencies per step (e.g. 6 & 7 Hz)."
+                    )
+        elif bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
             raise ValueError(
                 f"the two stream base frequencies ({self.base.base_freq_hz}, "
                 f"{self.second_stream.base_freq_hz}) are equal or harmonically related -- their "
@@ -344,6 +558,77 @@ class FPVSConditionParams(BaseModel):
                 "the two streams must be at distinct positions -- set stream_position_pix and "
                 "second_stream.position_pix apart (e.g. (-200, 0) and (200, 0))."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_coincidence_codes(self) -> "FPVSConditionParams":
+        # Reserved coincidence codes only matter for dual bilateral streams (v2 per-stream triggers).
+        # Field constraints already guarantee every code is a valid 8-bit int (1..255); this validator
+        # enforces the cross-field CONSISTENCY: a complete 2x2 table when (and only when) both streams
+        # are triggered, and reserved codes disjoint from every stream code so a lone onset can never be
+        # mistaken for a coincidence in the recording. All checks are skipped when the second stream is
+        # disabled, so a plain single-stream Condition is completely unaffected.
+        stream_codes = [
+            self.base.base_trigger_code,
+            self.oddball.oddball_trigger_code,
+            self.second_stream.base_trigger_code,
+            self.second_stream.oddball_trigger_code,
+        ]
+        codes = self.coincidence_codes
+        if not self.second_stream.enabled:
+            # No dual streams: reserved codes are inert. Reject a stray filled-in table only if it would
+            # otherwise silently do nothing -- but keep it lenient (the field defaults are all None), so
+            # only guard the impossible-to-use case rather than surprising single-stream users.
+            return self
+
+        both_triggered = (
+            self.base.base_trigger_code is not None or self.oddball.oddball_trigger_code is not None
+        ) and (
+            self.second_stream.base_trigger_code is not None
+            or self.second_stream.oddball_trigger_code is not None
+        )
+        if not both_triggered:
+            # At most one stream sends triggers -> no coincidence is ever ambiguous (only one code can
+            # be present on a shared frame), so reserved codes are unnecessary. Reject a partially- or
+            # fully-filled table here as a likely misconfiguration (it would never be consulted).
+            if codes.any_set():
+                raise ValueError(
+                    "coincidence_codes are set but the two streams are not both triggered -- reserved "
+                    "codes are only used when BOTH streams send trigger codes (otherwise no coincident "
+                    "onset is ambiguous). Set trigger codes on both streams, or clear coincidence_codes."
+                )
+            return self
+
+        # Both streams triggered: a complete 2x2 reserved table is required (any coincident-onset case
+        # can occur), each code valid 8-bit (field-enforced), all four distinct, and disjoint from every
+        # stream code so a lone onset can't be confused with a coincidence.
+        if not codes.all_set():
+            missing = [
+                name
+                for name, value in (
+                    ("both_base", codes.both_base),
+                    ("a_base_b_oddball", codes.a_base_b_oddball),
+                    ("a_oddball_b_base", codes.a_oddball_b_base),
+                    ("both_oddball", codes.both_oddball),
+                )
+                if value is None
+            ]
+            raise ValueError(
+                "both streams send trigger codes, so all four coincidence_codes must be set (a "
+                f"coincident onset in any of the 2x2 cases needs its own reserved code); missing: "
+                f"{missing}. Fill them in, or remove a stream's trigger codes."
+            )
+        table = codes.as_reserved_table()
+        reserved_values = list(table.values())
+        if len(set(reserved_values)) != len(reserved_values):
+            raise ValueError(
+                f"coincidence_codes must be four DISTINCT reserved codes, got {reserved_values} -- "
+                "duplicates make different coincident-onset cases indistinguishable in the recording."
+            )
+        # Disjointness from stream codes: reuse the pure combiner-side check so the schema and runtime
+        # agree on the rule (a stream code equal to a reserved code would make a lone onset look like a
+        # coincidence). Re-raise its message as-is (it already explains the collision).
+        check_reserved_code_collisions(stream_codes, table)
         return self
 
 
@@ -371,9 +656,16 @@ class FPVSSchema:
     _LEGACY_SELECTOR_KEYS = ("category", "angle_deg", "eccentricity_deg", "is_fs", "variant")
 
     def migrate(self, old_version: str, data: dict) -> tuple[str, dict]:
-        # NOTE: this hook is NOT yet on the load path -- frozen dicts are read via
-        # model_validate() directly (which simply ignores the removed keys). See
-        # ParameterSchema.migrate for the full contract before bumping SCHEMA_VERSION.
+        # DESIGN-TIME ONLY -- by decision (issue #8), NOT on the Instance load path, and it must
+        # stay that way while every schema bump is additive. Frozen condition dicts are read back at
+        # run time by FPVSConditionParams.model_validate() directly (see task.py run_trial), whose
+        # ignore-unknown / default-missing behavior is the backward-compat contract that keeps old
+        # Instances reproducible. This method's v3->v4 step is *destructive* (it strips
+        # _LEGACY_SELECTOR_KEYS); applying that to a frozen snapshot could change how an existing
+        # Instance resolves, so it is deliberately kept off the read boundary. Its role is
+        # forward-migrating dev-only Instances at design time (and documenting the version lineage),
+        # NOT run-time loading. See ParameterSchema.migrate for the full contract and what a
+        # genuinely breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
         if old_version not in ("1", "2", "3", "4", "5"):
