@@ -69,6 +69,11 @@ class _PoolSequencer:
     which can contaminate the FPVS frequency analysis. With ``rng=None`` it degrades to a plain
     ``0,1,...,n-1,0,1,...`` cycle (the previous behavior), so existing deterministic tests are
     unchanged.
+
+    Reproducibility note (#20): ``rng`` here is the shared per-Run generator, so the number of
+    wraparound permutations this pool draws -- which depends on ``n_stimuli_to_show`` and hence on
+    the measured refresh -- makes the exact image-identity order refresh-dependent. See
+    ``core.rng``'s module docstring for the full caveat and the deferred spawn-per-pool fix.
     """
 
     def __init__(self, n: int, rng: "numpy.random.Generator | None" = None) -> None:
