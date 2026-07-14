@@ -225,7 +225,22 @@ def execute_run(
                     run.status = RunStatus.ABORTED
                     event_sink.log("run_aborted", {"at_trial_index": trial_index})
                     break
+            # Bracket every trial in the shared per-Run event stream with engine-level
+            # trial_start/trial_end markers. A task's raw per-onset/per-flip events (all stamped
+            # on the same Clock timeline) share ONE events file for the whole Run with no trial
+            # boundary in it, so a researcher otherwise cannot attribute a raw onset/flip back to a
+            # specific Result. These markers carry the authoritative trial_index (identical to the
+            # Result row's) and condition_id, so any raw event whose timestamp falls between a
+            # trial_start and its matching trial_end belongs to that Result. Emitted here rather
+            # than per-task so EVERY task is trial-attributable, not only those that remember to log
+            # it themselves. See issue #22.
+            event_sink.log(
+                "trial_start", {"trial_index": trial_index, "condition_id": trial_spec.condition_id}
+            )
             trial_result = task.run_trial(ctx, trial_spec.condition_params, trial_index)
+            event_sink.log(
+                "trial_end", {"trial_index": trial_index, "condition_id": trial_spec.condition_id}
+            )
             session.add(
                 Result(
                     run_id=run.id,

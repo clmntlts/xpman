@@ -509,8 +509,9 @@ class FPVSTask(TaskModule):
         # backward-compat mechanism: every schema bump so far is additive (new optional fields with
         # defaults), so an old frozen dict validates unchanged and an old Instance keeps its exact
         # behavior -- the reproducibility guarantee (docs/architecture.md). migrate() is design-time
-        # only (it also does a *destructive* v3->v4 legacy-key strip that we must NOT apply to a
-        # frozen snapshot); wiring it in here could change how existing Instances resolve. See
+        # only; wiring it in here would be redundant, not dangerous -- its one destructive step (the
+        # v3->v4 legacy-key strip) removes exactly the keys model_validate already ignores here
+        # (extra="ignore"), so an old Instance resolves identically with or without it. See
         # FPVSSchema.migrate and ParameterSchema.migrate (tasks/base.py) for the full contract and
         # what a genuinely breaking (non-additive) change would require.
         params = FPVSConditionParams.model_validate(trial_params)

@@ -206,13 +206,13 @@ def test_events_logged_to_sink(ctx, event_sink):
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     event_types = [r["event_type"] for r in rows]
+    # trial_start/trial_end are emitted by runtime.engine (issue #22), not the task, so a
+    # direct task drive like this one -- bypassing the engine -- sees only the task's own events.
     assert event_types == [
         "prepare",
-        "trial_start",
         "flip",
         "trigger_sent",
         "flip",
         "trigger_sent",
-        "trial_end",
         "cleanup",
     ]
