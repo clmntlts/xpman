@@ -74,3 +74,31 @@ def test_separability_is_deterministic_and_sorted():
     w1 = stream_separability_warnings(6.0, 1.2, 4.5, 0.9)
     w2 = stream_separability_warnings(6.0, 1.2, 4.5, 0.9)
     assert w1 == w2 == sorted(w1)
+
+
+def test_third_order_intermodulation_caught_only_at_order_three():
+    # #24: order-3 nonlinearities are routine in EEG. Here 3*base1 - base2 = 9.5 Hz lands on a
+    # stream-2 base harmonic and NO order-<=2 intermodulation term does -- so the deeper default
+    # (order 3, was 2) is exactly what surfaces it.
+    args = (6.0, 1.2, 8.5, 1.9)
+    assert not any("intermodulation" in x for x in stream_separability_warnings(*args, max_im_order=2))
+    assert any("intermodulation" in x for x in stream_separability_warnings(*args, max_im_order=3))
+    # the default order is now 3, so a plain call surfaces it without opting in
+    assert any("intermodulation" in x for x in stream_separability_warnings(*args))
+
+
+def test_oddball_fundamentals_are_intermodulation_sources():
+    # #24: an oddball rate is itself a periodic driver, so cross terms mixing it with the OTHER
+    # stream's drivers can land on a tag. 6/2.0 vs 7.3/1.1: no base-only (base1 x base2) IM term
+    # lands on a tag, but 2*oddball1 - base2 = 3.3 Hz hits stream-2's oddball 3rd harmonic. The
+    # advisory must name the oddball driver so the source is legible.
+    warnings = stream_separability_warnings(6.0, 2.0, 7.3, 1.1)
+    assert any("intermodulation" in x and "oddball1" in x for x in warnings)
+
+
+def test_higher_intermodulation_order_only_adds_warnings():
+    # Deepening the order is monotone: it can only add advisories, never drop a lower-order one.
+    args = (6.0, 1.2, 8.5, 1.9)
+    w2 = set(stream_separability_warnings(*args, max_im_order=2))
+    w3 = set(stream_separability_warnings(*args, max_im_order=3))
+    assert w2 <= w3
