@@ -1852,6 +1852,13 @@ def test_run_trial_shared_timeline_sweep_dual_stream_presents_both_streams(mock_
     seg1_streams = {p["stream"] for p in onset_payloads if p["frame_index"] >= boundary}
     assert seg0_streams == {0, 1}
     assert seg1_streams == {0, 1}
+    # #14: a dual-stream sweep now surfaces per-segment metrics in the flat results table (parity with
+    # the single-stream sweep), keyed on the MAIN stream's per-segment achieved frequency.
+    assert result.outcome_summary["sweep_n_segments"] == 2
+    assert result.outcome_summary["sweep_seg0_achieved_base_freq_hz"] == pytest.approx(6.0)
+    assert result.outcome_summary["sweep_seg1_achieved_base_freq_hz"] == pytest.approx(12.0)
+    assert result.outcome_summary["sweep_seg0_n_stimuli_shown"] > 0
+    assert result.outcome_summary["sweep_seg1_n_stimuli_shown"] > 0
 
 
 def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_window, stim_root, event_sink):
