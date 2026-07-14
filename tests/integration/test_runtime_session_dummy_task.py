@@ -451,3 +451,75 @@ def test_on_run_created_is_optional(session, registry, mock_window, tmp_path):
             data_dir=tmp_path,
         )
     assert run.status == RunStatus.COMPLETED
+
+
+def test_on_before_run_hook_fires_exactly_once_after_prepare_before_trials(
+    session, registry, mock_window, tmp_path
+):
+    """The task-agnostic on_before_run hook (issue #8) runs exactly once per Run -- after prepare()
+    (so resources exist) and before the first trial -- regardless of how many trials the Run has."""
+    instance_id, subject_id = _build_dummy_program_instance(session)  # 4 trials
+    dummy = registry.get("dummy")
+
+    call_order: list[str] = []
+    real_prepare = dummy.prepare
+    real_run_trial = dummy.run_trial
+
+    def record_prepare(ctx):
+        call_order.append("prepare")
+        return real_prepare(ctx)
+
+    def record_before_run(ctx):
+        call_order.append("on_before_run")
+
+    def record_run_trial(ctx, trial_params, trial_index):
+        call_order.append(f"trial_{trial_index}")
+        return real_run_trial(ctx, trial_params, trial_index)
+
+    with patch.object(dummy, "prepare", side_effect=record_prepare), patch.object(
+        dummy, "on_before_run", side_effect=record_before_run
+    ), patch.object(dummy, "run_trial", side_effect=record_run_trial), patch(
+        "psychopy.visual.Rect", return_value=MagicMock(name="Rect")
+    ):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+
+    assert run.status == RunStatus.COMPLETED
+    # Exactly one on_before_run call, and it sits strictly between prepare and the first trial.
+    assert call_order.count("on_before_run") == 1
+    assert call_order[:3] == ["prepare", "on_before_run", "trial_0"]
+    # ... and never again despite the remaining trials.
+    assert call_order == ["prepare", "on_before_run", "trial_0", "trial_1", "trial_2", "trial_3"]
+
+
+def test_on_before_run_default_is_noop_for_tasks_that_dont_override(
+    session, registry, mock_window, tmp_path
+):
+    """DummyTask does not override on_before_run, so it inherits TaskModule's no-op default: a Run
+    completes normally and the hook emits no events of its own (it simply does nothing)."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    # DummyTask must be relying on the inherited default, not its own implementation.
+    from xpman.tasks.base import TaskModule
+
+    assert DummyTask.on_before_run is TaskModule.on_before_run
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+    assert run.status == RunStatus.COMPLETED

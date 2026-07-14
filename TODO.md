@@ -213,6 +213,24 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           builds the 2nd stream's pools + runs the engine; `check_triggers` separability advisories.
           v1: single segment (no per-stream sweep), fixed positions (no jitter), no per-stream
           stimulus triggers (frequency-domain analysis). The single-stream path stays byte-for-byte.
+    - [x] **Phase 2 follow-ups — dual-stream v2 + sweep v2 (PR #12).** Lifted the v1 dual-stream
+          restrictions, all additive/default-off, single-stream golden net untouched: per-stream EEG
+          stimulus triggers + a `CoincidenceCodes` reserved-code block (#2); per-stream position jitter
+          (#3); per-segment overlay scheduling + shared-timeline sweep×dual-stream (#4); per-stream /
+          per-segment metrics in the results `outcome_summary` (#10); `on_before_run` engine hook + the
+          `migrate` load-path contract documented (#8).
+          **Intentional bounded behaviour change (#3):** a dual-stream Condition with
+          `position_jitter.enabled` used to run at *fixed* positions (jitter silently ignored, with a
+          `check_triggers` advisory calling it a misconfiguration); it now actually jitters each stream
+          around its own centre. A dual-stream+jitter Instance frozen on the pre-v2 code therefore
+          presents different stimulus positions on re-run. Accepted as a deliberate v2 semantics fix
+          (the prior state was flagged as a mistake and no analysis relied on it); pool/oddball draw
+          order is unchanged, so this touches stimulus *position* only — not the golden single-stream
+          path, nor any pool order. Not gated behind a schema version.
+          Expert-team review (photodiode/timing, reproducibility, correctness, tests) then closed a
+          triggered-overlay×dual-stream port-collision hazard (reject at validation — the overlay is
+          nudged off one stream's cadence only) and a dual-stream sweep overlay frame-drift (floor each
+          time-segment to the main stream's cadence, matching `plan_sweep_overlay_windows`).
     - [x] **Per-trial baseline period (2026-07-09).** Done: `BaselineParams` (before/after/both,
           duration, own start/stop triggers) on `FPVSConditionParams` (v6); `run_trial` runs a
           base-only `_run_baseline` segment (Condition base freq + modulation + base pool) before
@@ -225,7 +243,12 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           so it plays **once** per Run, before the first trial; `outcome_summary["familiarization"]`
           now reports what actually ran (True only on trial 0). Its start/stop markers keep it
           identifiable + excludable in analysis. Docstring + tutorial reconciled ("once per Run").
-          (Deferred the task-agnostic `on_before_run` engine hook — the guard is sufficient for now.)
+          (The task-agnostic `on_before_run` engine hook was later added in issue #8, but FPVS
+          familiarization deliberately stays in-trial: it is coupled to trial-0's `ctx.rng` base-pool
+          shuffle + randomized pre-interval and is reported in trial-0's `outcome_summary`, so
+          hoisting it to a run-level hook would change rng-consumption order and event ordering —
+          both forbidden by the byte-for-byte reproducibility net. The hook exists for future,
+          genuinely run-level warm-ups.)
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
       intra-category oddball; missing-oddball; double-base; per-image transforms
       (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.

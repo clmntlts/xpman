@@ -42,7 +42,11 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_sequence,
 )
 from xpman.tasks.fpvs.streams import stream_separability_warnings
-from xpman.tasks.fpvs.sweep import min_recommended_step_seconds, plan_sweep_segments
+from xpman.tasks.fpvs.sweep import (
+    min_recommended_step_seconds,
+    plan_sweep_overlay_windows,
+    plan_sweep_segments,
+)
 from xpman.tasks.fpvs.distractor import (
     DistractorController,
     build_distractor_stimulus,
@@ -185,6 +189,31 @@ def _interval_frames(rng, interval_seconds: tuple[float, float], refresh_rate_hz
         return 0
     seconds = float(rng.uniform(lo, hi)) if hi > lo else lo
     return round(seconds * refresh_rate_hz)
+
+
+def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str, float]]:
+    """Every base frequency this Condition will ACTUALLY present, each with a human label -- so the
+    frames-per-cycle floor/ceiling checks can cover them all, not just ``params.base``. A sweep's
+    steps SUPERSEDE ``params.base``; a second stream (and its own sweep) and familiarization each add
+    their own presented frequency. Missing any of these is how a too-high sweep-step / second-stream
+    frequency used to slip past the < 2 frames/cycle hard floor."""
+    freqs: list[tuple[str, float]] = []
+    if params.sweep.enabled and params.sweep.steps:
+        freqs += [(f"sweep step {i + 1} base_freq_hz", s.base_freq_hz) for i, s in enumerate(params.sweep.steps)]
+    else:
+        freqs.append(("base_freq_hz", params.base.base_freq_hz))
+    if params.second_stream.enabled:
+        s2 = params.second_stream
+        if s2.sweep.enabled and s2.sweep.steps:
+            freqs += [
+                (f"second_stream sweep step {i + 1} base_freq_hz", s.base_freq_hz)
+                for i, s in enumerate(s2.sweep.steps)
+            ]
+        else:
+            freqs.append(("second_stream.base_freq_hz", s2.base_freq_hz))
+    if params.familiarization.enabled:
+        freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
+    return freqs
 
 
 def _run_familiarization(
@@ -430,6 +459,17 @@ class FPVSTask(TaskModule):
             },
         )
 
+        # Turn on PsychoPy's own dropped-frame accounting so run_trial can report each trial's
+        # window.nDroppedFrames delta. Frame-counted FPVS trusts that each flip() is one refresh; a
+        # dropped frame silently phase-shifts every subsequent onset (an FFT-corrupting artifact) with
+        # no trace in the flip count -- surfacing nDroppedFrames makes a bad trial visible without the
+        # offline analyzer. Guarded + best-effort so mocked/offscreen test windows are unaffected.
+        if hasattr(ctx.window, "recordFrameIntervals"):
+            try:
+                ctx.window.recordFrameIntervals = True
+            except Exception:  # noqa: BLE001 - advisory instrumentation must never block a run
+                pass
+
         # Pixel-level sanity check of the stimulus pool (advisory; never fatal). Measures mean
         # luminance (for the per-trial background-gray cross-check in run_trial) and flags mixed
         # image dimensions. Skipped cleanly when no image is readable (n_inspected == 0), e.g.
@@ -463,6 +503,16 @@ class FPVSTask(TaskModule):
         )
 
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
+        # LOAD-PATH CONTRACT (intentional): a frozen Instance's condition params are read back here
+        # by validating the stored dict directly -- FPVSSchema.migrate is deliberately NOT called on
+        # this path. model_validate's "ignore unknown keys, default missing keys" behavior IS the
+        # backward-compat mechanism: every schema bump so far is additive (new optional fields with
+        # defaults), so an old frozen dict validates unchanged and an old Instance keeps its exact
+        # behavior -- the reproducibility guarantee (docs/architecture.md). migrate() is design-time
+        # only (it also does a *destructive* v3->v4 legacy-key strip that we must NOT apply to a
+        # frozen snapshot); wiring it in here could change how existing Instances resolve. See
+        # FPVSSchema.migrate and ParameterSchema.migrate (tasks/base.py) for the full contract and
+        # what a genuinely breaking (non-additive) change would require.
         params = FPVSConditionParams.model_validate(trial_params)
 
         base_entries = _select_pool(self._image_entries, params.base_selector)
@@ -512,19 +562,28 @@ class FPVSTask(TaskModule):
         photodiode = PhotodiodePatch(ctx.window, params.photodiode) if params.photodiode.enabled else None
 
         refresh = self._refresh_rate_hz
+        # Snapshot PsychoPy's cumulative dropped-frame counter so we can report this trial's delta in
+        # outcome_summary (None when the window doesn't track it, e.g. mocked/offscreen test windows).
+        dropped_before = getattr(ctx.window, "nDroppedFrames", None)
         # Hard floor (real refresh now known): fewer than 2 frames/cycle means the stimulus is
         # drawn every frame with no off-frame, so there is NO contrast modulation to tag -- fail
         # loudly here, before presenting anything, rather than recording a full run of
         # scientifically meaningless data (the classic mistyped 60-for-6-Hz case on a 60 Hz rig).
+        # Check EVERY frequency actually presented -- the main base OR each sweep step (a sweep
+        # supersedes params.base), the second stream (+ its sweep steps), and familiarization -- so a
+        # too-high sweep-step / second-stream frequency can't slip through with only params.base
+        # guarded. Also prevents the overlay scheduler's off-onset nudge from being handed a
+        # 1-frame/cycle cadence (which would otherwise loop forever) for a triggered overlay.
+        for label, freq in _presented_base_frequencies(params):
+            fpc = frames_per_cycle(refresh, freq)
+            if fpc < MIN_FRAMES_PER_CYCLE_ERROR:
+                raise ValueError(
+                    f"trial {trial_index}: {label} ({freq} Hz) is too high for this monitor's "
+                    f"{refresh:.1f} Hz refresh -- it resolves to {fpc} frame(s) per cycle, so no "
+                    "contrast modulation is possible (need at least 2 frames/cycle). Lower the "
+                    "frequency or check for a typo (e.g. 60 instead of 6)."
+                )
         base_frames_per_cycle = frames_per_cycle(refresh, params.base.base_freq_hz)
-        if base_frames_per_cycle < MIN_FRAMES_PER_CYCLE_ERROR:
-            raise ValueError(
-                f"trial {trial_index}: base_freq_hz ({params.base.base_freq_hz} Hz) is too high "
-                f"for this monitor's {refresh:.1f} Hz refresh -- it resolves to "
-                f"{base_frames_per_cycle} frame(s) per cycle, so no contrast modulation is "
-                "possible (need at least 2 frames/cycle). Lower base_freq_hz or check for a typo "
-                "(e.g. 60 instead of 6)."
-            )
         pre_frames = _interval_frames(ctx.rng, params.timing.pre_interval_seconds, refresh)
         post_frames = _interval_frames(ctx.rng, params.timing.post_interval_seconds, refresh)
         n_fade_in_frames = round(params.timing.fade_in_seconds * refresh)
@@ -555,15 +614,21 @@ class FPVSTask(TaskModule):
         # same span). Matches the engine's own per-segment n_stimuli_to_show * frames_per_stim sum
         # (design invariants #4/#6). A sweep sums over its steps (fades only on the first/last step,
         # each step floor-divided by its own frames-per-cycle -- mirrors _plan_oddball_segment).
+        # For a sweep the base-onset cadence changes per step, so a *triggered* overlay must be
+        # scheduled PER SEGMENT (each step over its own frame span, off its own frames-per-cycle) --
+        # #4. ``overlay_segments`` is the per-step SegmentWindow list; it is None on the non-sweep path
+        # so the scheduler falls back to its single-segment call (byte-for-byte the v1 schedule + RNG
+        # draw order). ``_effective_frames`` (the total presented frames) still drives the untriggered
+        # single-segment path and stays exactly the pre-#4 sweep accounting.
+        overlay_segments = None
         if params.sweep.enabled:
-            _last_step = len(params.sweep.steps) - 1
-            _effective_frames = 0
-            for _i, _step in enumerate(params.sweep.steps):
-                _step_fpc = frames_per_cycle(refresh, _step.base_freq_hz)
-                _step_fade_in = n_fade_in_frames if _i == 0 else 0
-                _step_fade_out = n_fade_out_frames if _i == _last_step else 0
-                _step_budget = _step_fade_in + round(_step.duration_seconds * refresh) + _step_fade_out
-                _effective_frames += max(_step_budget // _step_fpc, 1) * _step_fpc
+            overlay_segments = plan_sweep_overlay_windows(
+                params.sweep,
+                refresh_hz=refresh,
+                n_fade_in_frames=n_fade_in_frames,
+                n_fade_out_frames=n_fade_out_frames,
+            )
+            _effective_frames = sum(w.frame_count for w in overlay_segments)
         else:
             _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
             _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
@@ -573,7 +638,12 @@ class FPVSTask(TaskModule):
         if params.distractor.enabled:
             distractor_rng = ctx.rng.spawn(1)[0]
             events = schedule_distractor_events(
-                _effective_frames, base_frames_per_cycle, params.distractor, distractor_rng, refresh
+                _effective_frames,
+                base_frames_per_cycle,
+                params.distractor,
+                distractor_rng,
+                refresh,
+                segments=overlay_segments,
             )
             distractor_stim = build_distractor_stimulus(ctx.window, params.distractor, params.fixation)
             distractor_controller = DistractorController(
@@ -586,7 +656,12 @@ class FPVSTask(TaskModule):
         if params.go_nogo.enabled:
             go_nogo_rng = ctx.rng.spawn(1)[0]
             gn_events = schedule_go_nogo_events(
-                _effective_frames, base_frames_per_cycle, params.go_nogo, go_nogo_rng, refresh
+                _effective_frames,
+                base_frames_per_cycle,
+                params.go_nogo,
+                go_nogo_rng,
+                refresh,
+                segments=overlay_segments,
             )
             gn_base, gn_signal = build_go_nogo_stimuli(ctx.window, params.go_nogo)
             go_nogo_controller = GoNoGoController(
@@ -646,8 +721,10 @@ class FPVSTask(TaskModule):
         if params.second_stream.enabled:
             # Dual bilateral streams: two simultaneous frame-driven streams at distinct positions +
             # non-harmonic frequencies (validated on the Condition). Build the 2nd stream's own image
-            # pools; both share the central fixation, trial duration, and fades. v1 sends no per-stream
-            # stimulus triggers (analysis is frequency-domain), so reserved_codes stays None.
+            # pools; both share the central fixation, trial duration, and fades. Per-stream stimulus
+            # triggers are optional (v2, #2): the main stream carries the Condition's base/oddball codes,
+            # the second stream its own; a coincidence table is passed ONLY when both streams are
+            # triggered (validated on the Condition), otherwise reserved_codes stays None (no ambiguity).
             s2 = params.second_stream
             s2_base_entries = _select_pool(self._image_entries, s2.base_selector)
             s2_oddball_entries = _select_pool(self._image_entries, s2.oddball_selector)
@@ -678,6 +755,46 @@ class FPVSTask(TaskModule):
                 for i in s2_oddball_order
             ]
             _duration = params.base.trial_duration_seconds
+            # Reserved coincidence table (v2, #2): only when BOTH streams send trigger codes does a
+            # coincident onset need a reserved code; the Condition validator guarantees a complete 2x2
+            # table in that case. At most one triggered stream -> None (no ambiguity to resolve).
+            s1_triggered = (
+                params.base.base_trigger_code is not None
+                or params.oddball.oddball_trigger_code is not None
+            )
+            s2_triggered = s2.base_trigger_code is not None or s2.oddball_trigger_code is not None
+            reserved_codes = (
+                params.coincidence_codes.as_reserved_table()
+                if s1_triggered and s2_triggered
+                else None
+            )
+            # Per-stream position jitter (v2, #3): each stream gets its OWN decoupled sub-stream so the
+            # two streams jitter independently yet reproducibly. ctx.rng.spawn(2) derives two independent
+            # child streams from ctx.rng's SeedSequence WITHOUT consuming from ctx.rng's own draw stream
+            # (same decoupling as the single-stream position provider), so enabling jitter never perturbs
+            # pool order. The children are ordered by stream_index, so a given (Instance, Subject) always
+            # yields the same per-stream jitter sequence, and stream 0's sequence differs from stream 1's.
+            dual_position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None
+            if params.position_jitter.enabled:
+                stream_rngs = ctx.rng.spawn(2)
+                dual_position_providers = [
+                    _build_position_provider(params.position_jitter, stream_rngs[0]),
+                    _build_position_provider(params.position_jitter, stream_rngs[1]),
+                ]
+            # Sweep x dual-stream (v2, #4): when the Condition's sweep is enabled the two streams share
+            # ONE step timeline (the Condition validator guarantees matching step counts + durations).
+            # Build a list of time-segments, each pairing the main stream's step with the second
+            # stream's step (its own per-step base frequency + oddball). No sweep -> None, so
+            # _run_dual_stream presents the single time-segment (stream_segments) exactly as in v1.
+            dual_timeline = None
+            if params.sweep.enabled:
+                dual_timeline = [
+                    [
+                        Segment(base_freq_hz=main_step.base_freq_hz, duration_seconds=main_step.duration_seconds, oddball=main_step.oddball),
+                        Segment(base_freq_hz=second_step.base_freq_hz, duration_seconds=second_step.duration_seconds, oddball=second_step.oddball),
+                    ]
+                    for main_step, second_step in zip(params.sweep.steps, s2.sweep.steps)
+                ]
             sequence_result = _run_dual_stream(
                 window=ctx.window,
                 streams=[
@@ -685,16 +802,16 @@ class FPVSTask(TaskModule):
                         base_stimuli=base_stims,
                         oddball_stimuli=oddball_stims,
                         position_pix=tuple(params.stream_position_pix),
-                        base_trigger_code=None,
-                        oddball_trigger_code=None,
+                        base_trigger_code=params.base.base_trigger_code,
+                        oddball_trigger_code=params.oddball.oddball_trigger_code,
                         modulation=params.modulation,
                     ),
                     Stream(
                         base_stimuli=s2_base_stims,
                         oddball_stimuli=s2_oddball_stims,
                         position_pix=tuple(s2.position_pix),
-                        base_trigger_code=None,
-                        oddball_trigger_code=None,
+                        base_trigger_code=s2.base_trigger_code,
+                        oddball_trigger_code=s2.oddball_trigger_code,
                         modulation=s2.modulation,
                     ),
                 ],
@@ -709,7 +826,7 @@ class FPVSTask(TaskModule):
                 photodiode=photodiode,
                 photodiode_params=params.photodiode,
                 tracked_stream_index=0,
-                reserved_codes=None,
+                reserved_codes=reserved_codes,
                 abort_check=ctx.abort_check,
                 starting_frame_index=0,
                 n_fade_in_frames=n_fade_in_frames,
@@ -717,6 +834,8 @@ class FPVSTask(TaskModule):
                 rng=ctx.rng,
                 distractor=distractor_controller,
                 go_nogo=go_nogo_controller,
+                position_providers=dual_position_providers,
+                stream_segment_timeline=dual_timeline,
             )
         elif params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
@@ -922,10 +1041,23 @@ class FPVSTask(TaskModule):
                     },
                 )
 
-        return TrialResult(
-            outcome_summary={
+        # Per-trial dropped-frame count from PsychoPy's own accounting (delta over this trial), or None
+        # when the window doesn't track it. A non-zero value means the frame-counted timing slipped and
+        # the trial's onsets/frequencies may be phase-shifted -- flag it in the results rather than
+        # trusting the flip count. (See prepare(): recordFrameIntervals is enabled so this is live.)
+        dropped_after = getattr(ctx.window, "nDroppedFrames", None)
+        # isinstance(int) not "is not None": a MagicMock test window returns a mock attribute (not None),
+        # whose subtraction would leak a MagicMock into outcome_summary. Real PsychoPy tracks an int.
+        frames_dropped = (
+            dropped_after - dropped_before
+            if isinstance(dropped_before, int) and isinstance(dropped_after, int)
+            else None
+        )
+
+        outcome_summary = {
                 "refresh_rate_hz": self._refresh_rate_hz,
                 "refresh_measured_successfully": self._refresh_measured_successfully,
+                "frames_dropped": frames_dropped,
                 "pool_mean_luminance": self._pool_mean_luminance,
                 "background_luminance_warning": background_luminance_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
@@ -970,8 +1102,35 @@ class FPVSTask(TaskModule):
                 "go_nogo_false_alarm_rate": go_nogo_score.false_alarm_rate if go_nogo_score else None,
                 "go_nogo_d_prime": go_nogo_score.d_prime if go_nogo_score else None,
                 "go_nogo_mean_rt_seconds": go_nogo_score.mean_rt_seconds if go_nogo_score else None,
-            }
-        )
+        }
+
+        # Additive, default-off per-stream / per-segment detail for the flat results table (#10). A
+        # plain single-stream, non-sweep trial leaves both breakdowns empty, so its outcome_summary is
+        # byte-for-byte unchanged (frozen Instances stay backward-compatible). Only a dual-stream run
+        # emits ``streamN_*`` keys; only an actual sweep emits ``sweep_*`` keys. ``export._normalize_rows``
+        # already unions heterogeneous keys across Results, so mixed runs export cleanly.
+        if sequence_result.per_stream:
+            outcome_summary["n_streams"] = len(sequence_result.per_stream)
+            for s in sequence_result.per_stream:
+                outcome_summary[f"stream{s.stream_index}_achieved_base_freq_hz"] = s.achieved_base_freq_hz
+                outcome_summary[f"stream{s.stream_index}_achieved_oddball_freq_hz"] = (
+                    s.achieved_oddball_freq_hz
+                )
+                outcome_summary[f"stream{s.stream_index}_n_stimuli_shown"] = s.n_stimuli_shown
+                outcome_summary[f"stream{s.stream_index}_n_oddballs_shown"] = s.n_oddballs_shown
+        if sequence_result.per_segment:
+            outcome_summary["sweep_n_segments"] = len(sequence_result.per_segment)
+            for seg in sequence_result.per_segment:
+                outcome_summary[f"sweep_seg{seg.segment_index}_achieved_base_freq_hz"] = (
+                    seg.achieved_base_freq_hz
+                )
+                outcome_summary[f"sweep_seg{seg.segment_index}_achieved_oddball_freq_hz"] = (
+                    seg.achieved_oddball_freq_hz
+                )
+                outcome_summary[f"sweep_seg{seg.segment_index}_n_stimuli_shown"] = seg.n_stimuli_shown
+                outcome_summary[f"sweep_seg{seg.segment_index}_n_oddballs_shown"] = seg.n_oddballs_shown
+
+        return TrialResult(outcome_summary=outcome_summary)
 
     def run_metadata(self) -> dict:
         """Run-level provenance the engine persists onto the Run: the achieved refresh rate the
@@ -1035,6 +1194,20 @@ class FPVSTask(TaskModule):
             if len(scan_result.warnings) > 5:
                 lines.append(f"... and {len(scan_result.warnings) - 5} more scan warnings")
         return lines
+
+    def build_condition_preview(self, condition_params: dict) -> object | None:
+        """Schematic preview of this Condition: the on-screen spatial layout (streams, fixation,
+        go/no-go markers, photodiode, jitter regions) and the trial timeline (familiarization,
+        baseline, fades, sweep steps, oddball cadence). Returns ``(SpatialLayout, TrialSchematic)``
+        for the GUI's preview dialog, or ``None`` if the params don't validate (the dialog then falls
+        back to the text resource preview). Pure -- no hardware, no pixel IO, never raises."""
+        from xpman.tasks.fpvs.stimulus_preview import build_spatial_layout, build_trial_schematic
+
+        try:
+            params = FPVSConditionParams.model_validate(condition_params)
+        except ValidationError:
+            return None
+        return (build_spatial_layout(params), build_trial_schematic(params))
 
     def check_triggers(self, condition_params: dict) -> list[str]:
         """Design-time sanity warnings for a Condition (surfaced by the "Check Triggers..."
@@ -1247,7 +1420,8 @@ class FPVSTask(TaskModule):
                 f"dual bilateral streams: main {params.base.base_freq_hz:g} Hz at "
                 f"{tuple(params.stream_position_pix)} px, second {s2.base_freq_hz:g} Hz at "
                 f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
-                "photodiode tracks the MAIN stream only, and v1 sends no per-stream stimulus triggers."
+                "photodiode tracks the MAIN stream only. Per-stream stimulus triggers are optional "
+                "(set each stream's base/oddball codes; coincident onsets use coincidence_codes)."
             )
             odd1 = (
                 derived_oddball_freq_hz(params.base.base_freq_hz, params.oddball.pattern)
@@ -1261,11 +1435,7 @@ class FPVSTask(TaskModule):
             )
             for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
                 warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
-            if params.position_jitter.enabled:
-                warnings.append(
-                    "position_jitter is enabled with a second stream -- dual bilateral streams use "
-                    "FIXED positions in v1, so the jitter is IGNORED for both streams. Disable jitter "
-                    "or the second stream to avoid the surprise."
-                )
+            # (Position jitter is now supported per stream for dual streams -- #3 -- so the former
+            # "jitter ignored" advisory no longer applies. Each stream jitters around its OWN centre.)
 
         return warnings

@@ -43,19 +43,27 @@ class Corner(str, enum.Enum):
 class PhotodiodeParams(BaseModel):
     """All visual and behavioral properties of the photodiode patch."""
 
-    enabled: bool = True
-    toggle_strategy: ToggleStrategy = ToggleStrategy.EVERY_STIMULUS_ONSET
+    enabled: bool = Field(
+        default=True, description="Draw a photodiode sync patch (used to validate timing on real hardware)."
+    )
+    toggle_strategy: ToggleStrategy = Field(
+        default=ToggleStrategy.EVERY_STIMULUS_ONSET,
+        description="When the patch flips state: on every stimulus onset, every N frames, or only on oddball onsets.",
+    )
     every_n_frames: int = Field(
         default=1, ge=1, description="Used only when toggle_strategy == EVERY_N_FRAMES."
     )
-    corner: Corner = Corner.BOTTOM_LEFT
+    corner: Corner = Field(
+        default=Corner.BOTTOM_LEFT,
+        description="Screen corner the patch sits in (unless position_pix overrides it).",
+    )
     margin_pix: float = Field(default=0.0, ge=0, description="Gap between the patch and the screen edge.")
     position_pix: tuple[float, float] | None = Field(
         default=None, description="Overrides corner/margin with an explicit position if set."
     )
-    size_pix: float = Field(default=50.0, gt=0)
-    color_on: str = "white"
-    color_off: str = "black"
+    size_pix: float = Field(default=50.0, gt=0, description="Side length of the square patch, in pixels.")
+    color_on: str = Field(default="white", description="Patch color in its 'on' state.")
+    color_off: str = Field(default="black", description="Patch color in its 'off' state.")
 
 
 def should_toggle(

@@ -107,6 +107,47 @@ def test_schedule_empty_when_no_room():
 
 
 # ---------------------------------------------------------------------------
+# Per-segment scheduling for a frequency sweep (#4)
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_segments_none_equals_single_segment_default():
+    # segments=None must reproduce the v1 single-call schedule byte-for-byte (golden-net equivalence).
+    from xpman.tasks.fpvs._event_schedule import SegmentWindow
+
+    p = _params(trigger_code=42, min_interval_seconds=0.5, max_interval_seconds=1.5)
+    default = schedule_distractor_events(6000, 10, p, np.random.default_rng(9), refresh_hz=60.0)
+    explicit = schedule_distractor_events(
+        6000, 10, p, np.random.default_rng(9), refresh_hz=60.0,
+        segments=[SegmentWindow(0, 6000, 10)],
+    )
+    assert [(e.onset_frame, e.offset_frame) for e in default] == [(e.onset_frame, e.offset_frame) for e in explicit]
+
+
+def test_triggered_distractor_during_sweep_never_lands_on_any_step_base_onset():
+    # A real 2-step sweep: 6 Hz (10 f/stim) then 12 Hz (5 f/stim). A triggered distractor scheduled
+    # per segment must never onset on a base-onset frame of EITHER step (no port collision).
+    from xpman.tasks.fpvs._event_schedule import SegmentWindow
+
+    seg0 = SegmentWindow(start_frame=0, frame_count=3000, frames_per_stim=10)     # 6 Hz, 50 s
+    seg1 = SegmentWindow(start_frame=3000, frame_count=3000, frames_per_stim=5)   # 12 Hz, 50 s
+    p = _params(trigger_code=42, min_interval_seconds=0.4, max_interval_seconds=1.2)
+    events = schedule_distractor_events(
+        6000, 10, p, np.random.default_rng(4), refresh_hz=60.0, segments=[seg0, seg1]
+    )
+    assert events  # sanity
+    for e in events:
+        if e.onset_frame < 3000:
+            assert e.onset_frame % 10 != 0  # off step 0's cadence
+        else:
+            assert (e.onset_frame - 3000) % 5 != 0  # off step 1's (segment-local) cadence
+    # Events tile both segments (guarded within each, indices continuous).
+    assert any(e.onset_frame < 3000 for e in events)
+    assert any(e.onset_frame >= 3000 for e in events)
+    assert [e.index for e in events] == list(range(len(events)))
+
+
+# ---------------------------------------------------------------------------
 # score_distractor_responses (signal detection)
 # ---------------------------------------------------------------------------
 
