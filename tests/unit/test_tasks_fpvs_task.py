@@ -191,6 +191,19 @@ def real_stim_root(tmp_path):
     return root
 
 
+@pytest.fixture()
+def split_stim_root(tmp_path):
+    """Two decodable pools at DIFFERENT mean luminances -- a dark base pool (gray 64 -> ~0.25) and a
+    light oddball pool (gray 192 -> ~0.75) -- so per-pool luminance inspection (issue #18) has a real
+    base-vs-oddball gap to flag. Images live one subdirectory deep, as scan_directory requires."""
+    root = tmp_path / "split_stim"
+    for i in range(3):
+        _write_gray_image(root / "dark" / f"d_{i}.png", size=(64, 64), gray=64)
+    for i in range(3):
+        _write_gray_image(root / "light" / f"l_{i}.png", size=(64, 64), gray=192)
+    return root
+
+
 def test_prepare_measures_pool_mean_luminance(mock_window, real_stim_root, event_sink):
     task = FPVSTask()
     ctx = _make_ctx(mock_window, real_stim_root, event_sink)
@@ -332,6 +345,68 @@ def test_run_trial_no_luminance_warning_when_background_matches(
     params.background_gray = 0.5  # matches the images' mean luminance
     outcome = _run_trial_outcome(task, ctx, params)
     assert outcome["background_luminance_warning"] is False
+
+
+def test_run_trial_flags_base_oddball_pool_luminance_mismatch(
+    mock_window, split_stim_root, event_sink
+):
+    """#18: base and oddball pools of different mean luminance. With the background matched to the
+    dark base pool, the base pool is clean but the light oddball pool diverges from background AND
+    from the base pool -- so the per-pool and the base-vs-oddball-mismatch advisories both fire (the
+    mismatch is the confound that lands a luminance step on the oddball frequency)."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    params.base.trial_duration_seconds = 0.5
+    params.background_gray = 64 / 255  # matches the dark base pool, not the light oddball pool
+    outcome = _run_trial_outcome(task, ctx, params)
+
+    assert outcome["base_pool_mean_luminance"] == pytest.approx(64 / 255, abs=0.02)
+    assert outcome["oddball_pool_mean_luminance"] == pytest.approx(192 / 255, abs=0.02)
+    assert outcome["base_pool_luminance_warning"] is False  # base matches background
+    assert outcome["oddball_pool_luminance_warning"] is True  # oddball far from background
+    assert outcome["pool_luminance_mismatch_warning"] is True  # base != oddball -> oddball-freq step
+    rows = _read_events(event_sink)
+    assert any(r["event_type"] == "pool_luminance_divergence" for r in rows)
+
+
+def test_run_trial_no_pool_mismatch_when_pools_match(mock_window, real_stim_root, event_sink):
+    """Base and oddball selectors resolve to the same mid-gray pool and the background matches it, so
+    none of the per-pool advisories fire."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, real_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams()
+    params.base.trial_duration_seconds = 0.5
+    params.background_gray = 128 / 255  # matches both pools
+    outcome = _run_trial_outcome(task, ctx, params)
+    assert outcome["base_pool_luminance_warning"] is False
+    assert outcome["oddball_pool_luminance_warning"] is False
+    assert outcome["pool_luminance_mismatch_warning"] is False
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "pool_luminance_divergence" for r in rows)
+
+
+def test_pool_luminance_inspected_once_per_selector(mock_window, split_stim_root, event_sink):
+    """The per-pool pixel decode is cached by selector: after a trial, exactly two entries exist
+    (base + oddball selectors), so repeated trials do not re-decode the pools every time."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    params.base.trial_duration_seconds = 0.5
+    _run_trial_outcome(task, ctx, params)
+    assert set(task._pool_luminance_cache) == {("dark", None), ("light", None)}
 
 
 def test_image_stims_cached_across_trials(mock_window, real_stim_root, event_sink):

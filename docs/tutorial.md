@@ -687,8 +687,14 @@ be unanalyzable) or when **both fades are 0 s** (an abrupt onset transient can c
 periodic response). At run time, the event log records advisories when the stimulus set's measured
 mean luminance diverges from `background_gray` (opacity modulation stops being true *contrast*
 modulation) or when images have **heterogeneous pixel dimensions** (they'd render at different
-on-screen sizes). These are advisory only — they never block a Run — but a real study should
-resolve them.
+on-screen sizes). The luminance check is also done **per pool**: the base and oddball pools are
+measured separately, so a warning fires if either pool alone diverges from `background_gray`, and —
+most importantly — if the **base and oddball pools differ from each other** in mean luminance. That
+last case is the one to watch: a luminance gap between the categories means every oddball onset is
+also a luminance step recurring at exactly the oddball frequency, a low-level artifact that would
+masquerade as the categorization response (the per-trial result carries
+`base_pool_mean_luminance`, `oddball_pool_mean_luminance`, and a `pool_luminance_mismatch_warning`).
+These are advisory only — they never block a Run — but a real study should resolve them.
 
 ### 7.4 "No task types are registered"
 
