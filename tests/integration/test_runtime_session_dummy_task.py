@@ -166,6 +166,17 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     instance = get_instance(session, instance_id)
     assert logged_seed == derive_seed(instance, subject_id)
 
+    # #22: the engine brackets each trial with trial_start/trial_end markers carrying the
+    # authoritative trial_index (matching the Result row) + condition_id, so a raw onset/flip in
+    # this shared events file is attributable to a specific Result. One pair per executed trial.
+    trial_starts = [r for r in rows if r["event_type"] == "trial_start"]
+    trial_ends = [r for r in rows if r["event_type"] == "trial_end"]
+    assert len(trial_starts) == len(trial_ends) == len(results) == 4
+    assert [json.loads(r["payload_json"])["trial_index"] for r in trial_starts] == [0, 1, 2, 3]
+    for marker in trial_starts:
+        payload = json.loads(marker["payload_json"])
+        assert payload["condition_id"] is not None
+
 
 def test_trigger_provenance_recorded_from_describe(session, registry, mock_window, tmp_path):
     """launch_run records the trigger backend (and, where the backend exposes one, its port) from
