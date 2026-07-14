@@ -72,3 +72,31 @@ def test_get_rng_returns_numpy_generator(session):
     inst = _make_instance(session)
     rng = get_rng(inst, subject_id=1)
     assert isinstance(rng, np.random.Generator)
+
+
+def test_different_experiments_different_seeds(session):
+    # #21: the same subject running experiment A vs B of one Instance must get independent
+    # randomization -- experiment_id is part of the key.
+    inst = _make_instance(session)
+    assert derive_seed(inst, subject_id=1, experiment_id=10) != derive_seed(inst, subject_id=1, experiment_id=20)
+    # A specific experiment is also distinct from the "run every experiment" (None) key.
+    assert derive_seed(inst, subject_id=1, experiment_id=10) != derive_seed(inst, subject_id=1)
+
+
+def test_same_experiment_subject_same_seed(session):
+    inst = _make_instance(session)
+    assert derive_seed(inst, subject_id=1, experiment_id=10) == derive_seed(inst, subject_id=1, experiment_id=10)
+
+
+def test_seed_uses_full_digest_not_32_bit_collapse(session):
+    # Regression guard for #21: the seed must NOT be truncated to 32 bits (that gave ~4 billion
+    # distinct seeds and non-trivial birthday collisions). A full SHA-256 digest is ~2**256.
+    inst = _make_instance(session)
+    assert derive_seed(inst, subject_id=1, experiment_id=10) > 2**32
+
+
+def test_get_rng_different_experiments_diverge(session):
+    inst = _make_instance(session)
+    d1 = get_rng(inst, subject_id=7, experiment_id=1).integers(0, 1_000_000, size=20)
+    d2 = get_rng(inst, subject_id=7, experiment_id=2).integers(0, 1_000_000, size=20)
+    assert not np.array_equal(d1, d2)
