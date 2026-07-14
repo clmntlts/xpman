@@ -145,6 +145,24 @@ LUMINANCE_DIVERGENCE_THRESHOLD = 0.1
 #: real off-screen check is a visual/lab confirmation (see docs/verification_protocol.md).
 POSITION_JITTER_OFFSCREEN_WARN_PIX = 400.0
 
+#: A stand-in for a stimulus image's half-extent (px) used by the design-time photodiode-overlap
+#: advisory, where native image sizes aren't known yet (#25). ~256 px images are typical for FPVS
+#: face/object sets, so half is ~128; coarse and advisory only.
+_NOMINAL_IMAGE_HALF_EXTENT_PIX = 128.0
+
+
+def _jitter_max_offset_pix(jitter: PositionJitterParams) -> float:
+    """Largest displacement (px from a stream's centre) the jitter region can produce -- the disk
+    radius, or the rectangle's largest |offset| corner. Shared by the placement advisories (#25)."""
+    if jitter.region == "disk":
+        return jitter.radius_pix
+    return max(
+        abs(jitter.x_range_pix[0]),
+        abs(jitter.x_range_pix[1]),
+        abs(jitter.y_range_pix[0]),
+        abs(jitter.y_range_pix[1]),
+    )
+
 
 def _refresh_fallback_allowed() -> bool:
     """Whether the ``XPMAN_ALLOW_REFRESH_FALLBACK`` escape hatch is enabled (see the constant)."""
@@ -1442,6 +1460,29 @@ class FPVSTask(TaskModule):
                     "(the fixation marker stays centered regardless)."
                 )
 
+            # Photodiode-overlap advisory (#25): a jittered image that wanders onto the photodiode
+            # patch corrupts the timing ground-truth trace. Only computable at design time when the
+            # patch has an EXPLICIT position_pix (a corner patch depends on the unknown screen size --
+            # that stays a visual/lab check). Checks the nearest a jittered image CENTRE of any stream
+            # can get to the patch, allowing a nominal image half-extent + the patch's own half-size.
+            pd = params.photodiode
+            if pd.enabled and pd.position_pix is not None and not jitter.has_zero_extent():
+                centres = [tuple(params.stream_position_pix)]
+                if params.second_stream.enabled:
+                    centres.append(tuple(params.second_stream.position_pix))
+                reach = pd.size_pix / 2 + _NOMINAL_IMAGE_HALF_EXTENT_PIX
+                px, py = pd.position_pix
+                for cx, cy in centres:
+                    centre_distance = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+                    if centre_distance - max_offset < reach:
+                        warnings.append(
+                            f"position_jitter (up to {max_offset:g} px) can bring a stimulus within "
+                            f"~{reach:g} px of the photodiode patch at {tuple(pd.position_pix)} px -- a "
+                            "stimulus overlapping the patch corrupts the timing ground-truth trace. Move "
+                            "the patch (or the stream) further from the jitter region, or shrink the jitter."
+                        )
+                        break
+
         # Distractor (attention-control) advisories.
         distractor = params.distractor
         if distractor.enabled:
@@ -1543,6 +1584,23 @@ class FPVSTask(TaskModule):
                 warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
             # (Position jitter is now supported per stream for dual streams -- #3 -- so the former
             # "jitter ignored" advisory no longer applies. Each stream jitters around its OWN centre.)
+
+            # Midline-crossover advisory (#25): the jitter offset is ADDED to each stream's position
+            # with no clamp, so a jitter extent comparable to the inter-stream separation can push a
+            # stream across the midline onto the other stream's side (separability only checks the fixed
+            # centres). Warn when the max displacement reaches half the distance between the two centres.
+            if jitter.enabled and not jitter.has_zero_extent():
+                ax, ay = tuple(params.stream_position_pix)
+                bx, by = tuple(s2.position_pix)
+                separation = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+                max_jitter = _jitter_max_offset_pix(jitter)
+                if separation > 0 and max_jitter >= 0.5 * separation:
+                    warnings.append(
+                        f"position_jitter (up to {max_jitter:g} px) is >= half the {separation:g} px "
+                        "between the two stream centres -- a jittered image can cross the midline onto "
+                        "the other stream's side (each onset also lands at a different eccentricity, an "
+                        "amplitude confound). Reduce the jitter extent or move the streams further apart."
+                    )
 
             # Dual-stream SWEEP whole-cycle alignment (#23): each step's frame span is floored to the
             # MAIN stream's whole cycles (see paradigm_oddball._run_dual_stream), so a SECOND-stream

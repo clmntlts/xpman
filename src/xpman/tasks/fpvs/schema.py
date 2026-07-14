@@ -127,6 +127,15 @@ class PositionJitterParams(BaseModel):
     in ``x_range_pix`` (min, max) and ``y`` uniformly in ``y_range_pix``; a ``disk`` region draws
     area-uniformly within ``radius_pix`` (see ``tasks/fpvs/position.py``). ``per`` chooses a fresh
     position every stimulus or one fixed position reused for a whole trial.
+
+    Tradeoff to be aware of (#25): jittering position changes the image's *retinal eccentricity*
+    every onset, and cortical response amplitude falls with eccentricity -- so ``per="stimulus"``
+    jitter adds trial-to-trial amplitude variance that averages differently than a fixed position.
+    For dual bilateral streams the offset is *added* to each stream's ``position_pix`` with no clamp,
+    so a jitter extent comparable to the inter-stream separation can push a stream across the midline
+    onto the other stream (``check_triggers`` warns when the extent reaches half the separation), and
+    a large jitter can also bring a stimulus onto the photodiode patch. Keep the region modest
+    relative to the stream separation and the patch location.
     """
 
     enabled: bool = Field(
