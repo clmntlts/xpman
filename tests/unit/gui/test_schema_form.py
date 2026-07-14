@@ -288,6 +288,95 @@ def test_list_of_model_edits_round_trip(qtbot):
     assert gp.markers[1].position_pix == (200.0, 50.0)
 
 
+def test_sweep_steps_nested_list_renders_and_round_trips(qtbot):
+    """sweep.steps is a list[SweepStep] nested INSIDE the sweep group -- a list-of-model editor two
+    levels deep (FPVSConditionParams -> sweep -> steps), unlike go_nogo.markers which is top-level.
+    Enable it with 3 differing steps and confirm it renders as a _ModelListWidget and every step's
+    values survive a set/get round-trip (issue #9 -- the new Phase-2 editors)."""
+    from xpman.gui.forms.schema_form import _ModelListWidget
+    from xpman.tasks.fpvs.schema import OddballParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    values = FPVSConditionParams(
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=20.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+                SweepStep(base_freq_hz=4.8, duration_seconds=18.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+                SweepStep(base_freq_hz=3.0, duration_seconds=15.0, oddball=OddballParams(oddball_freq_hz=0.75)),
+            ],
+        )
+    ).model_dump(mode="python")
+
+    form = SchemaForm(FPVSConditionParams, initial_values=values)
+    qtbot.addWidget(form)
+
+    steps_widget = form._nested_forms["sweep"]._field_widgets["steps"]
+    assert isinstance(steps_widget, _ModelListWidget)
+    assert len(steps_widget.get_value()) == 3
+
+    restored = FPVSConditionParams.model_validate(form.get_values())
+    assert restored.sweep.enabled is True
+    assert [s.base_freq_hz for s in restored.sweep.steps] == [6.0, 4.8, 3.0]
+    assert restored.sweep.steps[1].duration_seconds == 18.0
+    assert restored.sweep.steps[2].oddball.oddball_freq_hz == 0.75
+
+
+def test_sweep_steps_add_remove_respects_min_items(qtbot):
+    """The nested sweep.steps list must add/remove and honour its min_items=2 (a sweep needs >= 2
+    steps), the same contract go_nogo.markers has but one level deeper."""
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    values = FPVSConditionParams(
+        sweep=FrequencySweepParams(
+            enabled=True,
+            steps=[
+                SweepStep(base_freq_hz=6.0, duration_seconds=20.0),
+                SweepStep(base_freq_hz=5.0, duration_seconds=20.0),
+            ],
+        )
+    ).model_dump(mode="python")
+
+    form = SchemaForm(FPVSConditionParams, initial_values=values)
+    qtbot.addWidget(form)
+    steps = form._nested_forms["sweep"]._field_widgets["steps"]
+    steps._on_add()  # 2 -> 3
+    assert len(steps.get_value()) == 3
+    steps._remove(steps._entries[-1][0])  # 3 -> 2
+    assert len(steps.get_value()) == 2
+    steps._remove(steps._entries[-1][0])  # min_items=2 -> stays at 2
+    assert len(steps.get_value()) == 2
+
+
+def test_second_stream_group_and_position_round_trip_when_enabled(qtbot):
+    """second_stream (a required StreamParams gated by its own 'enabled') renders as a nested group;
+    with it enabled plus a non-central stream_position_pix (a tuple[float,float] widget), the stream's
+    fields AND the main stream's position must survive the round-trip (issue #9)."""
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+
+    values = FPVSConditionParams(
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            oddball=OddballParams(oddball_freq_hz=1.4),
+        ),
+        stream_position_pix=(-200.0, 0.0),
+    ).model_dump(mode="python")
+
+    form = SchemaForm(FPVSConditionParams, initial_values=values)
+    qtbot.addWidget(form)
+    assert "second_stream" in form._nested_forms
+    assert form._field_widgets["stream_position_pix"].__class__.__name__ == "FloatPairFieldWidget"
+
+    restored = FPVSConditionParams.model_validate(form.get_values())
+    assert restored.second_stream.enabled is True
+    assert restored.second_stream.base_freq_hz == 7.0
+    assert tuple(restored.second_stream.position_pix) == (200.0, 0.0)
+    assert tuple(restored.stream_position_pix) == (-200.0, 0.0)
+    assert restored.second_stream.oddball.oddball_freq_hz == 1.4
+
+
 def test_literal_field_renders_as_choice_combo_not_free_text(qtbot):
     """A ``Literal[...]`` field (FixationParams.bar_orientation) must get a fixed-choice combo,
     not the free-text 'unsupported type' fallback that would let a typo through."""
