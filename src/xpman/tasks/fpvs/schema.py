@@ -656,12 +656,14 @@ class FPVSSchema:
         # stay that way while every schema bump is additive. Frozen condition dicts are read back at
         # run time by FPVSConditionParams.model_validate() directly (see task.py run_trial), whose
         # ignore-unknown / default-missing behavior is the backward-compat contract that keeps old
-        # Instances reproducible. This method's v3->v4 step is *destructive* (it strips
-        # _LEGACY_SELECTOR_KEYS); applying that to a frozen snapshot could change how an existing
-        # Instance resolves, so it is deliberately kept off the read boundary. Its role is
-        # forward-migrating dev-only Instances at design time (and documenting the version lineage),
-        # NOT run-time loading. See ParameterSchema.migrate for the full contract and what a
-        # genuinely breaking (non-additive) change would require before this could be wired in.
+        # Instances reproducible. Crucially, this migrate is *not* needed for correctness on that read
+        # path: the models default to pydantic extra="ignore", so model_validate on a v3 dict already
+        # drops exactly the _LEGACY_SELECTOR_KEYS this v3->v4 step strips -- an old Instance resolves
+        # identically whether or not migrate ever runs. So keeping migrate off the read boundary costs
+        # nothing (wiring it in would only add a redundant rewrite to the hot load path); its real role
+        # is forward-migrating dev-only Instances at design time and documenting the version lineage,
+        # NOT run-time loading. See ParameterSchema.migrate for the full contract and what a genuinely
+        # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
         if old_version not in ("1", "2", "3", "4", "5"):
