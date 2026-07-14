@@ -251,6 +251,74 @@ def test_export_handles_heterogeneous_outcome_keys(session, tmp_path):
     assert row1["extra_only_on_first"] == ""
 
 
+def test_export_fpvs_mixed_single_and_dual_sweep_run(session, tmp_path):
+    """#16: a Run mixing a plain single-stream trial with a dual-stream + sweep trial (real FPVS
+    outcome keys, not synthetic). The per-stream ``streamN_*`` and per-segment ``sweep_segN_*``
+    columns that only the second trial emits must appear and None-fill cleanly on the single-stream
+    row, with a deterministic column order (context columns first, then outcome keys sorted -- #26)."""
+    from xpman.core.export import _CONTEXT_COLUMNS
+
+    fixture = _build_fixture(session)
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    session.add_all(
+        [
+            Result(
+                run_id=run.id,
+                trial_index=0,
+                condition_id=fixture["condition"].id,
+                outcome_summary_json={"n_stimuli_shown": 6, "achieved_base_freq_hz": 6.0},
+            ),
+            Result(
+                run_id=run.id,
+                trial_index=1,
+                condition_id=fixture["condition"].id,
+                outcome_summary_json={
+                    "n_stimuli_shown": 6,
+                    "achieved_base_freq_hz": 6.0,
+                    "n_streams": 2,
+                    "stream0_achieved_base_freq_hz": 6.0,
+                    "stream1_achieved_base_freq_hz": 7.0,
+                    "sweep_n_segments": 2,
+                    "sweep_seg0_achieved_base_freq_hz": 6.0,
+                    "sweep_seg1_achieved_base_freq_hz": 4.8,
+                },
+            ),
+        ]
+    )
+    session.commit()
+
+    rows = get_run_results_rows(session, run.id)
+    by_trial = {r["trial_index"]: r for r in rows}
+    # The dual/sweep-only columns exist and None-fill on the single-stream row.
+    for col in (
+        "n_streams",
+        "stream1_achieved_base_freq_hz",
+        "sweep_n_segments",
+        "sweep_seg1_achieved_base_freq_hz",
+    ):
+        assert col in by_trial[0], col
+        assert by_trial[0][col] is None
+    assert by_trial[1]["stream1_achieved_base_freq_hz"] == 7.0
+    assert by_trial[1]["sweep_seg1_achieved_base_freq_hz"] == 4.8
+
+    # Deterministic column order: context columns first (declared order), then outcome keys sorted.
+    cols = list(rows[0].keys())
+    assert cols[: len(_CONTEXT_COLUMNS)] == list(_CONTEXT_COLUMNS)
+    outcome_cols = cols[len(_CONTEXT_COLUMNS) :]
+    assert outcome_cols == sorted(outcome_cols)
+
+    # Both file formats carry the union columns; CSV None-fills as empty string.
+    pq_path = tmp_path / "mixed.parquet"
+    export_run_results_to_parquet(session, run.id, pq_path)
+    assert "sweep_seg1_achieved_base_freq_hz" in pq.read_table(pq_path).column_names
+    csv_path = tmp_path / "mixed.csv"
+    export_run_results_to_csv(session, run.id, csv_path)
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        csv_rows = list(csv.DictReader(f))
+    row0 = next(r for r in csv_rows if r["trial_index"] == "0")
+    assert row0["stream1_achieved_base_freq_hz"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Deleted Subject / Condition (nullable FK set to NULL)
 # ---------------------------------------------------------------------------
