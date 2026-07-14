@@ -2324,3 +2324,37 @@ def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_ro
     )
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert not any("IGNORED" in w for w in warnings)
+
+
+def test_distractor_press_before_main_sequence_is_not_a_false_alarm(mock_window, stim_root, event_sink):
+    """#19: a key press during familiarization / a baseline / the pre-interval -- phases with NO
+    overlay event -- must NOT be scored as a spontaneous distractor false alarm."""
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import FamiliarizationParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        familiarization=FamiliarizationParams(enabled=True, duration_seconds=0.5, post_blank_seconds=0.0),
+        distractor=DistractorParams(enabled=True, keys=["a"], guard_seconds=0.5),
+    )
+    params.base.trial_duration_seconds = 0.5
+
+    # A press at t=0.001 -- during the pre-interval / familiarization, well before the main sequence's
+    # first onset (familiarization alone runs 0.5 s first) -- so it has no distractor event to match.
+    early = MagicMock()
+    early.name = "a"
+    early.tDown = 0.001
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard",
+        return_value=MagicMock(getKeys=MagicMock(return_value=[early])),
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    # Without the #19 fix this early press has no event to match and is counted as a spontaneous FA.
+    assert result.outcome_summary["distractor_n_false_alarms"] == 0

@@ -1972,3 +1972,28 @@ def test_dual_stream_shared_timeline_presents_both_streams_across_segments(event
     # Stream 1 changes cadence: 8 f/stim in seg 0 (onsets at 0/8/16/24), 6 f/stim in seg 1 (30/36/..).
     s1_seg1_frames = sorted(p["frame_index"] for p in seg1 if p["stream"] == 1)
     assert s1_seg1_frames == [30, 36, 42, 48, 54]
+
+
+def test_single_stream_overlay_collision_fails_loud(
+    base_stimuli, oddball_stimuli, event_sink, trigger, clock, mock_window
+):
+    """#17: a triggered overlay event landing on a base-onset frame must FAIL LOUD (like the
+    dual-stream path), not silently drop the overlay marker. The scheduler normally nudges triggered
+    overlays off base-onset frames; this forces the collision to prove the single-stream path raises."""
+    # base 6 Hz @ 60 Hz -> 10 frames/stim, so frame 10 is the 2nd stimulus's onset. A distractor event
+    # forced onto frame 10 WITH a trigger code collides with that base onset's trigger.
+    events = [DistractorEvent(index=0, onset_frame=10, offset_frame=15)]
+    controller = DistractorController(events, MagicMock(name="overlay"), trigger_code=99)
+    with pytest.raises(ValueError, match="same frame"):
+        run_base_oddball_sequence(
+            window=mock_window,
+            base_stimuli=base_stimuli,
+            oddball_stimuli=oddball_stimuli,
+            base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=0.5, base_trigger_code=1),
+            oddball_params=OddballParams(oddball_freq_hz=1.2, oddball_trigger_code=2),
+            refresh_rate_hz=60.0,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+            distractor=controller,
+        )
