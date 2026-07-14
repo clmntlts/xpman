@@ -231,35 +231,36 @@ def test_sweep_with_triggered_single_stream_overlay_is_allowed():
     assert params.sweep.enabled and params.distractor.trigger_code == 50
 
 
-def test_triggered_overlay_with_sweep_dual_stream_is_rejected():
-    # A triggered overlay together with a sweep x DUAL stream is rejected (a special case of the
-    # broader dual-stream rejection below: the streams have different cadences, so no single cadence
-    # to nudge the overlay off).
+def test_triggered_overlay_with_sweep_dual_stream_is_allowed():
+    # #27: a *triggered* overlay now runs with a sweep x DUAL stream too. task.py builds the
+    # per-segment overlay windows carrying BOTH streams' per-step cadences, so the scheduler nudges
+    # markers off the UNION per step and one never shares a flip with either stream's onset.
+    # Previously rejected by _check_triggered_overlay_with_dual_stream_sweep (now removed).
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
-    with pytest.raises(ValidationError, match="dual-stream"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=main),
-            second_stream=StreamParams(
-                enabled=True,
-                base_freq_hz=7.0,
-                position_pix=(200.0, 0.0),
-                sweep=FrequencySweepParams(enabled=True, steps=second),
-            ),
-            distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
-        )
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=second),
+        ),
+        distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
+    )
+    assert params.distractor.trigger_code == 50 and params.second_stream.sweep.enabled
 
 
 def test_triggered_overlay_with_nonsweep_dual_stream_is_allowed():
     # #13: a *triggered* distractor/go-no-go overlay is now ALLOWED with a (non-sweep) dual stream --
     # the overlay is scheduled off the UNION of both streams' fixed base-onset cadences, so a marker
-    # never shares a flip with either stream's onset. (A dual-stream SWEEP is still rejected -- see
-    # test_triggered_overlay_with_sweep_dual_stream_is_rejected.)
+    # never shares a flip with either stream's onset. (A dual-stream SWEEP with a triggered overlay is
+    # now also allowed -- see test_triggered_overlay_with_sweep_dual_stream_is_allowed, #27.)
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
     from xpman.tasks.fpvs.schema import StreamParams

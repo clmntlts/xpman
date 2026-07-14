@@ -22,13 +22,18 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class SegmentWindow:
     """One constant-frequency span of the stimulation, as the overlay scheduler sees it: the global
-    frame the segment starts on, how many frames it spans, and its own frames-per-stimulus (the
-    base-onset cadence to nudge triggered events off). A non-sweep trial is a single ``SegmentWindow``
-    spanning the whole sequence, so per-segment scheduling reduces to the v1 single call."""
+    frame the segment starts on, how many frames it spans, and its base-onset cadence(s) to nudge
+    triggered events off. A non-sweep trial is a single ``SegmentWindow`` spanning the whole sequence,
+    so per-segment scheduling reduces to the v1 single call.
+
+    ``frames_per_stim`` is a single ``int`` for one stream, or a ``tuple[int, ...]`` carrying every
+    stream's per-step frames-per-cycle for a dual-stream sweep (#27) -- passed straight to
+    :func:`iter_event_windows`, which nudges off the UNION of the cadences so a triggered marker never
+    shares a flip with ANY stream's onset in that step."""
 
     start_frame: int
     frame_count: int
-    frames_per_stim: int
+    frames_per_stim: "int | tuple[int, ...]"
 
 
 def iter_event_windows(
@@ -96,9 +101,10 @@ def iter_event_windows_over_segments(
     """Yield ``(index, onset_frame, offset_frame)`` for events scheduled PER SEGMENT.
 
     Each :class:`SegmentWindow` is scheduled independently over its OWN frame span, guarded at both
-    ends and (when ``avoid_base_onsets``) nudged off *that segment's* base-onset cadence
-    (``frames_per_stim``) -- so during a frequency sweep, where the base cadence changes per step, a
-    triggered overlay never lands on a base/oddball onset. ``index`` is continuous across segments,
+    ends and (when ``avoid_base_onsets``) nudged off *that segment's* base-onset cadence(s)
+    (``frames_per_stim`` -- an int, or a tuple whose UNION is dodged for a dual-stream sweep, #27) --
+    so during a frequency sweep, where the base cadence changes per step, a triggered overlay never
+    lands on any stream's base/oddball onset. ``index`` is continuous across segments,
     onset/offset frames are GLOBAL (each segment's local placement offset by its ``start_frame``), and
     the shared ``rng`` is consumed segment-by-segment in order, so seeded schedules stay reproducible.
 

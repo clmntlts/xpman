@@ -111,3 +111,18 @@ def test_triggered_segments_nudge_off_each_segments_own_cadence():
             assert onset % 10 != 0  # off segment 0's base cadence
         else:
             assert (onset - 3000) % 7 != 0  # off segment 1's base cadence (segment-local)
+
+
+def test_dual_cadence_segment_nudges_off_the_union_per_step():
+    # #27: a dual-stream SWEEP passes a TUPLE of both streams' per-step cadences per segment; the
+    # nudge must avoid the UNION so a triggered marker never lands on EITHER stream's onset in any
+    # step. (frames_per_stim is segment-local, so segment 1's onsets are checked against onset-3000.)
+    segs = [SegmentWindow(0, 3000, (10, 9)), SegmentWindow(3000, 3000, (12, 15))]
+    windows = list(iter_event_windows_over_segments(segs, **_kw(5, avoid_base_onsets=True)))
+    assert windows
+    for _i, onset, _off in windows:
+        if onset < 3000:
+            assert onset % 10 != 0 and onset % 9 != 0  # off BOTH segment-0 cadences
+        else:
+            local = onset - 3000
+            assert local % 12 != 0 and local % 15 != 0  # off BOTH segment-1 cadences
