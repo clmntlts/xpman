@@ -156,11 +156,12 @@ def execute_run(
     the DB portable if the data directory moves); omitted, the absolute path is stored.
     """
     frozen_program = instance.frozen_json["program"]
-    rng = get_rng(instance, subject.id)
-    # The seed is a pure function of (instance.id, instance.checksum, subject.id) -- all on the Run
-    # row -- so it's already recomputable. We still record the actual integer used so a Run is
-    # self-documenting and stays reproducible even if derive_seed's derivation ever changes.
-    rng_seed = derive_seed(instance, subject.id)
+    rng = get_rng(instance, subject.id, experiment_id=experiment_id)
+    # The seed is a pure function of (instance.id, instance.checksum, experiment_id, subject.id) --
+    # all on the Run row (experiment_id is the launched experiment) -- so it's already recomputable.
+    # We still record the actual integer used so a Run is self-documenting and stays reproducible even
+    # if derive_seed's derivation ever changes.
+    rng_seed = derive_seed(instance, subject.id, experiment_id=experiment_id)
 
     ctx = TaskContext(
         window=window,
