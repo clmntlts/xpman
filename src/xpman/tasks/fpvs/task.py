@@ -634,12 +634,27 @@ class FPVSTask(TaskModule):
             _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
             _effective_frames = max(_total_seq_frames // base_frames_per_cycle, 1) * base_frames_per_cycle
 
+        # A non-sweep DUAL stream: the overlay must dodge BOTH streams' base-onset cadences (their
+        # base frequencies differ), so pass both frames-per-cycle to the scheduler so a triggered task
+        # marker never shares a flip with either stream's stimulus trigger (#13). Single-stream, and the
+        # sweep path (scheduled per-segment via overlay_segments), pass the main stream's one cadence.
+        _overlay_cadence: "int | tuple[int, ...]" = base_frames_per_cycle
+        if (
+            params.second_stream.enabled
+            and not params.sweep.enabled
+            and not params.second_stream.sweep.enabled
+        ):
+            _overlay_cadence = (
+                base_frames_per_cycle,
+                frames_per_cycle(refresh, params.second_stream.base_freq_hz),
+            )
+
         distractor_controller = None
         if params.distractor.enabled:
             distractor_rng = ctx.rng.spawn(1)[0]
             events = schedule_distractor_events(
                 _effective_frames,
-                base_frames_per_cycle,
+                _overlay_cadence,
                 params.distractor,
                 distractor_rng,
                 refresh,
@@ -657,7 +672,7 @@ class FPVSTask(TaskModule):
             go_nogo_rng = ctx.rng.spawn(1)[0]
             gn_events = schedule_go_nogo_events(
                 _effective_frames,
-                base_frames_per_cycle,
+                _overlay_cadence,
                 params.go_nogo,
                 go_nogo_rng,
                 refresh,

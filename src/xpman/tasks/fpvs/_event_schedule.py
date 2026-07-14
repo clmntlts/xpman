@@ -33,7 +33,7 @@ class SegmentWindow:
 
 def iter_event_windows(
     total_frames: int,
-    frames_per_stim: int,
+    frames_per_stim: "int | tuple[int, ...]",
     *,
     event_duration_seconds: float,
     min_interval_seconds: float,
@@ -56,19 +56,23 @@ def iter_event_windows(
     min_gap = max(round(min_interval_seconds * refresh_hz), 1)
     max_gap = max(round(max_interval_seconds * refresh_hz), min_gap)
     last_usable_frame = total_frames - guard_frames
+    # A single stream passes one cadence; a dual stream passes BOTH streams' frames-per-stimulus, so a
+    # triggered overlay is nudged off the UNION of their base-onset frames and never shares a flip with
+    # either stream's stimulus trigger (#13). An int normalises to a 1-tuple -> byte-for-byte v1.
+    cadences = (frames_per_stim,) if isinstance(frames_per_stim, int) else tuple(frames_per_stim)
 
     cursor = guard_frames
     index = 0
     while True:
         gap = int(rng.integers(min_gap, max_gap + 1))
         onset = cursor + gap
-        if avoid_base_onsets and frames_per_stim > 1:
-            # Only moves forward, so the min gap is preserved (never shrunk below the minimum).
-            # ``frames_per_stim > 1`` is REQUIRED, not just an optimisation: at 1 frame/cycle EVERY
-            # frame is a base onset, so ``onset % 1 == 0`` always and this loop would never terminate
-            # (it would hang the run at trial setup). A 1-frame/cycle stimulus is separately rejected
-            # by the frames-per-cycle floor in task.py; this guard is the backstop.
-            while onset % frames_per_stim == 0:
+        if avoid_base_onsets and all(f > 1 for f in cadences):
+            # Nudge forward off EVERY cadence's base-onset frames (only moves forward, so the min gap is
+            # preserved). ``f > 1`` for all is REQUIRED, not an optimisation: at 1 frame/cycle every
+            # frame is a base onset, so this would never terminate (that case is separately rejected by
+            # the frames-per-cycle floor in task.py). With all cadences >= 2, non-onset frames occur with
+            # positive density, so this ends within a few steps.
+            while any(onset % f == 0 for f in cadences):
                 onset += 1
         offset = onset + event_frames
         if offset > last_usable_frame:
