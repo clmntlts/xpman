@@ -488,36 +488,6 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_triggered_overlay_with_dual_stream_sweep(self) -> "FPVSConditionParams":
-        # #13 lifted the blanket "triggered overlay + dual stream" rejection: a NON-sweep dual stream
-        # now schedules a triggered overlay off the UNION of BOTH streams' base-onset cadences (their
-        # base frequencies are fixed, so the union is fixed too -- see task.py's _overlay_cadence), so a
-        # task marker never shares a flip with either stream's onset. What is STILL rejected is a dual
-        # stream where a stream ALSO sweeps: then each stream's per-step cadence changes, and the
-        # per-segment overlay scheduler only nudges off the MAIN stream's per-step cadence, so a marker
-        # could still land on the second stream's onset in some step. (Untriggered overlays are always
-        # fine; single-stream sweeps with a triggered overlay are fine; non-sweep dual + triggered
-        # overlay is now fine.) Lifting this needs per-segment UNION scheduling -- tracked as a follow-up.
-        if not (self.second_stream.enabled and (self.sweep.enabled or self.second_stream.sweep.enabled)):
-            return self
-        offenders: list[str] = []
-        if self.distractor.enabled and self.distractor.trigger_code is not None:
-            offenders.append("distractor")
-        if self.go_nogo.enabled and (
-            self.go_nogo.go_trigger_code is not None or self.go_nogo.nogo_trigger_code is not None
-        ):
-            offenders.append("go_nogo")
-        if offenders:
-            raise ValueError(
-                f"a *triggered* {' & '.join(offenders)} overlay can't yet run with a dual-stream "
-                "*sweep* (each stream's per-step cadence differs, so a marker could collide with the "
-                "second stream's onset in some step). Clear the overlay's trigger code(s), or disable "
-                "the sweep or the second stream. (A non-sweep dual stream with a triggered overlay is "
-                "supported.)"
-            )
-        return self
-
-    @model_validator(mode="after")
     def _check_dual_stream_separable(self) -> "FPVSConditionParams":
         # Dual bilateral streams must be spectrally separable and spatially distinct. A sweep x
         # dual-stream is allowed (#4) but ONLY on a SHARED step timeline: both streams change frequency

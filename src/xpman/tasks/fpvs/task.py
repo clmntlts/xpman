@@ -20,6 +20,7 @@ docs/open_questions.md for verification alongside the other timing-critical unkn
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -673,6 +674,24 @@ class FPVSTask(TaskModule):
                 n_fade_out_frames=n_fade_out_frames,
             )
             _effective_frames = sum(w.frame_count for w in overlay_segments)
+            # Dual-stream SWEEP (#27): each step's overlay window must dodge BOTH streams' per-step
+            # base-onset cadences, not just the main stream's. The runtime floors each segment span to
+            # the MAIN stream's cadence, so plan_sweep_overlay_windows (built from the main sweep)
+            # already tiles the frame spans exactly as _run_dual_stream does; we only enrich each
+            # window's frames_per_stim to the (main, second) per-step union so iter_event_windows nudges
+            # a triggered marker off either stream's onset. The shared-timeline validator guarantees the
+            # two sweeps are index-aligned (same step count + durations).
+            if params.second_stream.enabled and params.second_stream.sweep.enabled:
+                overlay_segments = [
+                    replace(
+                        window,
+                        frames_per_stim=(
+                            window.frames_per_stim,
+                            frames_per_cycle(refresh, params.second_stream.sweep.steps[i].base_freq_hz),
+                        ),
+                    )
+                    for i, window in enumerate(overlay_segments)
+                ]
         else:
             _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
             _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames

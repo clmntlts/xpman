@@ -2026,7 +2026,8 @@ def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_w
             oddball_selector=StimulusSelector(subdirectory="objects"),
             sweep=FrequencySweepParams(enabled=True, steps=second_steps),
         ),
-        # UNtriggered distractor -- a triggered overlay is rejected with any dual stream.
+        # UNtriggered distractor here (a triggered one is also supported now -- #27 -- and is covered
+        # by test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay).
         distractor=DistractorParams(
             enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.15, guard_seconds=0.0
         ),
@@ -2457,9 +2458,8 @@ def test_run_trial_reports_frames_dropped_when_window_tracks_it(mock_window, sti
 
 def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock_window, stim_root, event_sink):
     """An UNtriggered distractor overlay runs alongside the two frame-driven streams: its events are
-    logged and the sequence completes. A *triggered* overlay with a dual stream is rejected at
-    validation (see test_triggered_overlay_with_dual_stream_is_rejected) because the overlay is nudged
-    off the main stream's cadence only, so it could share a flip with the second stream's onset."""
+    logged and the sequence completes. (Triggered overlays with a dual stream -- non-sweep #13 and
+    sweep #27 -- are covered separately; here the point is that an untriggered overlay composes.)"""
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.schema import StreamParams
 
@@ -2496,6 +2496,65 @@ def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock
     types = [r["event_type"] for r in _read_events(event_sink)]
     assert "distractor_onset" in types  # the overlay ran during the dual-stream sequence
     assert result.outcome_summary["aborted"] is False
+
+
+def test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay(mock_window, stim_root, event_sink):
+    """#27: a TRIGGERED distractor overlay now runs with a dual-stream SWEEP. The per-segment overlay
+    windows carry BOTH streams' per-step cadences, so markers are nudged off the UNION and never share
+    a flip with either stream's onset -- if one did, resolve_frame_trigger would raise. The second
+    stream carries a trigger code so such a collision WOULD be caught; a clean run is the proof."""
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    main_steps = [
+        SweepStep(base_freq_hz=6.0, duration_seconds=1.0),
+        SweepStep(base_freq_hz=5.0, duration_seconds=1.0),
+    ]
+    second_steps = [
+        SweepStep(base_freq_hz=7.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.4)),
+        SweepStep(base_freq_hz=4.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+    ]
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+            base_trigger_code=40,  # coded, so a marker landing on its onset would raise
+            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+        ),
+        distractor=DistractorParams(
+            enabled=True,
+            trigger_code=50,
+            keys=["a"],
+            min_interval_seconds=0.1,
+            max_interval_seconds=0.15,
+            guard_seconds=0.0,
+        ),
+    )
+
+    trigger = NullTrigger(reset_after=0.0)
+    ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)  # must NOT raise a collision
+
+    assert result.outcome_summary["aborted"] is False
+    types = [r["event_type"] for r in _read_events(event_sink)]
+    assert "distractor_onset" in types  # the triggered overlay actually scheduled events
+    assert types.count("sweep_segment_start") == 2  # ran as a per-segment dual-stream sweep
 
 
 def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_root):
