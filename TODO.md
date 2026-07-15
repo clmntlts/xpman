@@ -1,8 +1,8 @@
 # xpman TODO
 
-> **The live backlog is now GitHub issues** (`gh issue list`), per [CLAUDE.md](CLAUDE.md). This file
-> is the **historical "done" log** — what shipped and why — kept for context. Track *upcoming* work as
-> issues, not here; when you add a deferred item below, open an issue for it too.
+> **The live backlog is now GitHub issues** (`gh issue list`). This file is the **historical "done"
+> log** — what shipped and why — kept for context. Track *upcoming* work as issues, not here; when you
+> add a deferred item below, open an issue for it too.
 
 Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
