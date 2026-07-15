@@ -104,7 +104,17 @@ $HiddenImports = @(
     # own real `import` statements (paradigm_oddball, photodiode, image_set, schema, ...) are
     # then followed normally by PyInstaller's analysis once it starts tracing from here.
     "xpman.tasks.dummy.task",
-    "xpman.tasks.fpvs.task"
+    "xpman.tasks.fpvs.task",
+    # Alembic runs migrations/env.py and every migrations/versions/*.py by loading them from disk
+    # at runtime (importlib, not a real `import`), so PyInstaller's static analysis never sees THEIR
+    # imports -- exactly like the psychopy.visual and entry-point cases above. env.py does
+    # `from logging.config import fileConfig`; `logging.config` is a stdlib SUBMODULE that is NOT
+    # pulled in just because `logging` is, so without this the frozen GUI crashes on startup the
+    # instant core.db.ensure_schema() upgrades the DB: "ModuleNotFoundError: No module named
+    # 'logging.config'". (This fires on the normal GUI launch, which the worker path -- run against
+    # an already-migrated DB -- does not exercise; it shipped broken in v0.2.0 for exactly that
+    # reason.) `--collect-submodules alembic` below covers the version scripts' dynamic `alembic.op`.
+    "logging.config"
 )
 
 $PyInstallerArgs = @(
@@ -135,7 +145,11 @@ $PyInstallerArgs = @(
     # reintroducing the schema-drift crash this whole mechanism exists to prevent). They land at
     # sys._MEIPASS/{alembic.ini,migrations/}, exactly where _schema_base_dir() looks when frozen.
     "--add-data", "alembic.ini;.",
-    "--add-data", "migrations;migrations"
+    "--add-data", "migrations;migrations",
+    # The migration version scripts do `from alembic import op` when alembic loads them dynamically
+    # (see the logging.config note in $HiddenImports). Bundle all of alembic's submodules so op/
+    # context/ddl-dialects are present -- the app statically imports only alembic.command.
+    "--collect-submodules", "alembic"
 )
 foreach ($m in $ExcludeModules) { $PyInstallerArgs += @("--exclude-module", $m) }
 foreach ($m in $HiddenImports) { $PyInstallerArgs += @("--hidden-import", $m) }
