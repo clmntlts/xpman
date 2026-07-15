@@ -34,7 +34,7 @@ QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe -m pytest tests/unit tests/
 ./.venv/Scripts/python.exe -m ruff check src tests
 ```
 
-Keep the suite green on every commit (baseline ≈ **986 passed / 1 skipped**).
+Keep the suite green on every commit (baseline ≈ **1079 passed / 1 skipped**).
 
 ## Change discipline
 - Work on a **branch**, not `master`; merge (`--no-ff`) or PR only after the full suite is green.

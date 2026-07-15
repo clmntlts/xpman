@@ -594,8 +594,9 @@ the **Timeline** tab draws a sky-blue divider at each step, tagged with its freq
 
 "Check Triggers…" warns when a step is **too short to resolve its oddball** (the FFT bin width is
 `1/duration`; you want a few bins below the oddball frequency — realistically ≥ ~4 s for a 1.2 Hz
-oddball). A *triggered* distractor/go-no-go overlay can't run during a sweep (v1) — clear its trigger
-code or disable the sweep.
+oddball). A *triggered* distractor/go-no-go overlay **runs fine during a sweep** — its markers are
+scheduled per step and nudged off each step's base-onset cadence (and, for a dual-stream sweep, off
+both streams' cadences) so a marker never shares a flip with a stimulus trigger.
 
 **Per-trial baseline** (`baseline`) — an optional **base-only (no-oddball)** reference segment: the
 same base stimulation as the main sequence but with the oddballs removed, so any energy at the
@@ -629,12 +630,18 @@ index), and the photodiode tracks the **first** stream.
 | `second_stream.position_pix` | x,y (px) | (200,0) | Its screen position (must differ from the main stream's). |
 | `second_stream.base_selector` / `oddball_selector` | group | whole set | Its own image pools. |
 | `second_stream.modulation` | group | sinusoidal | Its own contrast modulation. |
+| `second_stream.base_trigger_code` / `oddball_trigger_code` | integer, optional | not set | Optional 8-bit EEG triggers on **this** stream's base/oddball onsets (1–255). Leave unset for pure frequency-tag analysis. |
+| `second_stream.sweep` | group | off | Sweep this stream too (only valid alongside the main sweep, on a **shared timeline** — same step count + durations, only the per-step frequencies differ). |
+| `coincidence_codes` | group | not set | Reserved codes for frames where **both** streams onset together (there's one port, one pulse): the 2×2 of (base/oddball)×(base/oddball). Required once **both** streams have trigger codes. |
 
 Saving is **blocked** if the two base frequencies are equal or harmonically related (their responses
-couldn't be separated), if the two positions are identical, or if a sweep is also enabled (v1).
-"Check Triggers…" additionally warns about **intermodulation** collisions (`|n·f1 ± m·f2|` landing on
-a tagged frequency). v1 sends **no per-stream stimulus EEG triggers** (the frequency tags are the
-signal); pick distinct, non-harmonic frequencies with a clear spectral gap.
+couldn't be separated), if the two positions are identical, or if only one stream sweeps / the two
+sweeps don't share a timeline. A dual-stream **sweep** is fine when both streams sweep on the shared
+timeline. "Check Triggers…" additionally warns about **intermodulation** collisions (`|n·f1 ± m·f2|`
+landing on a tagged frequency) and midline-crossover / photodiode-overlap from large position jitter.
+Per-stream EEG triggers are **optional** (set the codes above; coincident onsets resolve to one
+reserved `coincidence_codes` value); with none set, the frequency tags are the whole signal — pick
+distinct, non-harmonic frequencies with a clear spectral gap.
 
 ## 7. Troubleshooting
 
