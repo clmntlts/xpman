@@ -7,11 +7,13 @@ Full rationale lives in the plan file; this doc is the actionable, repeatable ve
 ## Rig
 
 Legacy app and xpman (dummy task first, then the real FPVS task) run on the same physical
-monitor. A photodiode is taped to the screen at the flash-patch location, feeding an
-oscilloscope / logic analyzer. The same analyzer simultaneously taps the parallel port trigger
-lines.
+monitor. Timing ground truth comes from a light sensor at the flash-patch location plus a
+simultaneous tap of the trigger line. There are two capture methods below — **method A
+(in-amplifier, via a BioSemi AUX light sensor) is preferred when available**; method B (external
+scope/analyzer) is the fallback and a cross-check. The "what to measure" section applies to either;
+the numbers should agree.
 
-**Where to tape the diode:**
+**Where to tape the light sensor / diode:**
 
 - **Dummy task** — a screen-centered square that flips black/white every trial. Tape the
   diode there.
@@ -19,6 +21,48 @@ lines.
   `photodiode.size_pix`, default 50px) that toggles per `photodiode.toggle_strategy`
   (every stimulus onset / every N frames / oddball-only) — configurable per Condition, see
   `docs/tutorial.md` §6.2.
+
+### Capture method A — in-amplifier (BioSemi Active3 + Photosensor A3) — preferred
+
+If the lab has a BioSemi light sensor (e.g. the **Photosensor A3**, a PIN diode + trans-impedance
+amp) plugged into one of the Active3 **AUX** inputs, use it instead of an external
+oscilloscope/logic analyzer. The sensor records screen luminance as a channel in the BDF, sampled
+by the **same ADC clock** as the EEG and the **Status** (trigger) channel — so the two things item 2
+compares (photons on screen vs. the trigger code) are already on one shared timeline, in one file.
+This removes the stimulus PC's clock and any cross-device alignment from the measurement.
+
+- **Setup:** tape the sensor over the photodiode patch; set `photodiode.size_pix` ≥ the sensor's
+  active window so the patch fully covers it, and `photodiode.corner`/`position_pix` to the sensor
+  location. Prefer a **high Active3 sample rate** — timing resolution is one sample (≈0.49 ms at
+  2048 Hz; finer at 4096/8192 Hz), not the monitor's frame period.
+- **Triggers land on the Status channel.** Mask it to the **low 8 bits** before reading codes —
+  xpman emits 1–255 (see the 8-bit enforcement in `hardware/trigger.py`), and the raw Status word
+  also carries BioSemi's high bits (new-epoch / CMS-in-range / battery), which otherwise inflate the
+  value. Use the **serial** backend for the BioSemi USB Trigger Interface (`--trigger-backend serial
+  --serial-port COMx`) with the **FTDI latency timer set to 1 ms** (see "New features" item 2 — the
+  16 ms default is the classic ±10 ms jitter), or `--trigger-backend parallel` for an LPT cable.
+- **Recover onsets from the AUX trace by EDGE, not level.** The patch **alternates** bright/dark on
+  each onset (`PhotodiodePatch.toggle`), so at base rate *F* the sensor shows an *F*/2-Hz square wave
+  with an edge at **every** onset — detect **both** rising and falling edges (detecting only rising
+  edges halves them). Or set `toggle_strategy = every_n_frames` for a fixed, unambiguous cadence.
+- **Latency = (Status trigger-change sample − AUX onset-edge sample) ÷ sample_rate**; jitter = its
+  stddev over many onsets. Two fixed offsets to know about (they bias *absolute* latency but **not**
+  jitter): (1) the AUX channel passes through the AD-box's analog anti-alias filter (a small,
+  sample-rate-dependent group delay) while the Status channel is digital — subtract BioSemi's
+  documented filter delay if you need an absolute number; (2) raster **scanout** refreshes the bottom
+  of the screen up to ~one frame after the top, so a corner patch has a constant spatial offset vs. a
+  centred stimulus — keep the patch near the stimulus or treat the offset as a known constant.
+- xpman's own event log / `analyze_verification_run.py` stays a **same-clock sanity check** (trigger
+  and onset share one `flip_time`, so its latency is ~0 by construction — see
+  `core/verification_report.py`); the **BioSemi AUX-vs-Status** comparison is the actual ground truth
+  for command→photon latency.
+
+### Capture method B — external oscilloscope / logic analyzer
+
+A photodiode taped to the screen at the flash-patch location feeds an oscilloscope / logic analyzer,
+and the same analyzer simultaneously taps the parallel-port trigger lines. Use this when no BioSemi
+AUX light sensor is available, or to cross-check method A. Everything in "What to measure" applies;
+here the two traces come from the analyzer rather than from two channels of one BDF.
 
 ## How to launch the test
 
