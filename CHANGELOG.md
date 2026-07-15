@@ -7,7 +7,20 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 > specification and covered by automated tests, but has **not** been measured on a real EEG rig.
 > See `docs/verification_protocol.md`; run that lab session before relying on the timing.
 
-## [0.2.0] — 2026-07-15
+## [0.2.1] — 2026-07-15
+
+Packaging fix. **v0.2.0's packaged build (installer and portable zip) crashes on launch — do not
+use it.** The GUI calls `core.db.ensure_schema()` on startup, which runs the Alembic migrations;
+Alembic loads `migrations/env.py` from disk at runtime (not via a real `import`), so PyInstaller's
+static analysis never bundled that file's `from logging.config import fileConfig` — a stdlib
+submodule not pulled in just because `logging` is. The frozen GUI therefore died immediately with
+`ModuleNotFoundError: No module named 'logging.config'` (a console window flashed and closed). Fixed
+in `build_windows_exe.ps1` with a `logging.config` hidden import and `--collect-submodules alembic`
+(for the version scripts' dynamic `alembic.op`). Verified this release by launching the **plain GUI**
+(the path that broke) and confirming `ensure_schema` builds + stamps a fresh DB, in addition to the
+`--xpman-launch-worker` Run check. No application code changed.
+
+## [0.2.0] — 2026-07-15 — broken build, superseded by 0.2.1
 
 The FPVS paradigm release. Since 0.1.2 (a packaging‑only release), xpman went from hard‑cut
 image on/off to a full, modern FPVS toolkit built on a generalized **segments × streams**
