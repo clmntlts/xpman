@@ -61,7 +61,7 @@ def test_fpvs_condition_params_renders_labelled_sections(qtbot):
         "Trial timing & phases",
         "Fixation & display",
         "Responses & attention tasks",
-        "Dual bilateral stream",
+        "Multiple streams",
     ]
     out = form.get_validated_model()
     assert out.base.base_freq_hz == FPVSConditionParams().base.base_freq_hz

@@ -79,13 +79,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "6"
+    assert FPVSSchema.SCHEMA_VERSION == "7"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("6", {"x": 1})
-    assert version == "6"
+    version, data = schema.migrate("7", {"x": 1})
+    assert version == "7"
     assert data == {"x": 1}
 
 
@@ -98,7 +98,7 @@ def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "6"
+    assert version == "7"
     assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
     assert data["oddball_selector"] == {}
 
@@ -179,7 +179,7 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "6"
+    assert version == "7"
     assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
 
 
@@ -189,7 +189,7 @@ def test_migrate_v2_to_current_passes_data_through():
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "6"
+    assert version == "7"
     assert data == v2_data
 
 
@@ -213,8 +213,26 @@ def test_migrate_v5_to_v6_is_additive_passthrough():
     schema = FPVSSchema()
     v5 = {"base": {"base_freq_hz": 6.0}, "go_nogo": {"enabled": False}}
     version, data = schema.migrate("5", v5)
-    assert version == "6"
+    assert version == "7"
     assert data == v5  # sweep default (disabled) fills in on validation
+
+
+def test_migrate_v6_to_v7_is_additive_passthrough():
+    # v6 -> v7 is additive: additional_streams (default []) and per-stream oddball_enabled (default
+    # True) fill in on validation, so a frozen v6 payload passes straight through the migrate.
+    schema = FPVSSchema()
+    v6 = {
+        "base": {"base_freq_hz": 6.0},
+        "second_stream": {"enabled": False},
+        "stream_position_pix": (0.0, 0.0),
+    }
+    version, data = schema.migrate("6", v6)
+    assert version == "7"
+    assert data == v6  # additional_streams=[] / oddball_enabled=True defaults fill in on validation
+    # And the migrated dict validates, with the new fields at their default-off values.
+    params = FPVSConditionParams.model_validate(data)
+    assert params.additional_streams == []
+    assert params.second_stream.oddball_enabled is True
 
 
 def test_sweep_with_triggered_single_stream_overlay_is_allowed():
@@ -302,12 +320,18 @@ def test_condition_params_have_second_stream_disabled_by_default():
     assert params.second_stream.enabled is False
 
 
-def test_dual_stream_rejects_harmonic_base_frequencies():
+def test_dual_stream_allows_harmonic_base_frequencies():
     from xpman.tasks.fpvs.schema import StreamParams
 
-    # main base 6 Hz, second 12 Hz = 2*6 -> fundamentals overlap -> rejected.
-    with pytest.raises(ValidationError, match="harmonically related"):
-        FPVSConditionParams(second_stream=StreamParams(enabled=True, base_freq_hz=12.0))
+    # v7 (researcher decision: all frequencies must be possible): harmonically-related dual-stream
+    # bases (main 6 Hz, second 12 Hz = 2*6) are NO LONGER a hard error -- spectral-collision advisories
+    # are surfaced via check_triggers, not rejected here. Distinct positions are still required.
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=12.0, position_pix=(200.0, 0.0)),
+    )
+    assert params.second_stream.enabled is True
+    assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 12.0)
 
 
 def test_dual_stream_rejects_identical_positions():
@@ -409,6 +433,168 @@ def test_valid_dual_stream_is_accepted():
     )
     assert params.second_stream.enabled is True
     assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 7.0)
+
+
+# ---------------------------------------------------------------------------
+# Multi-stream (N > 2) via additional_streams (v7)
+# ---------------------------------------------------------------------------
+
+
+def test_additional_streams_defaults_empty_and_oddball_enabled_default_true():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams()
+    assert params.additional_streams == []
+    # Per-stream oddball toggle defaults ON (preserves current dual-stream behavior).
+    assert StreamParams().oddball_enabled is True
+
+
+def test_additional_streams_with_distinct_positions_is_accepted():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # The requesting paradigm: one main + several simultaneous streams at distinct locations.
+    params = FPVSConditionParams(
+        stream_position_pix=(0.0, 200.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, -200.0)),
+        additional_streams=[
+            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(-200.0, 0.0)),
+            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+        ],
+    )
+    assert len(params.additional_streams) == 2
+    assert all(s.enabled for s in params.additional_streams)
+
+
+def test_additional_streams_ignore_disabled_entries_for_position_check():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # A DISABLED additional stream is inactive: it does not participate in the position-distinctness
+    # check even if it collides with an active one.
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        additional_streams=[
+            StreamParams(enabled=False, position_pix=(200.0, 0.0)),  # collides but inactive -> ignored
+        ],
+    )
+    assert params.second_stream.enabled is True
+
+
+def test_additional_streams_duplicate_positions_across_three_streams_raise():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # Three active streams, two sharing a position -> rejected (positions must be pairwise-distinct).
+    with pytest.raises(ValidationError, match="distinct positions"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+            additional_streams=[
+                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),  # dup of second
+            ],
+        )
+
+
+def test_additional_stream_colliding_with_main_position_raises():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # An additional stream sharing the MAIN stream's position is rejected too.
+    with pytest.raises(ValidationError, match="distinct positions"):
+        FPVSConditionParams(
+            stream_position_pix=(0.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+            additional_streams=[
+                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 0.0)),  # == main
+            ],
+        )
+
+
+def test_more_than_two_active_streams_with_trigger_code_raises():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # >2 active streams and a per-stream trigger code -> rejected (8-bit combiner is 2-stream only).
+    # Here the third stream carries the trigger code.
+    with pytest.raises(ValidationError, match="per-stream EEG triggers"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+            additional_streams=[
+                StreamParams(
+                    enabled=True,
+                    base_freq_hz=6.0,
+                    position_pix=(0.0, 200.0),
+                    base_trigger_code=42,
+                ),
+            ],
+        )
+
+
+def test_more_than_two_active_streams_with_main_trigger_code_raises():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # The main stream's trigger code also trips the >2-stream trigger guard.
+    with pytest.raises(ValidationError, match="per-stream EEG triggers"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_freq_hz=6.0, base_trigger_code=10),
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+            additional_streams=[
+                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
+            ],
+        )
+
+
+def test_three_active_streams_without_trigger_codes_is_accepted():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # >2 streams are fine as long as no per-stream trigger codes are set (frequency-domain readout).
+    params = FPVSConditionParams(
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+        additional_streams=[
+            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
+        ],
+    )
+    assert len(params.additional_streams) == 1
+
+
+def test_additional_streams_with_sweep_raises():
+    from xpman.tasks.fpvs.schema import StreamParams
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    # sweep x N (>2 streams) is out of scope: an active additional stream + any sweep is rejected.
+    steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
+    with pytest.raises(ValidationError, match="only supported with at most two streams"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=steps),
+            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
+            additional_streams=[
+                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
+            ],
+        )
+
+
+def test_base_only_additional_stream_is_accepted():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # A "similar" filler stream: oddball_enabled=False -> base-only, contributes flicker but no
+    # oddball-frequency response. Accepted (the requesting paradigm's odd-one-out setup).
+    params = FPVSConditionParams(
+        stream_position_pix=(0.0, 200.0),
+        second_stream=StreamParams(
+            enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(0.0, -200.0)
+        ),
+        additional_streams=[
+            StreamParams(
+                enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(-200.0, 0.0)
+            ),
+            StreamParams(
+                enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(200.0, 0.0)
+            ),
+        ],
+    )
+    assert params.second_stream.oddball_enabled is False
+    assert all(s.oddball_enabled is False for s in params.additional_streams)
 
 
 # ---------------------------------------------------------------------------

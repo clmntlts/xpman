@@ -863,6 +863,65 @@ def _plan_oddball_segment(
     )
 
 
+def _plan_base_only_segment(
+    segment: Segment,
+    *,
+    refresh_rate_hz: float,
+    envelope: _TrialEnvelope,
+    segment_fade_in_frames: int,
+    segment_fade_out_frames: int,
+    modulation: ModulationParams | None,
+) -> _SegmentPlan:
+    """Compute a :class:`_SegmentPlan` for a BASE-ONLY (no-oddball) stream inside the multi-stream
+    engine -- a "similar" filler stream that flickers at its base frequency but carries no oddball
+    response in its spectrum. Signature mirrors :func:`_plan_oddball_segment` exactly so the two are
+    interchangeable at the dual-stream planning call site.
+
+    The base cadence is computed byte-for-byte the same way as the oddball case: ``n_frames_per_stim``
+    from :func:`frames_per_cycle`, ``achieved_base_hz`` from :func:`achieved_frequency_hz`, and
+    ``n_stimuli_to_show`` from this segment's frame budget floor-divided by frames-per-cycle. The
+    oddball fields are inert: ``position_is_oddball`` returns ``False`` for every position, ``period``
+    is 0 (a sentinel meaning "no oddball"), and ``achieved_oddball_hz`` is 0.0. Because
+    ``position_is_oddball`` is always ``False``, the engine's oddball branch (which would index
+    ``oddball_stimuli`` / advance the oddball pool) is never taken for this stream.
+
+    Requires ``segment.oddball is None`` -- an oddball segment uses :func:`_plan_oddball_segment`."""
+    if segment.oddball is not None:
+        raise ValueError(
+            "_plan_base_only_segment requires a base-only segment (oddball segments use "
+            "_plan_oddball_segment)"
+        )
+
+    n_frames_per_stim = frames_per_cycle(refresh_rate_hz, segment.base_freq_hz)
+    achieved_base_hz = achieved_frequency_hz(refresh_rate_hz, n_frames_per_stim)
+
+    def position_is_oddball(position_1indexed: int) -> bool:
+        return False
+
+    # Identical stimulus-budget math to the oddball case (the base cadence is unchanged); only the
+    # oddball placement/frequency differ. See _plan_oddball_segment for the fade-tail truncation note.
+    segment_plateau_frames = round(segment.duration_seconds * refresh_rate_hz)
+    segment_total_frames = segment_fade_in_frames + segment_plateau_frames + segment_fade_out_frames
+    n_stimuli_to_show = max(segment_total_frames // n_frames_per_stim, 1)
+    modulation_fn = _build_modulation_fn(
+        modulation,
+        n_frames_per_cycle=n_frames_per_stim,
+        starting_frame_index=envelope.start_frame_index,
+        n_fade_in_frames=envelope.fade_in_frames,
+        n_plateau_frames=envelope.plateau_frames,
+        n_fade_out_frames=envelope.fade_out_frames,
+    )
+    return _SegmentPlan(
+        n_frames_per_stim=n_frames_per_stim,
+        achieved_base_hz=achieved_base_hz,
+        period=0,  # sentinel: no oddball in this stream
+        achieved_oddball_hz=0.0,
+        n_stimuli_to_show=n_stimuli_to_show,
+        position_is_oddball=position_is_oddball,
+        modulation_fn=modulation_fn,
+    )
+
+
 @dataclass(frozen=True)
 class _SegmentRun:
     """Accumulation from presenting one segment -- folded into the sequence result. ``end_frame_index``
@@ -1261,11 +1320,17 @@ def _run_dual_stream(
 
     # Plan every stream for every time-segment ahead of the timed loop. ``segment_plans[t][s]`` is the
     # plan for stream s in time-segment t; each stream's fade share is on the first/last time-segment.
+    # A stream whose Segment has no oddball (``oddball is None``) is planned base-only: it flickers at
+    # its base frequency but carries no oddball response. Dispatch per stream on that flag -- an
+    # oddball-carrying stream takes the SAME _plan_oddball_segment call as before (so the all-oddball
+    # dual-stream case is byte-for-byte unchanged), a base-only filler takes _plan_base_only_segment.
+    # Both planners share an identical signature. This is the only place _run_dual_stream builds plans;
+    # the per-time-segment loop below only re-installs these already-built plans onto each runtime.
     segment_plans: list[list[_SegmentPlan]] = []
     for t, seg_list in enumerate(timeline):
         segment_plans.append(
             [
-                _plan_oddball_segment(
+                (_plan_oddball_segment if seg.oddball is not None else _plan_base_only_segment)(
                     seg,
                     refresh_rate_hz=refresh_rate_hz,
                     envelope=envelope,
