@@ -39,6 +39,8 @@ from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import get_instance
 from xpman.core.models import Result
+from xpman.gui.dialogs.trigger_test_dialog import TriggerTestDialog
+from xpman.gui.trigger_test import build_test_trigger
 from xpman.gui.launch_worker import (
     EXIT_ABORTED,
     EXIT_COMPLETED,
@@ -206,6 +208,17 @@ class LaunchDialog(QDialog):
         self._port_address_error_label.hide()
         layout.addWidget(self._port_address_error_label)
 
+        # Test-connection button: send test pulses through the selected port to confirm xpman can
+        # open it and that triggers reach the amplifier -- BEFORE committing a subject to a real run.
+        # Needs a real backend + a valid port, but no Subject (it never touches the data model).
+        self._test_triggers_button = QPushButton("Test triggers...")
+        self._test_triggers_button.setToolTip(
+            "Send test pulses through the selected parallel/serial port to confirm xpman opens it and "
+            "the triggers reach your amplifier. Enabled once a real backend and its port are set."
+        )
+        self._test_triggers_button.clicked.connect(self._open_trigger_test)
+        layout.addWidget(self._test_triggers_button)
+
         self._launch_button = QPushButton("Launch")
         self._launch_button.clicked.connect(self._on_launch)
         layout.addWidget(self._launch_button)
@@ -344,6 +357,11 @@ class LaunchDialog(QDialog):
         self._port_address_edit.setEnabled(enabled and backend == "parallel")
         self._serial_port_edit.setEnabled(enabled and backend == "serial")
         self._serial_baud_spin.setEnabled(enabled and backend == "serial")
+        # The test-connection button follows the same run-active gating (the port is busy during a
+        # run), but otherwise depends on having a real backend + a valid port, not on a Subject.
+        self._test_triggers_button.setEnabled(
+            enabled and backend in ("parallel", "serial") and self._active_field_ok()[0]
+        )
 
     def _settings(self) -> QSettings:
         """QSettings scoped to xpman -- used to persist the last-chosen trigger backend."""
@@ -390,29 +408,71 @@ class LaunchDialog(QDialog):
             args += ["--parallel-port-address", str(address)]
         return args
 
-    def _update_launch_button_state(self) -> None:
-        """Launch requires a Subject to exist and, for the selected trigger backend, a valid
-        active field: parallel needs a parseable port address (hex like "0x0378" or plain decimal,
+    def _active_field_ok(self) -> tuple[bool, str]:
+        """Whether the selected backend's active config field is valid, plus the inline error to
+        show if not. Parallel needs a parseable port address (hex like "0x0378" or plain decimal,
         matching launch_worker.py's own `int(s, 0)` parsing); serial needs a non-empty port name;
         none needs nothing."""
-        if not self._has_subjects:
-            self._launch_button.setEnabled(False)
-            return
         backend = self._trigger_backend_combo.currentData()
-        field_ok = True
-        error_text = ""
         if backend == "parallel":
-            field_ok = self._parse_port_address() is not None
-            error_text = "Enter a valid parallel port address, e.g. 0x0378."
-        elif backend == "serial":
-            field_ok = bool(self._serial_port_edit.text().strip())
-            error_text = "Enter the serial (COM) port the trigger box uses, e.g. COM4."
-        self._launch_button.setEnabled(field_ok)
+            return (
+                self._parse_port_address() is not None,
+                "Enter a valid parallel port address, e.g. 0x0378.",
+            )
+        if backend == "serial":
+            return (
+                bool(self._serial_port_edit.text().strip()),
+                "Enter the serial (COM) port the trigger box uses, e.g. COM4.",
+            )
+        return True, ""
+
+    def _update_launch_button_state(self) -> None:
+        """Launch requires a Subject AND a valid active backend field. The Test-triggers button
+        needs only a real backend (parallel/serial) + a valid field -- no Subject."""
+        backend = self._trigger_backend_combo.currentData()
+        field_ok, error_text = self._active_field_ok()
+        self._launch_button.setEnabled(self._has_subjects and field_ok)
+        self._test_triggers_button.setEnabled(backend in ("parallel", "serial") and field_ok)
         if field_ok:
             self._port_address_error_label.hide()
         else:
             self._port_address_error_label.setText(error_text)
             self._port_address_error_label.show()
+
+    def _open_trigger_test(self) -> None:
+        """Open the Test-triggers dialog for the currently-selected backend + port. Reads the live
+        fields at click time; the dialog builds the real backend, opens the port, and sends the
+        chosen code sequence."""
+        backend = self._trigger_backend_combo.currentData()
+        address = self._parse_port_address()
+        serial_port = self._serial_port_edit.text().strip()
+        serial_baud = self._serial_baud_spin.value()
+        if backend == "parallel":
+            target = f"Parallel port {self._port_address_edit.text().strip()}"
+            troubleshooting = (
+                "If the port won't open or no pulses arrive: install the parallel-port driver via "
+                "scripts/install_parallel_port_driver.ps1 (run as Administrator), and check the I/O "
+                "address in Windows Device Manager -- a PCIe parallel card often isn't at 0x0378."
+            )
+        else:  # serial
+            target = f"Serial {serial_port or '(no port set)'} @ {serial_baud} baud"
+            troubleshooting = (
+                "If the port won't open: check the COM name in Windows Device Manager -> Ports, that "
+                "the device is plugged in, and that no other program holds the port. Once it works, "
+                "set the FTDI latency timer to 1 ms (Advanced tab) for good trigger timing."
+            )
+
+        def factory():
+            return build_test_trigger(
+                backend,
+                parallel_address=address,
+                serial_port=serial_port,
+                serial_baud=serial_baud,
+            )
+
+        TriggerTestDialog(
+            factory, target_description=target, troubleshooting=troubleshooting, parent=self
+        ).exec()
 
     # -- progress + abort ------------------------------------------------------------------------
 
