@@ -31,6 +31,7 @@ def build_test_trigger(
     parallel_address: int | None = None,
     serial_port: str | None = None,
     serial_baud: int = 115200,
+    serial_init_settle_seconds: float = 0.0,
     reset_after: float = TEST_PULSE_RESET_AFTER_SECONDS,
 ) -> TriggerSender:
     """Construct a real ``TriggerSender`` for a connection test from the launch dialog's settings.
@@ -54,7 +55,12 @@ def build_test_trigger(
         port = (serial_port or "").strip()
         if not port:
             raise ValueError("Enter the serial (COM) port the trigger box uses, e.g. COM4.")
-        return SerialTrigger(port=port, baudrate=serial_baud, reset_after=reset_after)
+        return SerialTrigger(
+            port=port,
+            baudrate=serial_baud,
+            reset_after=reset_after,
+            init_settle_seconds=serial_init_settle_seconds,
+        )
     if backend == "parallel":
         if parallel_address is None:
             raise ValueError("Enter a valid parallel port address, e.g. 0x0378.")

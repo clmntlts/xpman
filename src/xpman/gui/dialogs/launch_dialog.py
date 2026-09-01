@@ -201,6 +201,21 @@ class LaunchDialog(QDialog):
         )
         layout.addWidget(self._serial_baud_spin)
 
+        self._serial_settle_label = QLabel("Init settle (s):")
+        layout.addWidget(self._serial_settle_label)
+        self._serial_settle_spin = QDoubleSpinBox()
+        self._serial_settle_spin.setRange(0.0, 10.0)
+        self._serial_settle_spin.setSingleStep(0.5)
+        self._serial_settle_spin.setDecimals(1)
+        self._serial_settle_spin.setValue(0.0)
+        self._serial_settle_spin.setToolTip(
+            "Seconds to wait after opening the port before the first trigger. Leave at 0 for most "
+            "boxes (a throwaway priming byte already absorbs a dropped first write). Raise it (e.g. "
+            "1-3 s) if your USB trigger box still drops early triggers -- opening the port toggles "
+            "FTDI DTR/RTS, which can reset the device, and some units need a moment to come back."
+        )
+        layout.addWidget(self._serial_settle_spin)
+
         # Shared inline error label for whichever backend field is currently invalid.
         self._port_address_error_label = QLabel("")
         self._port_address_error_label.setStyleSheet("color: #cc3333;")
@@ -357,6 +372,7 @@ class LaunchDialog(QDialog):
         self._port_address_edit.setEnabled(enabled and backend == "parallel")
         self._serial_port_edit.setEnabled(enabled and backend == "serial")
         self._serial_baud_spin.setEnabled(enabled and backend == "serial")
+        self._serial_settle_spin.setEnabled(enabled and backend == "serial")
         # The test-connection button follows the same run-active gating (the port is busy during a
         # run), but otherwise depends on having a real backend + a valid port, not on a Subject.
         self._test_triggers_button.setEnabled(
@@ -381,6 +397,9 @@ class LaunchDialog(QDialog):
         self._serial_baud_label.setVisible(show_serial)
         self._serial_baud_spin.setVisible(show_serial)
         self._serial_baud_spin.setEnabled(show_serial)
+        self._serial_settle_label.setVisible(show_serial)
+        self._serial_settle_spin.setVisible(show_serial)
+        self._serial_settle_spin.setEnabled(show_serial)
         self._update_launch_button_state()
 
     def _parse_port_address(self) -> int | None:
@@ -401,6 +420,7 @@ class LaunchDialog(QDialog):
                 "--trigger-backend", "serial",
                 "--serial-port", self._serial_port_edit.text().strip(),
                 "--serial-baud", str(self._serial_baud_spin.value()),
+                "--serial-init-settle-seconds", str(self._serial_settle_spin.value()),
             ]
         args = ["--trigger-backend", "parallel"]
         address = self._parse_port_address()
@@ -447,6 +467,7 @@ class LaunchDialog(QDialog):
         address = self._parse_port_address()
         serial_port = self._serial_port_edit.text().strip()
         serial_baud = self._serial_baud_spin.value()
+        serial_settle = self._serial_settle_spin.value()
         if backend == "parallel":
             target = f"Parallel port {self._port_address_edit.text().strip()}"
             troubleshooting = (
@@ -468,6 +489,7 @@ class LaunchDialog(QDialog):
                 parallel_address=address,
                 serial_port=serial_port,
                 serial_baud=serial_baud,
+                serial_init_settle_seconds=serial_settle,
             )
 
         TriggerTestDialog(
