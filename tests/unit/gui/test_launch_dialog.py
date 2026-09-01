@@ -864,3 +864,42 @@ def test_close_mid_run_confirmed_kills_if_terminate_does_not_finish(qtbot, db_pa
         dialog.reject()
     proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
+
+
+def test_test_triggers_button_enabled_only_for_a_real_backend_with_valid_port(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    _select_backend(dialog, "none")
+    assert not dialog._test_triggers_button.isEnabled()  # nothing to test on a dry run
+
+    _select_backend(dialog, "parallel")  # default 0x0378 is a valid address
+    assert dialog._test_triggers_button.isEnabled()
+
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("")  # no COM port -> invalid
+    assert not dialog._test_triggers_button.isEnabled()
+    dialog._serial_port_edit.setText("COM4")
+    assert dialog._test_triggers_button.isEnabled()
+
+
+def test_test_triggers_button_opens_dialog_with_a_working_backend_factory(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    _select_backend(dialog, "serial")
+    dialog._serial_port_edit.setText("COM7")
+
+    with patch("xpman.gui.dialogs.launch_dialog.TriggerTestDialog") as mock_dialog_cls:
+        dialog._open_trigger_test()
+
+    mock_dialog_cls.assert_called_once()
+    mock_dialog_cls.return_value.exec.assert_called_once()
+    assert "COM7" in mock_dialog_cls.call_args.kwargs["target_description"]
+    # The factory passed to the dialog actually builds a serial backend for COM7 (patch serial so no
+    # real port is touched), proving the dialog would open the configured port.
+    factory = mock_dialog_cls.call_args.args[0]
+    with patch("serial.Serial", MagicMock()) as mock_serial:
+        factory()
+    mock_serial.assert_called_once_with("COM7", 115200, timeout=0, write_timeout=0)
