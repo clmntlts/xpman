@@ -36,6 +36,15 @@ def test_serial_builds_serial_trigger_and_opens_the_port():
     mock_serial.assert_called_once_with("COM4", 57600, timeout=0, write_timeout=0)
 
 
+def test_serial_forwards_the_init_settle_delay():
+    """The GUI's serial 'init settle' knob reaches SerialTrigger (which sleeps that long after open)."""
+    with patch("serial.Serial", MagicMock()), patch(
+        "xpman.hardware.trigger_serial.time.sleep"
+    ) as mock_sleep:
+        build_test_trigger("serial", serial_port="COM4", serial_init_settle_seconds=1.5)
+    mock_sleep.assert_called_once_with(1.5)
+
+
 def test_parallel_missing_address_is_rejected():
     with pytest.raises(ValueError, match="parallel port address"):
         build_test_trigger("parallel", parallel_address=None)

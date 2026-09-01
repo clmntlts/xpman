@@ -382,8 +382,10 @@ def test_build_trigger_args_directly_per_backend(qtbot, db_path, tmp_path):
     _select_backend(dialog, "serial")
     dialog._serial_port_edit.setText("COM7")
     dialog._serial_baud_spin.setValue(115200)
+    dialog._serial_settle_spin.setValue(2.5)
     assert dialog._build_trigger_args() == [
-        "--trigger-backend", "serial", "--serial-port", "COM7", "--serial-baud", "115200"
+        "--trigger-backend", "serial", "--serial-port", "COM7", "--serial-baud", "115200",
+        "--serial-init-settle-seconds", "2.5",
     ]
 
 
