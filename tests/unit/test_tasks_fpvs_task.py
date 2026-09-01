@@ -2642,7 +2642,7 @@ def test_run_trial_triggered_distractor_with_dual_stream(mock_window, stim_root,
     with patches[0], patches[1], patches[2], patch(
         "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
     ):
-        result = task.run_trial(ctx, params.model_dump(), trial_index=0)  # must NOT raise a collision
+        task.run_trial(ctx, params.model_dump(), trial_index=0)  # must NOT raise a collision
 
     rows = _read_events(event_sink)
     distractor_frames = [

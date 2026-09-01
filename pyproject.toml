@@ -54,3 +54,11 @@ testpaths = ["tests/unit", "tests/integration"]
 [tool.ruff]
 line-length = 100
 src = ["src"]
+
+[tool.ruff.lint]
+# Pin the rule set explicitly to ruff's classic default (pycodestyle E4/E7/E9 + Pyflakes F) rather
+# than relying on ruff's built-in default, which has broadened across versions: CI installs an
+# unpinned `ruff>=0.6`, and newer ruff (0.16.x) enables UP/I/RUF/etc. by default, which would flag
+# the codebase's deliberate forward-ref annotation style ("Foo") en masse and break CI on every push.
+# Making the selection explicit keeps lint reproducible regardless of the installed ruff version.
+select = ["E4", "E7", "E9", "F"]
