@@ -2743,3 +2743,74 @@ def test_check_triggers_multi_stream_advisory_and_shared_base_ok():
     warnings = task.check_triggers(params.model_dump())
     assert any("multiple simultaneous streams (4)" in w for w in warnings)
     assert any("base-only" in w for w in warnings)
+
+
+class _FixedPulseTrigger(NullTrigger):
+    """A NullTrigger that ALSO reports a fixed hardware pulse width, to exercise the pulse-vs-onset
+    cadence advisory the way the BioSemi serial (auto-pulse) backend would, without real hardware."""
+
+    def __init__(self, pulse_seconds):
+        super().__init__(reset_after=0.0)
+        self._pulse = pulse_seconds
+
+    def pulse_width_seconds(self):
+        return self._pulse
+
+
+def _two_stream_params():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(
+            enabled=True,
+            base_freq_hz=7.0,
+            position_pix=(200.0, 0.0),
+            base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+    )
+    params.base.trial_duration_seconds = 0.5
+    return params
+
+
+def test_run_trial_warns_when_fixed_pulse_can_merge_onsets(mock_window, stim_root, event_sink):
+    """#2: a fixed-pulse backend (like the 8 ms BioSemi) whose pulse is longer than the tightest
+    onset spacing merges two onsets into one event -> the run flags it and logs the advisory. Two
+    streams at 60 Hz -> onsets 1 frame (~16.7 ms) apart; a 20 ms fixed pulse overruns that."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink, trigger=_FixedPulseTrigger(0.02))
+    task.prepare(ctx)
+    params = _two_stream_params()
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    warning = result.outcome_summary["trigger_pulse_merge_warning"]
+    assert warning is not None and "merge" in warning
+    rows = _read_events(event_sink)
+    assert any(r["event_type"] == "trigger_pulse_cadence_warning" for r in rows)
+
+
+def test_run_trial_no_pulse_merge_warning_when_pulse_is_short(mock_window, stim_root, event_sink):
+    """A short fixed pulse (5 ms) is well under the ~16.7 ms one-frame spacing at 60 Hz -> no
+    warning, no advisory event."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink, trigger=_FixedPulseTrigger(0.005))
+    task.prepare(ctx)
+    params = _two_stream_params()
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["trigger_pulse_merge_warning"] is None
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "trigger_pulse_cadence_warning" for r in rows)

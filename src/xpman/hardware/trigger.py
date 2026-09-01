@@ -27,6 +27,35 @@ from abc import ABC, abstractmethod
 DEFAULT_RESET_AFTER = 0.003  # seconds (3 ms)
 
 
+def min_distinct_onset_interval_seconds(
+    refresh_hz: float, n_active_streams: int, fastest_base_freq_hz: float
+) -> float:
+    """Smallest interval, in seconds, between two DISTINCT stimulus onsets on the shared trigger port.
+
+    Two onsets closer than the trigger pulse width would merge into a single event and a trigger would
+    be missed, so this is what the pulse must stay shorter than. Cases:
+
+    - **>= 2 simultaneous streams:** onsets from different streams can land on ADJACENT monitor frames
+      -- one refresh interval apart. (A *same-frame* coincidence is combined into one port code, not a
+      merge, so the floor is one frame, not zero.)
+    - **single stream:** consecutive onsets are the base cadence apart -- the base period rounded to a
+      whole number of frames (>= 2 by the frames-per-cycle floor), i.e. ``round(refresh /
+      fastest_base_freq)`` frames.
+
+    Pure. ``fastest_base_freq_hz`` is the highest base frequency actually presented (the tightest
+    single-stream cadence). At a typical 60 Hz refresh even one frame (~16.7 ms) exceeds the BioSemi
+    8 ms pulse, so this only matters on high-refresh monitors (120/144/240 Hz)."""
+    if refresh_hz <= 0:
+        raise ValueError(f"refresh_hz must be > 0, got {refresh_hz!r}")
+    refresh_interval = 1.0 / refresh_hz
+    if n_active_streams >= 2:
+        return refresh_interval
+    if fastest_base_freq_hz <= 0:
+        raise ValueError(f"fastest_base_freq_hz must be > 0, got {fastest_base_freq_hz!r}")
+    frames = max(round(refresh_hz / fastest_base_freq_hz), 1)
+    return frames * refresh_interval
+
+
 class TriggerSender(ABC):
     """Sends EEG sync trigger codes as TTL pulses.
 
@@ -100,6 +129,20 @@ class TriggerSender(ABC):
         default keys off the class name so at least the *kind* of backend is always recorded.
         """
         return {"backend": type(self).__name__.lower()}
+
+    def pulse_width_seconds(self) -> float | None:
+        """The FIXED trigger pulse width this backend emits, in seconds, or ``None`` when the pulse
+        width is not fixed by the backend.
+
+        Returns ``None`` for the frame-locked ``set_code``/``clear_code`` path (parallel and null):
+        there the pulse is exactly one monitor refresh interval, set by the caller's flip cadence,
+        and the frames-per-cycle floor guarantees it is always cleared before the next onset -- so it
+        is safe by construction and there is no fixed width to report. A backend whose *hardware*
+        fixes the pulse (the BioSemi USB device's ~8 ms auto-pulse) overrides this to return that
+        width, so the presentation layer can warn when stimulus onsets would be spaced closer than
+        the pulse -- two onsets within one pulse merge into a single event and a trigger is missed.
+        """
+        return None
 
     def close(self) -> None:
         """Release any hardware resource this backend holds (e.g. an open serial/parallel port).

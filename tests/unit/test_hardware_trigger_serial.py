@@ -19,10 +19,17 @@ from xpman.hardware.trigger_serial import SerialTrigger
 
 
 class _MockedSerial:
-    """Context manager patching ``serial.Serial`` for the lifetime of a ``SerialTrigger``."""
+    """Context manager patching ``serial.Serial`` for the lifetime of a ``SerialTrigger``.
 
-    def __init__(self, **kwargs):
+    By default the throwaway priming write that construction now performs (the port-init mitigation)
+    is reset away after construction, so each test's ``write`` assertions see only the writes IT
+    triggers. Pass ``inspect_init_writes=True`` to keep the construction-time writes for the tests
+    that specifically exercise priming.
+    """
+
+    def __init__(self, *, inspect_init_writes: bool = False, **kwargs):
         self.kwargs = kwargs
+        self.inspect_init_writes = inspect_init_writes
         self.mock_serial_cls = MagicMock(name="serial.Serial")
         self.mock_serial_instance = MagicMock(name="serial.Serial()")
         self.mock_serial_instance.is_open = True
@@ -32,6 +39,10 @@ class _MockedSerial:
     def __enter__(self):
         self._patcher.start()
         self.trigger = SerialTrigger(**self.kwargs)
+        if not self.inspect_init_writes:
+            # Construction now sends a priming zero byte (FTDI first-write-lost mitigation); reset the
+            # write mock so each test asserts on the writes it makes, not on that construction write.
+            self.mock_serial_instance.write.reset_mock()
         return self
 
     def __exit__(self, *exc_info):
@@ -143,3 +154,76 @@ def test_module_importable_without_a_serial_port():
     import xpman.hardware.trigger_serial as mod
 
     assert hasattr(mod, "SerialTrigger")
+
+
+def test_primes_with_a_zero_byte_on_open_by_default():
+    """Port-init mitigation: opening an FTDI virtual-COM port can drop the FIRST write, so the
+    backend writes ONE throwaway all-zero byte on open (0 drives no trigger line high -> a no-op
+    event on the amp) so the first REAL trigger is never the lost one."""
+    with _MockedSerial(port="COM4", inspect_init_writes=True) as ctx:
+        assert ctx.mock_serial_instance.write.call_args_list == [call(bytes([0]))]
+
+
+def test_prime_on_open_false_writes_nothing_on_open():
+    with _MockedSerial(port="COM4", inspect_init_writes=True, prime_on_open=False) as ctx:
+        ctx.mock_serial_instance.write.assert_not_called()
+
+
+def test_priming_write_failure_is_swallowed_not_raised():
+    """Priming is best-effort: if the throwaway write itself is the one the FTDI reset drops, that
+    must not abort construction -- a genuine fault still surfaces loudly on the first real set_code."""
+    mock_cls = MagicMock(name="serial.Serial")
+    mock_inst = MagicMock(name="serial.Serial()")
+    mock_inst.is_open = True
+    mock_inst.write.side_effect = OSError("dropped during FTDI reset")
+    mock_cls.return_value = mock_inst
+    with patch("serial.Serial", mock_cls):
+        trigger = SerialTrigger(port="COM4")  # must NOT raise despite the priming write failing
+    assert isinstance(trigger, SerialTrigger)
+
+
+def test_init_settle_seconds_sleeps_after_open():
+    with patch("xpman.hardware.trigger_serial.time.sleep") as mock_sleep:
+        with _MockedSerial(port="COM4", init_settle_seconds=0.25):
+            pass
+    mock_sleep.assert_called_once_with(0.25)
+
+
+def test_init_settle_seconds_zero_does_not_sleep():
+    with patch("xpman.hardware.trigger_serial.time.sleep") as mock_sleep:
+        with _MockedSerial(port="COM4", init_settle_seconds=0.0):
+            pass
+    mock_sleep.assert_not_called()
+
+
+def test_init_settle_seconds_negative_raises():
+    with patch("serial.Serial", MagicMock()):
+        with pytest.raises(ValueError, match="init_settle_seconds"):
+            SerialTrigger(port="COM4", init_settle_seconds=-1.0)
+
+
+def test_pulse_width_seconds_is_the_fixed_8ms_when_auto_pulse():
+    from xpman.hardware.trigger_serial import BIOSEMI_HARDWARE_PULSE_SECONDS
+
+    with _MockedSerial(port="COM4", auto_pulse=True) as ctx:
+        assert ctx.trigger.pulse_width_seconds() == BIOSEMI_HARDWARE_PULSE_SECONDS
+        assert BIOSEMI_HARDWARE_PULSE_SECONDS == 0.008
+
+
+def test_pulse_width_seconds_is_none_when_not_auto_pulse():
+    """A latching device is frame-driven (set on the onset flip, clear on the next), like the
+    parallel path -- no fixed hardware pulse width, so nothing to report."""
+    with _MockedSerial(port="COM4", auto_pulse=False) as ctx:
+        assert ctx.trigger.pulse_width_seconds() is None
+
+
+def test_all_255_codes_write_the_exact_single_byte():
+    """Every valid code 1..255 must reach the wire as exactly its one-byte value (and 0 as the
+    cleared state) -- the 'are all 255 triggers sent correctly' guarantee on the serial backend."""
+    with _MockedSerial(port="COM4") as ctx:  # priming write reset away by the helper
+        for code in range(0, 256):
+            ctx.mock_serial_instance.write.reset_mock()
+            ctx.trigger.set_code(code)
+            ctx.mock_serial_instance.write.assert_called_once_with(bytes([code]))
+            assert ctx.mock_serial_instance.write.call_args[0][0] == bytes([code])
+            assert len(ctx.mock_serial_instance.write.call_args[0][0]) == 1
