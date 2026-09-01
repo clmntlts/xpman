@@ -185,3 +185,69 @@ def test_send_trigger_resets_port_even_if_wait_is_interrupted():
             ((9,), {}),
             ((0,), {}),
         ]
+
+
+def test_all_255_codes_drive_the_exact_value_onto_the_data_pins():
+    """Every valid code 1..255 (and 0) must be driven onto the parallel data pins as exactly that
+    value -- the 'are all 255 triggers sent correctly' guarantee on the parallel backend."""
+    with _MockedParallelPort() as ctx:
+        for code in range(0, 256):
+            ctx.mock_port_instance.setData.reset_mock()
+            ctx.trigger.set_code(code)
+            ctx.mock_port_instance.setData.assert_called_once_with(code)
+
+
+def test_out_of_range_code_raises_and_does_not_touch_the_port():
+    with _MockedParallelPort() as ctx:
+        for bad in (256, 300, -1):
+            with pytest.raises(ValueError, match="0-255"):
+                ctx.trigger.set_code(bad)
+        ctx.mock_port_instance.setData.assert_not_called()
+
+
+def test_parallel_pulse_width_is_none_frame_driven():
+    """The parallel path is frame-locked (set on the onset flip, clear on the next), so its pulse is
+    one refresh interval, not a fixed backend width -- pulse_width_seconds() reports None."""
+    with _MockedParallelPort() as ctx:
+        assert ctx.trigger.pulse_width_seconds() is None
+
+
+def test_base_pulse_width_is_none_by_default():
+    """A backend that doesn't fix its pulse width reports None (the safe frame-driven default)."""
+    assert _StubTrigger().pulse_width_seconds() is None
+
+
+def test_min_onset_interval_single_stream_is_the_base_cadence():
+    from xpman.hardware.trigger import min_distinct_onset_interval_seconds
+
+    # 60 Hz, single stream, 6 Hz base -> 10 frames per onset -> ~166.7 ms between onsets.
+    assert min_distinct_onset_interval_seconds(60.0, 1, 6.0) == pytest.approx(10 / 60.0)
+
+
+def test_min_onset_interval_multi_stream_is_one_refresh_interval():
+    from xpman.hardware.trigger import min_distinct_onset_interval_seconds
+
+    # >= 2 simultaneous streams: onsets can fall on adjacent frames -> one refresh interval apart,
+    # independent of the base rate (a same-frame coincidence is combined, not merged).
+    assert min_distinct_onset_interval_seconds(60.0, 2, 6.0) == pytest.approx(1 / 60.0)
+    assert min_distinct_onset_interval_seconds(240.0, 4, 6.0) == pytest.approx(1 / 240.0)
+
+
+def test_min_onset_interval_crosses_the_biosemi_pulse_only_at_high_refresh():
+    """The whole point of the check: at 60 Hz even the tightest (multi-stream) spacing (~16.7 ms)
+    clears the fixed 8 ms BioSemi pulse, but at 240 Hz it (~4.2 ms) does NOT -- so onsets would
+    merge and a trigger would be lost only on a high-refresh monitor."""
+    from xpman.hardware.trigger import min_distinct_onset_interval_seconds
+    from xpman.hardware.trigger_serial import BIOSEMI_HARDWARE_PULSE_SECONDS
+
+    assert min_distinct_onset_interval_seconds(60.0, 2, 6.0) > BIOSEMI_HARDWARE_PULSE_SECONDS
+    assert min_distinct_onset_interval_seconds(240.0, 2, 6.0) < BIOSEMI_HARDWARE_PULSE_SECONDS
+
+
+def test_min_onset_interval_rejects_bad_inputs():
+    from xpman.hardware.trigger import min_distinct_onset_interval_seconds
+
+    with pytest.raises(ValueError, match="refresh_hz"):
+        min_distinct_onset_interval_seconds(0.0, 1, 6.0)
+    with pytest.raises(ValueError, match="fastest_base_freq_hz"):
+        min_distinct_onset_interval_seconds(60.0, 1, 0.0)

@@ -27,7 +27,16 @@ protocol assumed above is pending that manual/hardware confirmation.
 
 from __future__ import annotations
 
+import time
+
 from xpman.hardware.trigger import DEFAULT_RESET_AFTER, TriggerSender
+
+#: The BioSemi USB Trigger Interface pulses each code in HARDWARE for a fixed ~8 ms and returns the
+#: lines to 0 on its own (that is what ``auto_pulse`` models). Exposed so the presentation layer can
+#: check that stimulus onsets are never spaced closer than this fixed pulse -- two onsets within one
+#: pulse would merge into a single event and a trigger would be missed. See
+#: ``TriggerSender.pulse_width_seconds`` and ``tasks/fpvs/task.py``'s onset-cadence advisory.
+BIOSEMI_HARDWARE_PULSE_SECONDS = 0.008
 
 
 class SerialTrigger(TriggerSender):
@@ -44,6 +53,8 @@ class SerialTrigger(TriggerSender):
         baudrate: int = 115200,
         auto_pulse: bool = True,
         reset_after: float = DEFAULT_RESET_AFTER,
+        init_settle_seconds: float = 0.0,
+        prime_on_open: bool = True,
     ) -> None:
         """
         Args:
@@ -57,12 +68,27 @@ class SerialTrigger(TriggerSender):
                 a latching device -- ``clear_code()`` then writes ``bytes([0])`` to reset it.
             reset_after: See ``TriggerSender.__init__`` (only the blocking ``send_trigger`` path
                 uses it; the frame-locked ``set_code``/``clear_code`` path does not).
+            init_settle_seconds: Seconds to wait AFTER opening the port before the first write.
+                Opening an FTDI virtual-COM port toggles DTR/RTS, which can reset the device; some
+                boxes need a moment to re-enumerate before they accept data (empirically up to a
+                few seconds on some units -- confirm on a scope for your hardware). Default 0.0
+                (no wait); raise it if your device drops early triggers.
+            prime_on_open: When ``True`` (default), write ONE throwaway all-zero byte right after
+                opening (and settling). The FTDI reset-on-open can cause the *first* write to be
+                dropped by the OS/driver; sending ``bytes([0])`` first -- which drives no trigger
+                line high, so it is a guaranteed no-op event on the amplifier -- absorbs that lost
+                write so the first REAL trigger is never the one lost. Set ``False`` to disable
+                (e.g. for a latching device where a 0 byte would actively reset already-idle lines,
+                which is harmless but redundant).
 
         Raises:
+            ValueError: ``init_settle_seconds`` is negative.
             RuntimeError: The port could not be opened (wrong name, device unplugged, already in
                 use). The message names the port so the experimenter knows exactly which one.
         """
         super().__init__(reset_after=reset_after)
+        if init_settle_seconds < 0:
+            raise ValueError(f"init_settle_seconds must be >= 0, got {init_settle_seconds!r}")
         self._port = port
         self._baudrate = baudrate
         self._auto_pulse = auto_pulse
@@ -81,6 +107,19 @@ class SerialTrigger(TriggerSender):
                 "Windows Device Manager (Ports), that the device is plugged in, and that no other "
                 "program has the port open."
             ) from exc
+
+        # Port-init mitigation (FTDI DTR/RTS toggle on open can reset the device and DROP the first
+        # write -- a real, empirically-reported quirk of these boxes). Settle, then send one
+        # throwaway all-zero byte so a lost first write costs a no-op, not a real trigger. Both are
+        # best-effort: a genuine write fault surfaces loudly on the first real ``set_code`` anyway,
+        # and swallowing here keeps construction robust when the throwaway itself is the dropped one.
+        if init_settle_seconds > 0:
+            time.sleep(init_settle_seconds)
+        if prime_on_open:
+            try:
+                self._serial.write(bytes([0]))
+            except Exception:  # noqa: BLE001 - priming is best-effort; real faults surface on set_code
+                pass
 
     def set_code(self, code: int) -> None:
         """Write ``code`` (a single byte, 0-255) to the port (non-blocking).
@@ -108,6 +147,12 @@ class SerialTrigger(TriggerSender):
         """
         if not self._auto_pulse:
             self._serial.write(bytes([0]))
+
+    def pulse_width_seconds(self) -> float | None:
+        """The device's fixed hardware pulse width when ``auto_pulse`` (the BioSemi ~8 ms), else
+        ``None``. Under ``auto_pulse=False`` the pulse is frame-driven (``set_code`` on the onset
+        flip, ``clear_code`` on the next), like the parallel path -- no fixed width to report."""
+        return BIOSEMI_HARDWARE_PULSE_SECONDS if self._auto_pulse else None
 
     def describe(self) -> dict:
         """Provenance summary: the serial backend, the port, and the baud it opened at."""

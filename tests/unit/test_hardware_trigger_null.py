@@ -81,6 +81,24 @@ def test_does_not_touch_real_hardware_and_never_raises():
     assert trigger.codes_sent == [0, 1, 255]
 
 
+def test_all_255_codes_are_recorded_exactly():
+    """Every valid code 1..255 (and 0) must be recorded exactly once, in order -- the 'are all 255
+    triggers sent correctly' guarantee on the null backend (which is what CI/dev actually exercise)."""
+    trigger = NullTrigger()
+    for code in range(0, 256):
+        trigger.set_code(code)
+    assert trigger.codes_sent == list(range(0, 256))
+    assert len(trigger.codes_sent) == 256
+
+
+def test_out_of_range_code_raises_and_is_not_recorded():
+    trigger = NullTrigger()
+    for bad in (256, 300, -1):
+        with pytest.raises(ValueError, match="0-255"):
+            trigger.set_code(bad)
+    assert trigger.codes_sent == []
+
+
 def test_describe_reports_no_backend():
     assert NullTrigger().describe() == {"backend": "none"}
 

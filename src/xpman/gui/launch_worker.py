@@ -128,6 +128,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parallel-port-address", type=lambda s: int(s, 0), default=0x0378)
     parser.add_argument("--serial-port", default=None, help="COM/virtual-serial port for --trigger-backend serial (e.g. COM4).")
     parser.add_argument("--serial-baud", type=int, default=115200, help="Baud rate for the serial trigger backend.")
+    parser.add_argument(
+        "--serial-init-settle-seconds",
+        type=float,
+        default=0.0,
+        help="Seconds to wait after opening the serial port before the first trigger. Raise this "
+        "(e.g. to a few seconds) if your USB trigger box drops early triggers -- opening the port "
+        "toggles FTDI DTR/RTS, which can reset the device. Default 0.0.",
+    )
     return parser.parse_args(argv)
 
 
@@ -172,7 +180,11 @@ def run(
         if backend == "none":
             return NullTrigger()
         if backend == "serial":
-            return SerialTrigger(port=args.serial_port, baudrate=args.serial_baud)
+            return SerialTrigger(
+                port=args.serial_port,
+                baudrate=args.serial_baud,
+                init_settle_seconds=args.serial_init_settle_seconds,
+            )
         return ParallelPortTrigger(address=args.parallel_port_address)
 
     # Whether the Run row was actually created (on_run_created fired) is what distinguishes a

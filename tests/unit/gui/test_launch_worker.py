@@ -482,7 +482,22 @@ def test_resolve_trigger_serial_builds_serial_with_port_and_baud(db_path, tmp_pa
             None,
         )
     assert exit_code == EXIT_COMPLETED
-    serial_spy.assert_called_once_with(port="COM4", baudrate=57600)
+    serial_spy.assert_called_once_with(port="COM4", baudrate=57600, init_settle_seconds=0.0)
+
+
+def test_resolve_trigger_serial_forwards_init_settle_seconds(db_path, tmp_path):
+    """The --serial-init-settle-seconds flag (FTDI first-write mitigation knob) reaches SerialTrigger."""
+    with patch(
+        "xpman.gui.launch_worker.SerialTrigger", return_value=NullTrigger()
+    ) as serial_spy:
+        exit_code = _run_and_capture_trigger(
+            db_path, tmp_path,
+            ["--trigger-backend", "serial", "--serial-port", "COM4",
+             "--serial-init-settle-seconds", "2.5"],
+            None,
+        )
+    assert exit_code == EXIT_COMPLETED
+    serial_spy.assert_called_once_with(port="COM4", baudrate=115200, init_settle_seconds=2.5)
 
 
 def test_trigger_close_called_on_teardown(db_path, tmp_path):

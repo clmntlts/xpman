@@ -42,6 +42,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
+from xpman.hardware.trigger import min_distinct_onset_interval_seconds
 from xpman.tasks.fpvs.streams import (
     StreamSpec,
     multi_stream_separability_warnings,
@@ -635,6 +636,53 @@ class FPVSTask(TaskModule):
                     "contrast modulation is possible (need at least 2 frames/cycle). Lower the "
                     "frequency or check for a typo (e.g. 60 instead of 6)."
                 )
+        # Trigger pulse vs. onset cadence (#2): a backend with a FIXED hardware pulse (the BioSemi
+        # serial device's ~8 ms) MERGES two stimulus onsets that fall closer together than the pulse
+        # -- the second onset's trigger is then lost. The frame-locked parallel/null path clears after
+        # one refresh and is safe by construction (pulse_width_seconds() is None there), so this only
+        # bites the fixed-pulse serial backend on a high-refresh monitor (120/144/240 Hz), where
+        # adjacent-frame onsets across streams (or a fast single-stream cadence) drop below 8 ms. Real
+        # refresh + real backend are only known here at run time (a design-time check at the nominal
+        # 60 Hz could never fire). Advisory: log it + flag the outcome, don't abort -- the researcher
+        # may accept it, and the raw onset log lets analysis detect merges. Note the LOWER bound too:
+        # the pulse must also be >= ~2 EEG-amp sample periods to be sampled at all; xpman does not know
+        # the amp's sample rate, so that stays a documented lab check (docs/verification_protocol.md).
+        trigger_pulse_merge_warning = None
+        pulse_width = ctx.trigger.pulse_width_seconds()
+        if pulse_width is not None:
+            n_active_streams = (
+                1
+                + (1 if params.second_stream.enabled else 0)
+                + sum(1 for s in params.additional_streams if s.enabled)
+            )
+            fastest_base_freq_hz = max(freq for _, freq in _presented_base_frequencies(params))
+            min_onset_interval = min_distinct_onset_interval_seconds(
+                refresh, n_active_streams, fastest_base_freq_hz
+            )
+            if min_onset_interval <= pulse_width:
+                cadence_desc = (
+                    "multiple simultaneous streams"
+                    if n_active_streams >= 2
+                    else f"a {fastest_base_freq_hz:g} Hz base rate"
+                )
+                trigger_pulse_merge_warning = (
+                    f"the trigger backend emits a fixed {pulse_width * 1000:g} ms pulse, but stimulus "
+                    f"onsets can be as little as {min_onset_interval * 1000:.1f} ms apart at "
+                    f"{refresh:.1f} Hz ({cadence_desc}) -- two onsets within one pulse merge into a "
+                    "single event, so a trigger is missed. Lower the refresh or base rate, use fewer "
+                    "simultaneous triggered streams, or a frame-locked (parallel) backend."
+                )
+                ctx.event_sink.log(
+                    "trigger_pulse_cadence_warning",
+                    {
+                        "pulse_width_seconds": pulse_width,
+                        "min_onset_interval_seconds": min_onset_interval,
+                        "refresh_rate_hz": refresh,
+                        "n_active_streams": n_active_streams,
+                        "fastest_base_freq_hz": fastest_base_freq_hz,
+                    },
+                )
+
         base_frames_per_cycle = frames_per_cycle(refresh, params.base.base_freq_hz)
         pre_frames = _interval_frames(ctx.rng, params.timing.pre_interval_seconds, refresh)
         post_frames = _interval_frames(ctx.rng, params.timing.post_interval_seconds, refresh)
@@ -1247,6 +1295,7 @@ class FPVSTask(TaskModule):
                 "requested_base_freq_hz": sequence_result.requested_base_freq_hz,
                 "achieved_base_freq_hz": sequence_result.achieved_base_freq_hz,
                 "base_freq_precision_warning": base_freq_precision_warning,
+                "trigger_pulse_merge_warning": trigger_pulse_merge_warning,
                 "requested_oddball_freq_hz": sequence_result.requested_oddball_freq_hz,
                 "achieved_oddball_freq_hz": sequence_result.achieved_oddball_freq_hz,
                 "waveform": sequence_result.waveform,
