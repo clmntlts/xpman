@@ -42,7 +42,11 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     run_base_oddball_sequence,
     run_base_sequence,
 )
-from xpman.tasks.fpvs.streams import stream_separability_warnings
+from xpman.tasks.fpvs.streams import (
+    StreamSpec,
+    multi_stream_separability_warnings,
+    stream_separability_warnings,
+)
 from xpman.tasks.fpvs.sweep import (
     min_recommended_step_seconds,
     plan_sweep_overlay_windows,
@@ -230,6 +234,9 @@ def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str
             ]
         else:
             freqs.append(("second_stream.base_freq_hz", s2.base_freq_hz))
+    for i, s in enumerate(params.additional_streams):
+        if s.enabled:
+            freqs.append((f"additional_streams[{i}].base_freq_hz", s.base_freq_hz))
     if params.familiarization.enabled:
         freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
     return freqs
@@ -702,14 +709,17 @@ class FPVSTask(TaskModule):
         # marker never shares a flip with either stream's stimulus trigger (#13). Single-stream, and the
         # sweep path (scheduled per-segment via overlay_segments), pass the main stream's one cadence.
         _overlay_cadence: "int | tuple[int, ...]" = base_frames_per_cycle
+        _active_extra_streams = (
+            [params.second_stream] if params.second_stream.enabled else []
+        ) + [s for s in params.additional_streams if s.enabled]
         if (
-            params.second_stream.enabled
+            _active_extra_streams
             and not params.sweep.enabled
             and not params.second_stream.sweep.enabled
         ):
-            _overlay_cadence = (
-                base_frames_per_cycle,
-                frames_per_cycle(refresh, params.second_stream.base_freq_hz),
+            _overlay_cadence = tuple(
+                [base_frames_per_cycle]
+                + [frames_per_cycle(refresh, s.base_freq_hz) for s in _active_extra_streams]
             )
 
         distractor_controller = None
@@ -796,77 +806,126 @@ class FPVSTask(TaskModule):
                 position_provider,
             )
 
+        # Active streams BEYOND the main (central) stream: the legacy second_stream (if enabled) plus
+        # any enabled additional_streams. When any exist, the trial is presented by the frame-driven
+        # multi-stream engine (>= 2 simultaneous streams at distinct positions). With exactly ONE extra
+        # stream this is byte-for-byte the original dual bilateral stream path (per-stream triggers,
+        # coincidence codes, sweep x dual-stream all preserved). With more than one extra stream the
+        # Condition validator guarantees no per-stream triggers and no sweep (frequency-domain
+        # separation only), so those features stay off and reserved_codes / the sweep timeline are None.
+        extra_stream_params = []
         if params.second_stream.enabled:
-            # Dual bilateral streams: two simultaneous frame-driven streams at distinct positions +
-            # non-harmonic frequencies (validated on the Condition). Build the 2nd stream's own image
-            # pools; both share the central fixation, trial duration, and fades. Per-stream stimulus
-            # triggers are optional (v2, #2): the main stream carries the Condition's base/oddball codes,
-            # the second stream its own; a coincidence table is passed ONLY when both streams are
-            # triggered (validated on the Condition), otherwise reserved_codes stays None (no ambiguity).
-            s2 = params.second_stream
-            s2_base_entries = _select_pool(self._image_entries, s2.base_selector)
-            s2_oddball_entries = _select_pool(self._image_entries, s2.oddball_selector)
-            if not s2_base_entries:
-                raise ValueError(
-                    f"trial {trial_index}: second_stream.base_selector {s2.base_selector!r} matched no images"
-                )
-            if not s2_oddball_entries:
-                raise ValueError(
-                    f"trial {trial_index}: second_stream.oddball_selector {s2.oddball_selector!r} matched no images"
-                )
-            s2_base_order = ctx.rng.permutation(len(s2_base_entries))
-            s2_oddball_order = ctx.rng.permutation(len(s2_oddball_entries))
-            s2_base_stims = [
-                _ImageWithFixation(
-                    _get_image_stim(self._image_stim_cache, ctx.window, s2_base_entries[i]),
-                    fixation_stim,
-                    s2_base_entries[i].path.name,
-                )
-                for i in s2_base_order
-            ]
-            s2_oddball_stims = [
-                _ImageWithFixation(
-                    _get_image_stim(self._image_stim_cache, ctx.window, s2_oddball_entries[i]),
-                    fixation_stim,
-                    s2_oddball_entries[i].path.name,
-                )
-                for i in s2_oddball_order
-            ]
+            extra_stream_params.append(params.second_stream)
+        extra_stream_params += [s for s in params.additional_streams if s.enabled]
+
+        if extra_stream_params:
+            n_streams_total = 1 + len(extra_stream_params)
             _duration = params.base.trial_duration_seconds
-            # Reserved coincidence table (v2, #2): only when BOTH streams send trigger codes does a
-            # coincident onset need a reserved code; the Condition validator guarantees a complete 2x2
-            # table in that case. At most one triggered stream -> None (no ambiguity to resolve).
-            s1_triggered = (
-                params.base.base_trigger_code is not None
-                or params.oddball.oddball_trigger_code is not None
-            )
-            s2_triggered = s2.base_trigger_code is not None or s2.oddball_trigger_code is not None
-            reserved_codes = (
-                params.coincidence_codes.as_reserved_table()
-                if s1_triggered and s2_triggered
-                else None
-            )
-            # Per-stream position jitter (v2, #3): each stream gets its OWN decoupled sub-stream so the
-            # two streams jitter independently yet reproducibly. ctx.rng.spawn(2) derives two independent
-            # child streams from ctx.rng's SeedSequence WITHOUT consuming from ctx.rng's own draw stream
-            # (same decoupling as the single-stream position provider), so enabling jitter never perturbs
-            # pool order. The children are ordered by stream_index, so a given (Instance, Subject) always
-            # yields the same per-stream jitter sequence, and stream 0's sequence differs from stream 1's.
-            dual_position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None
-            if params.position_jitter.enabled:
-                stream_rngs = ctx.rng.spawn(2)
-                dual_position_providers = [
-                    _build_position_provider(params.position_jitter, stream_rngs[0]),
-                    _build_position_provider(params.position_jitter, stream_rngs[1]),
+
+            # Main (central) stream = stream 0. It always carries the Condition's oddball.
+            streams_list = [
+                Stream(
+                    base_stimuli=base_stims,
+                    oddball_stimuli=oddball_stims,
+                    position_pix=tuple(params.stream_position_pix),
+                    base_trigger_code=params.base.base_trigger_code,
+                    oddball_trigger_code=params.oddball.oddball_trigger_code,
+                    modulation=params.modulation,
+                )
+            ]
+            stream_segments_list = [
+                Segment(base_freq_hz=params.base.base_freq_hz, duration_seconds=_duration, oddball=params.oddball)
+            ]
+
+            # Build each extra stream's own image pools. The base/oddball permutations are drawn from
+            # ctx.rng in stream order, so for the legacy single-extra (dual) case the draw sequence is
+            # byte-for-byte unchanged. A stream with oddball_enabled=False is BASE-ONLY: only a base
+            # pool, and a base-only Segment (oddball=None) so the engine presents it without oddballs
+            # (a "similar" filler stream that flickers but contributes no oddball-frequency response).
+            for s in extra_stream_params:
+                s_base_entries = _select_pool(self._image_entries, s.base_selector)
+                if not s_base_entries:
+                    raise ValueError(
+                        f"trial {trial_index}: a stream's base_selector {s.base_selector!r} matched no images"
+                    )
+                s_base_order = ctx.rng.permutation(len(s_base_entries))
+                s_base_stims = [
+                    _ImageWithFixation(
+                        _get_image_stim(self._image_stim_cache, ctx.window, s_base_entries[i]),
+                        fixation_stim,
+                        s_base_entries[i].path.name,
+                    )
+                    for i in s_base_order
                 ]
-            # Sweep x dual-stream (v2, #4): when the Condition's sweep is enabled the two streams share
-            # ONE step timeline (the Condition validator guarantees matching step counts + durations).
-            # Build a list of time-segments, each pairing the main stream's step with the second
-            # stream's step (its own per-step base frequency + oddball). No sweep -> None, so
-            # _run_dual_stream presents the single time-segment (stream_segments) exactly as in v1.
-            dual_timeline = None
-            if params.sweep.enabled:
-                dual_timeline = [
+                if s.oddball_enabled:
+                    s_oddball_entries = _select_pool(self._image_entries, s.oddball_selector)
+                    if not s_oddball_entries:
+                        raise ValueError(
+                            f"trial {trial_index}: a stream's oddball_selector {s.oddball_selector!r} matched no images"
+                        )
+                    s_oddball_order = ctx.rng.permutation(len(s_oddball_entries))
+                    s_oddball_stims = [
+                        _ImageWithFixation(
+                            _get_image_stim(self._image_stim_cache, ctx.window, s_oddball_entries[i]),
+                            fixation_stim,
+                            s_oddball_entries[i].path.name,
+                        )
+                        for i in s_oddball_order
+                    ]
+                    s_segment_oddball = s.oddball
+                else:
+                    s_oddball_stims = []
+                    s_segment_oddball = None
+                streams_list.append(
+                    Stream(
+                        base_stimuli=s_base_stims,
+                        oddball_stimuli=s_oddball_stims,
+                        position_pix=tuple(s.position_pix),
+                        base_trigger_code=s.base_trigger_code,
+                        oddball_trigger_code=s.oddball_trigger_code,
+                        modulation=s.modulation,
+                    )
+                )
+                stream_segments_list.append(
+                    Segment(base_freq_hz=s.base_freq_hz, duration_seconds=_duration, oddball=s_segment_oddball)
+                )
+
+            # Reserved coincidence table (v2, #2): meaningful ONLY for exactly TWO streams that BOTH
+            # send per-stream triggers (the Condition validator then guarantees a complete 2x2 table,
+            # and forbids per-stream triggers once there are more than two streams). More than two
+            # streams -> None (frequency-domain separation, no per-stream triggers).
+            reserved_codes = None
+            if n_streams_total == 2:
+                s2 = extra_stream_params[0]
+                s1_triggered = (
+                    params.base.base_trigger_code is not None
+                    or params.oddball.oddball_trigger_code is not None
+                )
+                s2_triggered = s2.base_trigger_code is not None or s2.oddball_trigger_code is not None
+                if s1_triggered and s2_triggered:
+                    reserved_codes = params.coincidence_codes.as_reserved_table()
+
+            # Per-stream position jitter (v2, #3): one decoupled sub-stream PER stream, in stream order,
+            # so each stream jitters independently yet reproducibly and enabling jitter never perturbs
+            # pool order. ctx.rng.spawn(n) derives n child streams WITHOUT consuming from ctx.rng's own
+            # draw stream. SeedSequence child keys are index-based, so spawn(n_streams_total) reproduces
+            # the legacy spawn(2) children for the first two streams -> the dual-stream case stays
+            # byte-for-byte, and each additional stream gets its own further child.
+            multi_position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None
+            if params.position_jitter.enabled:
+                stream_rngs = ctx.rng.spawn(n_streams_total)
+                multi_position_providers = [
+                    _build_position_provider(params.position_jitter, stream_rngs[i])
+                    for i in range(n_streams_total)
+                ]
+            # Sweep x dual-stream (v2, #4): ONLY for the exactly-two-stream case (the Condition validator
+            # forbids additional_streams together with a sweep). Build one shared step timeline pairing
+            # each main step with the second stream's step. No sweep -> None, so _run_dual_stream presents
+            # the single time-segment (stream_segments) exactly as in v1.
+            multi_timeline = None
+            if params.sweep.enabled and n_streams_total == 2:
+                s2 = extra_stream_params[0]
+                multi_timeline = [
                     [
                         Segment(base_freq_hz=main_step.base_freq_hz, duration_seconds=main_step.duration_seconds, oddball=main_step.oddball),
                         Segment(base_freq_hz=second_step.base_freq_hz, duration_seconds=second_step.duration_seconds, oddball=second_step.oddball),
@@ -875,28 +934,8 @@ class FPVSTask(TaskModule):
                 ]
             sequence_result = _run_dual_stream(
                 window=ctx.window,
-                streams=[
-                    Stream(
-                        base_stimuli=base_stims,
-                        oddball_stimuli=oddball_stims,
-                        position_pix=tuple(params.stream_position_pix),
-                        base_trigger_code=params.base.base_trigger_code,
-                        oddball_trigger_code=params.oddball.oddball_trigger_code,
-                        modulation=params.modulation,
-                    ),
-                    Stream(
-                        base_stimuli=s2_base_stims,
-                        oddball_stimuli=s2_oddball_stims,
-                        position_pix=tuple(s2.position_pix),
-                        base_trigger_code=s2.base_trigger_code,
-                        oddball_trigger_code=s2.oddball_trigger_code,
-                        modulation=s2.modulation,
-                    ),
-                ],
-                stream_segments=[
-                    Segment(base_freq_hz=params.base.base_freq_hz, duration_seconds=_duration, oddball=params.oddball),
-                    Segment(base_freq_hz=s2.base_freq_hz, duration_seconds=_duration, oddball=s2.oddball),
-                ],
+                streams=streams_list,
+                stream_segments=stream_segments_list,
                 refresh_rate_hz=self._refresh_rate_hz,
                 trigger=ctx.trigger,
                 clock=ctx.clock,
@@ -912,8 +951,8 @@ class FPVSTask(TaskModule):
                 rng=ctx.rng,
                 distractor=distractor_controller,
                 go_nogo=go_nogo_controller,
-                position_providers=dual_position_providers,
-                stream_segment_timeline=dual_timeline,
+                position_providers=multi_position_providers,
+                stream_segment_timeline=multi_timeline,
             )
         elif params.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
@@ -1317,7 +1356,19 @@ class FPVSTask(TaskModule):
             lines.append("Available subdirectories: " + ", ".join(available))
             lines.append("")
 
-        for label, selector in (("Base", params.base_selector), ("Oddball", params.oddball_selector)):
+        # Preview every selector that will actually draw a pool at run time: the main stream's base +
+        # oddball, plus each active extra stream (legacy second_stream, then enabled additional_streams).
+        # A base-only (oddball_enabled=False) stream draws no oddball pool, so only its base is previewed.
+        # This makes the "0 MATCHES -> will FAIL" safety net cover the extra streams too, not just main.
+        selector_previews = [("Base", params.base_selector), ("Oddball", params.oddball_selector)]
+        _extra = ([params.second_stream] if params.second_stream.enabled else []) + [
+            s for s in params.additional_streams if s.enabled
+        ]
+        for _i, _s in enumerate(_extra):
+            selector_previews.append((f"Stream {_i + 2} base", _s.base_selector))
+            if _s.oddball_enabled:
+                selector_previews.append((f"Stream {_i + 2} oddball", _s.oddball_selector))
+        for label, selector in selector_previews:
             pool = _select_pool(scan_result.entries, selector)
             if not pool:
                 lines.append(
@@ -1489,6 +1540,9 @@ class FPVSTask(TaskModule):
                 centres = [tuple(params.stream_position_pix)]
                 if params.second_stream.enabled:
                     centres.append(tuple(params.second_stream.position_pix))
+                centres += [
+                    tuple(s.position_pix) for s in params.additional_streams if s.enabled
+                ]
                 reach = pd.size_pix / 2 + _NOMINAL_IMAGE_HALF_EXTENT_PIX
                 px, py = pd.position_pix
                 for cx, cy in centres:
@@ -1579,6 +1633,48 @@ class FPVSTask(TaskModule):
                         f"needed to resolve its {odd_hz:g} Hz oddball (FFT bin = 1/duration). Its oddball "
                         "response may be too smeared to measure; lengthen the step."
                     )
+
+        # Multiple simultaneous streams (>= 3 total: the main stream plus additional_streams, with or
+        # without the legacy second_stream). Frequency-domain separation only -- per-stream EEG triggers
+        # and sweeps are rejected for > 2 streams at save time, so this advisory just describes the
+        # streams and runs pairwise spectral-separability across ALL of them. A base-only ("similar"
+        # filler) stream contributes only a base tag, not an oddball tag.
+        active_additional = [s for s in params.additional_streams if s.enabled]
+        if active_additional:
+            all_streams_desc = [
+                ("main", params.base.base_freq_hz, params.oddball, True, tuple(params.stream_position_pix))
+            ]
+            if params.second_stream.enabled:
+                s2 = params.second_stream
+                all_streams_desc.append(
+                    ("second", s2.base_freq_hz, s2.oddball, s2.oddball_enabled, tuple(s2.position_pix))
+                )
+            for i, s in enumerate(active_additional):
+                all_streams_desc.append(
+                    (f"additional[{i}]", s.base_freq_hz, s.oddball, s.oddball_enabled, tuple(s.position_pix))
+                )
+            desc = ", ".join(
+                f"{name} {base:g} Hz{'' if odd_on else ' (base-only)'} at {pos} px"
+                for name, base, _odd, odd_on, pos in all_streams_desc
+            )
+            warnings.append(
+                f"multiple simultaneous streams ({len(all_streams_desc)}): {desc}. Analyse each stream at "
+                "its own tagged frequencies (frequency-domain separation); the photodiode tracks the MAIN "
+                "stream only, and per-stream EEG triggers are unavailable with more than two streams."
+            )
+            specs: list[StreamSpec] = []
+            for _name, base, odd, odd_on, _pos in all_streams_desc:
+                if odd_on and odd is not None:
+                    odd_hz = (
+                        derived_oddball_freq_hz(base, odd.pattern)
+                        if odd.pattern is not None
+                        else odd.oddball_freq_hz
+                    )
+                    specs.append(StreamSpec(base_hz=base, oddball_hz=odd_hz))
+                else:
+                    specs.append(StreamSpec(base_hz=base, oddball_hz=None))
+            for problem in multi_stream_separability_warnings(specs):
+                warnings.append(f"stream separability: {problem} -- responses may overlap in the spectrum.")
 
         if params.second_stream.enabled:
             s2 = params.second_stream

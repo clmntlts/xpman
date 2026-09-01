@@ -212,6 +212,11 @@ class StreamParams(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
+    oddball_enabled: bool = Field(
+        default=True,
+        description="When off, this stream is base-only (no oddball) -- a 'similar' filler stream. "
+        "Its base flicker still contributes, but it produces no oddball-frequency response.",
+    )
     base_selector: StimulusSelector = Field(
         default_factory=StimulusSelector, description="Which images make up this stream's base sequence."
     )
@@ -322,7 +327,7 @@ class FPVSConditionParams(BaseModel):
     """Everything needed to run one FPVS trial.
 
     Fields are declared grouped by the GUI ``section`` they render under (Stimulation → Trial
-    timing & phases → Fixation & display → Responses & attention tasks → Dual bilateral stream),
+    timing & phases → Fixation & display → Responses & attention tasks → Multiple streams),
     so the schema-driven Condition editor reads as labelled sections instead of a flat wall of
     boxes. Section membership is metadata only (``json_schema_extra={"section": ...}``) -- it has
     no effect on validation or on frozen Instances; reordering these fields is purely cosmetic."""
@@ -421,23 +426,30 @@ class FPVSConditionParams(BaseModel):
         json_schema_extra={"section": "Responses & attention tasks"},
     )
 
-    # -- Dual bilateral stream --------------------------------------------------------------
+    # -- Multiple streams -------------------------------------------------------------------
     stream_position_pix: tuple[float, float] = Field(
         default=(0.0, 0.0),
         description="Main stream's screen position (px from center); only applies when second_stream "
         "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
-        json_schema_extra={"section": "Dual bilateral stream"},
+        json_schema_extra={"section": "Multiple streams"},
     )
     second_stream: StreamParams = Field(
         default_factory=StreamParams,
         description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
-        json_schema_extra={"section": "Dual bilateral stream"},
+        json_schema_extra={"section": "Multiple streams"},
+    )
+    additional_streams: list[StreamParams] = Field(
+        default_factory=list,
+        description="Extra simultaneous streams beyond the main stream (and the legacy second_stream). "
+        "Each has its own position, frequency, pools, and oddball_enabled toggle. Frequency-domain "
+        "analysis; up to two streams total may use per-stream EEG triggers.",
+        json_schema_extra={"section": "Multiple streams"},
     )
     coincidence_codes: CoincidenceCodes = Field(
         default_factory=CoincidenceCodes,
         description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
         "streams are triggered; see CoincidenceCodes).",
-        json_schema_extra={"section": "Dual bilateral stream"},
+        json_schema_extra={"section": "Multiple streams"},
     )
 
     @model_validator(mode="after")
@@ -488,51 +500,96 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_dual_stream_separable(self) -> "FPVSConditionParams":
-        # Dual bilateral streams must be spectrally separable and spatially distinct. A sweep x
-        # dual-stream is allowed (#4) but ONLY on a SHARED step timeline: both streams change frequency
-        # at the same segment boundaries (same number of steps, same per-step durations); only the
-        # per-step frequencies differ. Independent per-stream sweeps (different step counts / durations)
-        # are still rejected -- they can't be presented on one continuous frame timeline. Enforced at
-        # save/freeze time so an un-analysable pairing can't be run.
-        if not self.second_stream.enabled:
+    def _check_multi_stream(self) -> "FPVSConditionParams":
+        # Generalises the old dual-stream check to N simultaneous streams. The runtime set of ACTIVE
+        # streams is [main] + [second_stream if enabled] + [s in additional_streams if s.enabled].
+        # Analysis is frequency-domain, so base frequencies are NO LONGER required to be spectrally
+        # separable (researcher decision: all frequencies must be possible); harmonic/IM collisions are
+        # surfaced as advisories elsewhere (check_triggers), not rejected here. What IS enforced at
+        # save/freeze time: pairwise-distinct positions across all active streams, and the 2-stream
+        # ceilings on frequency sweeps and per-stream EEG triggers (the 8-bit trigger combiner and the
+        # shared-sweep-timeline machinery only handle two streams).
+        active_extra: list[StreamParams] = []
+        if self.second_stream.enabled:
+            active_extra.append(self.second_stream)
+        active_additional = [s for s in self.additional_streams if s.enabled]
+        active_extra += active_additional
+
+        # Only the main stream is active: single-stream, nothing to check (untouched).
+        if not active_extra:
             return self
-        if self.sweep.enabled or self.second_stream.sweep.enabled:
+
+        # HARD: every active stream position (main + each active extra) must be pairwise-distinct.
+        positions = [tuple(self.stream_position_pix)] + [tuple(s.position_pix) for s in active_extra]
+        if len(set(positions)) != len(positions):
+            raise ValueError(
+                "all active streams must be at distinct positions -- set stream_position_pix and each "
+                "stream's position_pix apart (e.g. (-200, 0), (200, 0), (0, 200))."
+            )
+
+        # HARD: sweep x N (>2 streams) is out of scope -- only the legacy main+second pair may sweep.
+        if active_additional and (
+            self.sweep.enabled
+            or self.second_stream.sweep.enabled
+            or any(s.sweep.enabled for s in self.additional_streams)
+        ):
+            raise ValueError(
+                "frequency sweep is only supported with at most two streams; disable sweep or remove "
+                "the additional streams."
+            )
+
+        # HARD: per-stream EEG triggers only work for up to two streams -- the 8-bit trigger combiner
+        # cannot cleanly encode independent onsets on more streams. With >2 active streams, no active
+        # stream may carry a trigger code (use frequency-domain separation instead).
+        if 1 + len(active_extra) > 2:
+            main_triggered = (
+                self.base.base_trigger_code is not None
+                or self.oddball.oddball_trigger_code is not None
+            )
+            extra_triggered = any(
+                s.base_trigger_code is not None or s.oddball_trigger_code is not None
+                for s in active_extra
+            )
+            if main_triggered or extra_triggered:
+                raise ValueError(
+                    "per-stream EEG triggers are only supported for up to two streams; with more "
+                    "streams use frequency-domain separation (leave the trigger codes unset)."
+                )
+
+        # Legacy sweep x dual-stream shared-timeline HARD checks -- ONLY the exactly-main+second case
+        # (any active additional stream + sweep is already rejected above). A sweep x dual-stream is
+        # allowed (#4) but ONLY on a SHARED step timeline: both streams change frequency at the same
+        # segment boundaries (same number of steps, same per-step durations); only the per-step
+        # frequencies differ. Independent per-stream sweeps (different step counts / durations) are
+        # still rejected -- they can't be presented on one continuous frame timeline.
+        legacy_pair = self.second_stream.enabled and not active_additional
+        if legacy_pair and (self.sweep.enabled or self.second_stream.sweep.enabled):
             if not (self.sweep.enabled and self.second_stream.sweep.enabled):
                 raise ValueError(
-                    "a sweep x dual-stream needs BOTH the main sweep and second_stream.sweep enabled "
-                    "on a shared timeline -- enable both, or neither. (One stream sweeping while the "
-                    "other holds a fixed frequency is not supported.)"
+                    "a sweep x dual-stream needs BOTH the main sweep and second_stream.sweep "
+                    "enabled on a shared timeline -- enable both, or neither. (One stream sweeping "
+                    "while the other holds a fixed frequency is not supported.)"
                 )
             main_durations = [s.duration_seconds for s in self.sweep.steps]
             second_durations = [s.duration_seconds for s in self.second_stream.sweep.steps]
             if main_durations != second_durations:
                 raise ValueError(
-                    "a sweep x dual-stream must share ONE step timeline: the two streams' sweep steps "
-                    f"must have the same count and per-step durations (got main {main_durations} vs "
-                    f"second {second_durations}). Independent per-stream sweeps are not supported -- "
-                    "only the per-step frequencies may differ between streams."
+                    "a sweep x dual-stream must share ONE step timeline: the two streams' sweep "
+                    f"steps must have the same count and per-step durations (got main "
+                    f"{main_durations} vs second {second_durations}). Independent per-stream sweeps "
+                    "are not supported -- only the per-step frequencies may differ between streams."
                 )
-            # Each step's paired base frequencies must be spectrally separable, like the single-freq
-            # dual-stream case -- a step where the two streams are harmonically related is un-analysable.
+            # Each step's paired base frequencies must be spectrally separable so the shared-timeline
+            # sweep stays analysable per step (this specific per-step use of bases_harmonically_related
+            # is retained; only the top-level base-pair reject is dropped).
             for i, (a, b) in enumerate(zip(self.sweep.steps, self.second_stream.sweep.steps)):
                 if bases_harmonically_related(a.base_freq_hz, b.base_freq_hz):
                     raise ValueError(
                         f"sweep step {i}: the two stream base frequencies ({a.base_freq_hz}, "
-                        f"{b.base_freq_hz}) are equal or harmonically related -- their tagged responses "
-                        "can't be separated. Use non-harmonic frequencies per step (e.g. 6 & 7 Hz)."
+                        f"{b.base_freq_hz}) are equal or harmonically related -- their tagged "
+                        "responses can't be separated. Use non-harmonic frequencies per step "
+                        "(e.g. 6 & 7 Hz)."
                     )
-        elif bases_harmonically_related(self.base.base_freq_hz, self.second_stream.base_freq_hz):
-            raise ValueError(
-                f"the two stream base frequencies ({self.base.base_freq_hz}, "
-                f"{self.second_stream.base_freq_hz}) are equal or harmonically related -- their "
-                "tagged responses can't be separated. Use non-harmonic frequencies (e.g. 6 & 7 Hz)."
-            )
-        if tuple(self.stream_position_pix) == tuple(self.second_stream.position_pix):
-            raise ValueError(
-                "the two streams must be at distinct positions -- set stream_position_pix and "
-                "second_stream.position_pix apart (e.g. (-200, 0) and (200, 0))."
-            )
         return self
 
     @model_validator(mode="after")
@@ -613,10 +670,12 @@ class FPVSSchema:
     #: v2 (WP-B) added ``position_jitter``; v3 added ``distractor``; v4 replaced the SepStim selector
     #: filters with ``subdirectory`` + ``filename_pattern``; v5 adds the optional oddball ``pattern``
     #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep``, the per-trial ``baseline``,
-    #: and dual bilateral streams (``second_stream`` + ``stream_position_pix``) -- all additive,
-    #: default off/None. v4 was the one breaking bump (old SepStim selector keys are dropped on
-    #: validation -- re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "6"
+    #: and dual bilateral streams (``second_stream`` + ``stream_position_pix``); v7 generalises dual
+    #: streams to N with ``additional_streams`` and a per-stream ``oddball_enabled`` toggle (base-only
+    #: filler streams) -- all additive, default off/None (``additional_streams=[]``,
+    #: ``oddball_enabled=True``). v4 was the one breaking bump (old SepStim selector keys are dropped
+    #: on validation -- re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "7"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -645,10 +704,11 @@ class FPVSSchema:
         # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4", "5"):
+        if old_version not in ("1", "2", "3", "4", "5", "6"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5, v5->v6 are additive (position_jitter, distractor, oddball pattern +
-        # go_nogo, sweep: disabled/None defaults fill in). v3->v4 drops the SepStim selector filters:
+        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7 are additive (position_jitter, distractor, oddball
+        # pattern + go_nogo, sweep, additional_streams + per-stream oddball_enabled: disabled/None/[]
+        # defaults fill in). v3->v4 drops the SepStim selector filters:
         # strip them from base/oddball selectors so the migrated dict carries only
         # subdirectory/filename_pattern.
         migrated = dict(data)

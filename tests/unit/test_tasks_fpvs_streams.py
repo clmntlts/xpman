@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from xpman.tasks.fpvs.streams import (
+    StreamSpec,
     bases_harmonically_related,
     frequencies_of_interest,
+    multi_stream_separability_warnings,
     stream_separability_warnings,
 )
-
 
 # ---------------------------------------------------------------------------
 # bases_harmonically_related (the hard constraint)
@@ -102,3 +103,82 @@ def test_higher_intermodulation_order_only_adds_warnings():
     w2 = set(stream_separability_warnings(*args, max_im_order=2))
     w3 = set(stream_separability_warnings(*args, max_im_order=3))
     assert w2 <= w3
+
+
+# ---------------------------------------------------------------------------
+# multi_stream_separability_warnings (N streams)
+# ---------------------------------------------------------------------------
+
+
+def test_multi_three_well_separated_oddball_streams_are_clean():
+    # 6/1.2, 7/1.4, 11/2.2: pairwise well-separated bases and oddballs; no coincidence and no
+    # low-order intermodulation term lands on any tag, for any of the three pairs.
+    streams = [StreamSpec(6.0, 1.2), StreamSpec(7.0, 1.4), StreamSpec(11.0, 2.2)]
+    assert multi_stream_separability_warnings(streams) == []
+
+
+def test_multi_shared_base_names_the_two_colliding_indices():
+    # streams 0 and 2 share base 6 Hz (their base harmonics coincide); stream 1 sits apart. The
+    # advisory must name that specific pair by its 0-based indices.
+    streams = [StreamSpec(6.0, 1.2), StreamSpec(7.0, 1.4), StreamSpec(6.0, 1.3)]
+    warnings = multi_stream_separability_warnings(streams)
+    coincidences_0_2 = [
+        w for w in warnings if w.startswith("streams 0 & 2: ") and "coincides" in w
+    ]
+    assert coincidences_0_2  # the shared 6 Hz base is flagged for the 0 & 2 pair
+    # results stay sorted and de-duplicated
+    assert warnings == sorted(warnings)
+    assert len(warnings) == len(set(warnings))
+
+
+def test_multi_base_only_stream_has_no_spurious_oddball_collisions():
+    # A base-only (filler) stream carries NO oddball tag. 6-Hz filler + 7/1.4 oddball stream: nothing
+    # collides, because the filler contributes only its base series.
+    base_only = [StreamSpec(6.0, None), StreamSpec(7.0, 1.4)]
+    assert multi_stream_separability_warnings(base_only) == []
+    # Contrast: if the filler had actually carried an oddball at 1.4 Hz, its oddball series WOULD
+    # collide with the other stream's oddball series -- proving the None case really omits it.
+    with_oddball = [StreamSpec(6.0, 1.4), StreamSpec(7.0, 1.4)]
+    assert any("coincides" in w for w in multi_stream_separability_warnings(with_oddball))
+
+
+def test_multi_base_only_base_can_collide_but_never_as_an_oddball_driver():
+    # The base-only stream's BASE can still collide with another stream's tag (here a shared 6 Hz
+    # base). But the base-only stream (index 0) must never appear as an oddball tag or oddball driver,
+    # since it has none.
+    streams = [StreamSpec(6.0, None), StreamSpec(6.0, 1.4)]
+    warnings = multi_stream_separability_warnings(streams)
+    assert any(w.startswith("streams 0 & 1: ") and "coincides" in w for w in warnings)
+    assert not any("oddball0" in w for w in warnings)
+
+
+def test_multi_four_streams_distinct_are_clean_but_shared_base_flags_every_pair():
+    # Four distinct, well-chosen streams are clean (independent per-location readout).
+    distinct = [
+        StreamSpec(6.0, 1.2),
+        StreamSpec(7.0, 1.4),
+        StreamSpec(11.0, 2.2),
+        StreamSpec(13.0, 2.6),
+    ]
+    assert multi_stream_separability_warnings(distinct) == []
+
+    # The requesting paradigm: 1 oddball stream + 3 base-only fillers all at a shared 6 Hz base. Every
+    # one of the C(4,2)=6 pairs shares that base, so each pair is named at least once; and no filler
+    # (indices 1, 2, 3) is ever treated as an oddball driver.
+    paradigm = [
+        StreamSpec(6.0, 1.2),
+        StreamSpec(6.0, None),
+        StreamSpec(6.0, None),
+        StreamSpec(6.0, None),
+    ]
+    warnings = multi_stream_separability_warnings(paradigm)
+    for i, j in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]:
+        assert any(w.startswith(f"streams {i} & {j}: ") for w in warnings)
+    for filler in ("oddball1", "oddball2", "oddball3"):
+        assert not any(filler in w for w in warnings)
+
+
+def test_multi_fewer_than_two_streams_is_empty():
+    assert multi_stream_separability_warnings([]) == []
+    assert multi_stream_separability_warnings([StreamSpec(6.0, 1.2)]) == []
+    assert multi_stream_separability_warnings([StreamSpec(6.0, None)]) == []

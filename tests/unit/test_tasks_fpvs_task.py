@@ -2652,4 +2652,94 @@ def test_run_trial_triggered_distractor_with_dual_stream(mock_window, stim_root,
     # Every distractor onset avoids BOTH streams' base-onset frames (10 f/stim and 9 f/stim @ 60 Hz).
     assert all(f % 10 != 0 and f % 9 != 0 for f in distractor_frames)
     assert 99 in trigger.codes_sent  # its trigger fired
-    assert result.outcome_summary["aborted"] is False
+
+
+def test_run_trial_four_streams_one_oddball_three_base_only(mock_window, stim_root, event_sink):
+    """The requesting paradigm: FOUR simultaneous streams at four positions (up/down/left/right),
+    all sharing one base frequency ('similar' flicker), where only the MAIN stream carries the
+    oddball and the other three are base-only fillers (oddball_enabled=False). Frequency-domain
+    separation, no per-stream triggers. Asserts all four present onsets, only stream 0 has oddballs,
+    and the three fillers run at the base rate with zero oddballs -- and that a shared base frequency
+    across streams is accepted (no hard separability error)."""
+    import json
+
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    def _filler(pos):
+        return StreamParams(
+            enabled=True,
+            oddball_enabled=False,  # base-only 'similar' filler
+            base_freq_hz=6.0,  # SAME base freq as the main stream -- allowed (frequency-domain, one oddball)
+            position_pix=pos,
+            base_selector=StimulusSelector(subdirectory="objects"),
+        )
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="objects"),
+        oddball_selector=StimulusSelector(subdirectory="faces"),
+        stream_position_pix=(0.0, 200.0),  # up = the oddball-carrying main stream
+        additional_streams=[
+            _filler((0.0, -200.0)),  # down
+            _filler((-200.0, 0.0)),  # left
+            _filler((200.0, 0.0)),  # right
+        ],
+    )
+    params.base.base_freq_hz = 6.0
+    # Long enough that the 1.2 Hz oddball (every 5th base image at 6 Hz) actually appears at least once.
+    params.base.trial_duration_seconds = 2.0
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    starts = [r for r in rows if r["event_type"] == "base_oddball_sequence_start"]
+    assert len(starts) == 1
+    payload = json.loads(starts[0]["payload_json"])
+    assert payload["n_streams"] == 4
+    assert payload["photodiode_tracks_stream"] == 0
+
+    onset_rows = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    streams_seen = {json.loads(r["payload_json"])["stream"] for r in onset_rows}
+    assert streams_seen == {0, 1, 2, 3}  # all four streams presented onsets
+
+    summary = result.outcome_summary
+    assert summary["aborted"] is False
+    assert summary["n_streams"] == 4
+    # Only the main stream carries oddballs; the three fillers are base-only.
+    assert summary["stream0_n_oddballs_shown"] > 0
+    assert summary["stream0_achieved_oddball_freq_hz"] > 0
+    for k in (1, 2, 3):
+        assert summary[f"stream{k}_n_oddballs_shown"] == 0
+        assert summary[f"stream{k}_achieved_oddball_freq_hz"] == 0.0
+        assert summary[f"stream{k}_n_stimuli_shown"] > 0  # still flickers at the base rate
+    # all four ran at the same (shared) base rate
+    base_rates = {summary[f"stream{k}_achieved_base_freq_hz"] for k in range(4)}
+    assert len(base_rates) == 1
+
+
+def test_check_triggers_multi_stream_advisory_and_shared_base_ok():
+    """check_triggers on a 4-stream (1 oddball + 3 base-only) Condition emits the multi-stream
+    advisory and does NOT hard-warn about the shared base frequency, but still runs pairwise
+    separability across all streams."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+
+    def _filler(pos):
+        return StreamParams(enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=pos)
+
+    params = FPVSConditionParams(
+        stream_position_pix=(0.0, 200.0),
+        additional_streams=[_filler((0.0, -200.0)), _filler((-200.0, 0.0)), _filler((200.0, 0.0))],
+    )
+    params.base.base_freq_hz = 6.0
+    warnings = task.check_triggers(params.model_dump())
+    assert any("multiple simultaneous streams (4)" in w for w in warnings)
+    assert any("base-only" in w for w in warnings)

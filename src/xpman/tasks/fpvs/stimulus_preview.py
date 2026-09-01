@@ -132,13 +132,19 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
     elements: list[SpatialElement] = []
     notes: list[str] = []
 
-    dual = params.second_stream.enabled
-    # Single stream sits at centre (stream_position_pix only applies once a 2nd stream exists).
-    main_x, main_y = (params.stream_position_pix if dual else (0.0, 0.0))
+    # Every active stream beyond the main one: the legacy second_stream (if enabled) then any enabled
+    # additional_streams, in the same order the runtime presents them (stream indices 1, 2, 3, ...).
+    active_extra = []
+    if params.second_stream.enabled:
+        active_extra.append(params.second_stream)
+    active_extra += [s for s in params.additional_streams if s.enabled]
+    multi = bool(active_extra)
+    # Single stream sits at centre (stream_position_pix only applies once another stream exists).
+    main_x, main_y = (params.stream_position_pix if multi else (0.0, 0.0))
     elements.append(
         SpatialElement(
             kind="stream",
-            label="Stream 1" if dual else "Stimulus",
+            label="Stream 1" if multi else "Stimulus",
             x=float(main_x),
             y=float(main_y),
             width=_STIM_BOX_PX,
@@ -147,27 +153,28 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
             detail=f"base {params.base.base_freq_hz:g} Hz",
         )
     )
-    if dual:
-        s2 = params.second_stream
+    # Distinct colours for the extra streams (cycled if there are many). "#1d9e75" first keeps the
+    # legacy two-stream preview's Stream-2 colour unchanged.
+    _stream_colors = ["#1d9e75", "#d98a1d", "#c0518a", "#5a9bd4", "#8a8a3a"]
+    for idx, s in enumerate(active_extra):
+        detail = f"base {s.base_freq_hz:g} Hz" + ("" if s.oddball_enabled else ", base-only")
         elements.append(
             SpatialElement(
                 kind="stream",
-                label="Stream 2",
-                x=float(s2.position_pix[0]),
-                y=float(s2.position_pix[1]),
+                label=f"Stream {idx + 2}",
+                x=float(s.position_pix[0]),
+                y=float(s.position_pix[1]),
                 width=_STIM_BOX_PX,
                 height=_STIM_BOX_PX,
-                color="#1d9e75",
-                detail=f"base {s2.base_freq_hz:g} Hz",
+                color=_stream_colors[idx % len(_stream_colors)],
+                detail=detail,
             )
         )
 
     # Position-jitter region(s), drawn behind each stream centre so the wobble extent is visible.
     jitter = params.position_jitter
     if jitter.enabled:
-        centres = [(main_x, main_y)]
-        if dual:
-            centres.append(tuple(params.second_stream.position_pix))
+        centres = [(main_x, main_y)] + [tuple(s.position_pix) for s in active_extra]
         for cx, cy in centres:
             if jitter.region == "disk":
                 elements.append(

@@ -1997,3 +1997,161 @@ def test_single_stream_overlay_collision_fails_loud(
             event_sink=event_sink,
             distractor=controller,
         )
+
+
+# ---------------------------------------------------------------------------
+# Base-only stream inside the multi-stream engine (multi-stream FPVS): one stream carries the
+# oddball, the other(s) are "similar" BASE-ONLY fillers -- oddball_stimuli=[] + Segment(oddball=None).
+# Each filler flickers at its base frequency but contributes no oddball response.
+# ---------------------------------------------------------------------------
+
+
+def _run_two_stream_optional_base_only_sibling(sink, window, *, sibling_base_only, trigger, clock):
+    """Run a 2-stream trial where stream 0 always carries the oddball and stream 1 is EITHER a
+    base-only filler (``sibling_base_only=True``: oddball_stimuli=[], Segment(oddball=None)) or a full
+    oddball stream. Returns ``(result, onset_payloads)``. 60 Hz refresh, 1.0 s -> 60 frames."""
+    oddball_stream = Stream(
+        base_stimuli=_identified_stims(["L0", "L1"]),
+        oddball_stimuli=_identified_stims(["Lo0"]),
+        position_pix=(-100.0, 0.0), base_trigger_code=1, oddball_trigger_code=2,
+    )
+    if sibling_base_only:
+        sibling = Stream(
+            base_stimuli=_identified_stims(["R0", "R1"]),
+            oddball_stimuli=[],  # base-only: NO oddball pool at all (must never be indexed)
+            position_pix=(100.0, 0.0), base_trigger_code=3,
+        )
+        sibling_seg = Segment(base_freq_hz=12.0, duration_seconds=1.0, oddball=None)
+    else:
+        sibling = Stream(
+            base_stimuli=_identified_stims(["R0", "R1"]),
+            oddball_stimuli=_identified_stims(["Ro0"]),
+            position_pix=(100.0, 0.0), base_trigger_code=3, oddball_trigger_code=4,
+        )
+        sibling_seg = Segment(
+            base_freq_hz=12.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=2.4)
+        )
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+        sibling_seg,
+    ]
+    result = _run_dual_stream(
+        window=window, streams=[oddball_stream, sibling], stream_segments=segments,
+        refresh_rate_hz=60.0, trigger=trigger, clock=clock, event_sink=sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None,
+    )
+    sink.close()
+    with sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [
+        json.loads(r["payload_json"])
+        for r in rows
+        if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    ]
+    return result, payloads
+
+
+def test_dual_stream_base_only_sibling_shows_base_stimuli_and_zero_oddballs(tmp_path, trigger, clock):
+    sink = EventSink(tmp_path / "e.csv", tmp_path / "e.parquet")
+    result, payloads = _run_two_stream_optional_base_only_sibling(
+        sink, _callonflip_recording_window(trigger), sibling_base_only=True, trigger=trigger, clock=clock,
+    )
+    s0 = [p for p in payloads if p["stream"] == 0]
+    s1 = [p for p in payloads if p["stream"] == 1]
+    # 60 frames. Stream 0 @ 6 Hz (10 f/stim) -> 6 onsets; period 5 -> position 5 (frame 40) is oddball.
+    assert len(s0) == 6
+    assert sum(1 for p in s0 if p["is_oddball"]) == 1
+    # Base-only stream 1 @ 12 Hz (5 f/stim) -> 12 onsets, NONE an oddball, only base images shown.
+    assert len(s1) == 12
+    assert all(not p["is_oddball"] for p in s1)
+    assert all(p["image"] in ("R0", "R1") for p in s1)  # never indexes the empty oddball pool
+    assert all(p["pos"] == [100.0, 0.0] for p in s1)
+    # Per-stream result: base-only filler has zero oddballs and 0.0 tagged frequency; base cadence intact.
+    assert result.per_stream[1].n_oddballs_shown == 0
+    assert result.per_stream[1].achieved_oddball_freq_hz == 0.0
+    assert result.per_stream[1].n_stimuli_shown == 12
+    assert result.per_stream[1].achieved_base_freq_hz == pytest.approx(12.0)
+    # Stream 0 (the oddball-carrying stream) is unaffected: exactly one oddball, real tagged frequency.
+    assert result.per_stream[0].n_oddballs_shown == 1
+    assert result.per_stream[0].achieved_oddball_freq_hz == pytest.approx(1.2)
+
+
+def test_dual_stream_base_only_sibling_leaves_stream0_byte_for_byte(tmp_path, trigger, clock):
+    # Stream 0's onsets must be IDENTICAL whether the sibling is base-only or a full oddball stream --
+    # the base-only handling only ever changes the base-only stream, never its neighbour.
+    _, base_only_payloads = _run_two_stream_optional_base_only_sibling(
+        EventSink(tmp_path / "a.csv", tmp_path / "a.parquet"), _callonflip_recording_window(trigger),
+        sibling_base_only=True, trigger=trigger, clock=clock,
+    )
+    _, oddball_payloads = _run_two_stream_optional_base_only_sibling(
+        EventSink(tmp_path / "b.csv", tmp_path / "b.parquet"), _callonflip_recording_window(trigger),
+        sibling_base_only=False, trigger=trigger, clock=clock,
+    )
+    s0_base_only = [p for p in base_only_payloads if p["stream"] == 0]
+    s0_oddball = [p for p in oddball_payloads if p["stream"] == 0]
+    assert s0_base_only == s0_oddball
+
+
+def test_quad_stream_one_oddball_three_base_only_fillers_distinct_positions(tmp_path, trigger, clock):
+    # The requesting paradigm: one oddball stream + three base-only "similar" fillers, each at a
+    # DISTINCT screen position. Each filler shows base-rate stimuli and no oddballs; the oddball
+    # stream shows its oddballs. Only the oddball stream is coded, so no >2-way trigger coincidence.
+    oddball_stream = Stream(
+        base_stimuli=_identified_stims(["C0", "C1"]),
+        oddball_stimuli=_identified_stims(["Co0"]),
+        position_pix=(0.0, 100.0), base_trigger_code=1, oddball_trigger_code=2,
+    )
+    up = Stream(base_stimuli=_identified_stims(["U0", "U1"]), oddball_stimuli=[], position_pix=(0.0, -100.0))
+    left = Stream(base_stimuli=_identified_stims(["Le0", "Le1"]), oddball_stimuli=[], position_pix=(-100.0, 0.0))
+    right = Stream(base_stimuli=_identified_stims(["Ri0", "Ri1"]), oddball_stimuli=[], position_pix=(100.0, 0.0))
+    streams = [oddball_stream, up, left, right]
+    segments = [
+        Segment(base_freq_hz=6.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.2)),  # 10 f -> 6 onsets, oddball at pos 5
+        Segment(base_freq_hz=12.0, duration_seconds=1.0, oddball=None),  # 5 f -> 12 onsets
+        Segment(base_freq_hz=10.0, duration_seconds=1.0, oddball=None),  # 6 f -> 10 onsets
+        Segment(base_freq_hz=15.0, duration_seconds=1.0, oddball=None),  # 4 f -> 15 onsets
+    ]
+    sink = EventSink(tmp_path / "q.csv", tmp_path / "q.parquet")
+    result = _run_dual_stream(
+        window=_callonflip_recording_window(trigger), streams=streams, stream_segments=segments,
+        refresh_rate_hz=60.0, trigger=trigger, clock=clock, event_sink=sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, distractor=None, go_nogo=None,
+    )
+    sink.close()
+    with sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [
+        json.loads(r["payload_json"])
+        for r in rows
+        if r["event_type"] in ("stimulus_onset", "oddball_onset")
+    ]
+    by_stream = {i: [p for p in payloads if p["stream"] == i] for i in range(4)}
+    # Oddball stream (0): 6 onsets, exactly one oddball, drawn at its own position.
+    assert len(by_stream[0]) == 6
+    assert sum(1 for p in by_stream[0] if p["is_oddball"]) == 1
+    assert all(p["pos"] == [0.0, 100.0] for p in by_stream[0])
+    # Three base-only fillers: base-rate onset counts, ZERO oddballs, only base images, distinct positions.
+    expected = {
+        1: (12, [0.0, -100.0], ("U0", "U1")),
+        2: (10, [-100.0, 0.0], ("Le0", "Le1")),
+        3: (15, [100.0, 0.0], ("Ri0", "Ri1")),
+    }
+    for idx, (n_onsets, pos, imgs) in expected.items():
+        ps = by_stream[idx]
+        assert len(ps) == n_onsets
+        assert all(not p["is_oddball"] for p in ps)  # base-only: never an oddball
+        assert all(p["image"] in imgs for p in ps)  # never indexes the empty oddball pool
+        assert all(p["pos"] == pos for p in ps)
+    # All four stream positions are pairwise distinct (the paradigm's per-location requirement).
+    assert len({tuple(p["pos"]) for p in payloads}) == 4
+    # Result: only the oddball stream reports oddballs; every filler reports zero and 0.0 tagged freq.
+    assert result.per_stream[0].n_oddballs_shown == 1
+    assert result.per_stream[0].achieved_oddball_freq_hz == pytest.approx(1.2)
+    for idx in (1, 2, 3):
+        assert result.per_stream[idx].n_oddballs_shown == 0
+        assert result.per_stream[idx].achieved_oddball_freq_hz == 0.0
+    assert [result.per_stream[i].n_stimuli_shown for i in range(4)] == [6, 12, 10, 15]
