@@ -391,3 +391,66 @@ def test_get_run_results_rows_matches_what_gets_exported(session, tmp_path):
 def test_get_run_results_rows_raises_lookup_error_for_missing_run(session):
     with pytest.raises(LookupError):
         get_run_results_rows(session, 999999)
+
+
+# ---------------------------------------------------------------------------
+# Batch / cross-subject export (#29)
+# ---------------------------------------------------------------------------
+
+
+def test_multi_run_export_concatenates_and_shares_one_column_set(session, tmp_path):
+    from xpman.core.export import export_multi_run_results_to_csv, export_multi_run_results_to_parquet
+
+    fixture = _build_fixture(session)
+    run_a = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    session.add(
+        Result(run_id=run_a.id, trial_index=0, condition_id=fixture["condition"].id,
+               outcome_summary_json={"flips_completed": 10})
+    )
+    session.commit()
+
+    subject_b = repo.create_subject(session, profile_id=fixture["profile"].id, first_name="Grace", last_name="Hopper")
+    session.commit()
+    run_b = _insert_run(session, fixture["instance"].id, subject_b.id)
+    session.add(
+        Result(run_id=run_b.id, trial_index=0, condition_id=fixture["condition"].id,
+               outcome_summary_json={"flips_completed": 8, "only_on_b": True})
+    )
+    session.commit()
+
+    pq_path = tmp_path / "combined.parquet"
+    export_multi_run_results_to_parquet(session, [run_a.id, run_b.id], pq_path)
+    table = pq.read_table(pq_path)
+    assert table.num_rows == 2
+    data = {r["subject_name"]: r for r in table.to_pylist()}
+    assert data["Lovelace, Ada"]["flips_completed"] == 10
+    # A column only present on run_b's outcome_summary_json None-fills on run_a's row -- one
+    # shared column set across both Runs, not per-run schemas glued together.
+    assert data["Lovelace, Ada"]["only_on_b"] is None
+    assert data["Hopper, Grace"]["only_on_b"] is True
+
+    csv_path = tmp_path / "combined.csv"
+    export_multi_run_results_to_csv(session, [run_a.id, run_b.id], csv_path)
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    assert {r["subject_name"] for r in rows} == {"Lovelace, Ada", "Hopper, Grace"}
+
+
+def test_multi_run_export_raises_lookup_error_for_any_missing_run(session, tmp_path):
+    from xpman.core.export import export_multi_run_results_to_parquet
+
+    fixture = _build_fixture(session)
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    with pytest.raises(LookupError):
+        export_multi_run_results_to_parquet(session, [run.id, 999999], tmp_path / "out.parquet")
+
+
+def test_multi_run_export_empty_run_ids_writes_zero_rows(session, tmp_path):
+    from xpman.core.export import export_multi_run_results_to_parquet
+
+    out_path = tmp_path / "empty.parquet"
+    export_multi_run_results_to_parquet(session, [], out_path)
+    table = pq.read_table(out_path)
+    assert table.num_rows == 0
+    assert "run_id" in table.column_names

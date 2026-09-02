@@ -315,8 +315,10 @@ def test_selecting_instance_shows_immutability_note(qtbot, session, registry):
     window._on_node_selected(node)
 
     assert window._current_form is None
-    text = window._detail_scroll.widget().text()
-    assert "immutable" in text.lower()
+    from PySide6.QtWidgets import QLabel
+
+    info_label = window._detail_scroll.widget().findChildren(QLabel)[0]
+    assert "immutable" in info_label.text().lower()
 
 
 def test_selecting_block_shows_repeat_and_randomize_info(qtbot, session, registry):

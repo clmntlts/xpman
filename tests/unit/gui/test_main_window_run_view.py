@@ -255,3 +255,158 @@ def test_export_failure_shows_warning_not_crash(qtbot, session, registry, tmp_pa
 
     mock_warning.assert_called_once()
     assert "disk full" in mock_warning.call_args[0][2]
+
+
+# ---------------------------------------------------------------------------
+# Raw-data export wiring (_on_export_run_raw)
+# ---------------------------------------------------------------------------
+
+
+def test_run_view_has_export_raw_data_button(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    window._on_node_selected(TreeNode(kind="run", id=fixture["run"].id, name="Run"))
+
+    from PySide6.QtWidgets import QPushButton
+
+    labels = [b.text() for b in window._detail_scroll.widget().findChildren(QPushButton)]
+    assert "Export Raw Data..." in labels
+
+
+def test_export_raw_writes_bundle_and_shows_status(qtbot, session, registry, tmp_path):
+    from xpman.runtime.logging_sink import EventSink
+
+    # with_results=False: the default fixture's Results carry a hardcoded, unrelated
+    # events_file_path ("C:/runs/1/events.parquet") that would shadow the real data_dir-relative
+    # events file this test writes below -- resolve_run_events_csv prefers a stored path over the
+    # canonical data_dir layout, so a stale stored path here would make the export look for a
+    # file that doesn't exist.
+    fixture = _build_fixture(session, with_results=False)
+    run = fixture["run"]
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / str(run.instance_id) / str(run.subject_id) / str(run.id)
+    sink = EventSink(run_dir / "events.csv", run_dir / "events.parquet")
+    sink.log("run_started", {"rng_seed": 1})
+    sink.close()
+
+    window = MainWindow(session, fixture["profile"].id, registry, data_dir=data_dir)
+    qtbot.addWidget(window)
+
+    output_dir = tmp_path / "export"
+    with patch.object(QFileDialog, "getExistingDirectory", return_value=str(output_dir)):
+        window._on_export_run_raw(run.id)
+
+    assert (output_dir / f"run_{run.id}_events.csv").exists()
+    assert (output_dir / f"run_{run.id}_events.parquet").exists()
+    assert (output_dir / f"run_{run.id}_manifest.json").exists()
+    assert "Exported raw data" in window.statusBar().currentMessage()
+
+
+def test_export_raw_cancelled_dialog_writes_nothing(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    with patch.object(QFileDialog, "getExistingDirectory", return_value=""):
+        window._on_export_run_raw(fixture["run"].id)
+
+    assert list(tmp_path.iterdir()) == []
+    assert "Exported" not in window.statusBar().currentMessage()
+
+
+def test_export_raw_failure_shows_warning_not_crash(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)  # no data_dir -> raw export fails
+    qtbot.addWidget(window)
+
+    with patch.object(QFileDialog, "getExistingDirectory", return_value=str(tmp_path)), patch.object(
+        QMessageBox, "warning"
+    ) as mock_warning:
+        window._on_export_run_raw(fixture["run"].id)
+
+    mock_warning.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Instance batch-export wiring (_on_export_instance_results, #29)
+# ---------------------------------------------------------------------------
+
+
+def test_instance_info_has_export_all_results_buttons(qtbot, session, registry):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    window._on_node_selected(TreeNode(kind="instance", id=fixture["instance"].id, name="Inst 1"))
+
+    from PySide6.QtWidgets import QPushButton
+
+    labels = [b.text() for b in window._detail_scroll.widget().findChildren(QPushButton)]
+    assert "Export All Results (CSV)..." in labels
+    assert "Export All Results (Parquet)..." in labels
+
+
+def test_instance_export_all_results_disabled_with_no_runs(qtbot, session, registry):
+    profile = repo.create_profile(session, name="Dr. Test")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    session.commit()
+    from xpman.core.instance import freeze_program
+
+    instance = freeze_program(session, program.id, name="Empty Inst")
+    session.commit()
+
+    window = MainWindow(session, profile.id, registry)
+    qtbot.addWidget(window)
+    window._on_node_selected(TreeNode(kind="instance", id=instance.id, name="Empty Inst"))
+
+    from PySide6.QtWidgets import QPushButton
+
+    buttons = {b.text(): b for b in window._detail_scroll.widget().findChildren(QPushButton)}
+    assert not buttons["Export All Results (CSV)..."].isEnabled()
+    assert not buttons["Export All Results (Parquet)..."].isEnabled()
+
+
+def test_instance_export_all_results_combines_multiple_runs(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    # A second Run of the same Instance, a different subject.
+    subject_b = repo.create_subject(session, profile_id=fixture["profile"].id, first_name="Grace", last_name="Hopper")
+    session.commit()
+    run_b = Run(
+        instance_id=fixture["instance"].id, subject_id=subject_b.id, started_at=datetime.now(timezone.utc),
+        ended_at=datetime.now(timezone.utc), xpman_version="0.1.0", status=RunStatus.COMPLETED,
+    )
+    session.add(run_b)
+    session.commit()
+    session.add(Result(run_id=run_b.id, trial_index=0, condition_id=None, outcome_summary_json={"flips_completed": 5}))
+    session.commit()
+
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    out_path = tmp_path / "all.csv"
+    with patch.object(QFileDialog, "getSaveFileName", return_value=(str(out_path), "")):
+        window._on_export_instance_results(fixture["instance"].id, "csv")
+
+    assert out_path.exists()
+    content = out_path.read_text(encoding="utf-8")
+    assert "Lovelace, Ada" in content
+    assert "Hopper, Grace" in content
+    assert "Exported 2 run(s)" in window.statusBar().currentMessage()
+
+
+def test_instance_export_all_results_failure_shows_warning(qtbot, session, registry, tmp_path):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    out_path = tmp_path / "out.csv"
+    with patch.object(QFileDialog, "getSaveFileName", return_value=(str(out_path), "")), patch(
+        "xpman.gui.main_window.export_multi_run_results_to_csv", side_effect=RuntimeError("disk full")
+    ), patch.object(QMessageBox, "warning") as mock_warning:
+        window._on_export_instance_results(fixture["instance"].id, "csv")
+
+    mock_warning.assert_called_once()
+    assert "disk full" in mock_warning.call_args[0][2]
