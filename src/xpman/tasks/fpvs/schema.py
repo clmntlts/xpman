@@ -663,6 +663,62 @@ class FPVSConditionParams(BaseModel):
         check_reserved_code_collisions(stream_codes, table)
         return self
 
+    @model_validator(mode="after")
+    def _check_all_trigger_codes_disjoint(self) -> "FPVSConditionParams":
+        # _check_coincidence_codes above only enforces disjointness WITHIN the main+second-stream+
+        # coincidence-table group. Everything else that can emit an EEG trigger code -- additional
+        # streams beyond the second, the distractor, go/no-go, baseline, and familiarization -- was
+        # never cross-checked against that group OR against each other: only base/oddball-vs-distractor
+        # and base/oddball-vs-go_nogo were caught, and only as an advisory in check_triggers, not a hard
+        # error. Stack a dual stream + distractor + go/no-go + baseline together and two of them could
+        # silently share a code -- indistinguishable events in the recording, invisible until analysis.
+        # This validator collects EVERY trigger-code-bearing field from every *enabled* subsystem and
+        # requires them all pairwise-distinct, closing that gap the same way _check_coincidence_codes
+        # already closed it for the narrower group.
+        labeled: list[tuple[str, int]] = []
+
+        def add(label: str, code: int | None) -> None:
+            if code is not None:
+                labeled.append((label, code))
+
+        add("base.base_trigger_code", self.base.base_trigger_code)
+        add("oddball.oddball_trigger_code", self.oddball.oddball_trigger_code)
+        if self.second_stream.enabled:
+            add("second_stream.base_trigger_code", self.second_stream.base_trigger_code)
+            add("second_stream.oddball_trigger_code", self.second_stream.oddball_trigger_code)
+            if self.coincidence_codes.any_set():
+                codes = self.coincidence_codes
+                add("coincidence_codes.both_base", codes.both_base)
+                add("coincidence_codes.a_base_b_oddball", codes.a_base_b_oddball)
+                add("coincidence_codes.a_oddball_b_base", codes.a_oddball_b_base)
+                add("coincidence_codes.both_oddball", codes.both_oddball)
+        for i, stream in enumerate(self.additional_streams):
+            if stream.enabled:
+                add(f"additional_streams[{i}].base_trigger_code", stream.base_trigger_code)
+                add(f"additional_streams[{i}].oddball_trigger_code", stream.oddball_trigger_code)
+        if self.distractor.enabled:
+            add("distractor.trigger_code", self.distractor.trigger_code)
+        if self.go_nogo.enabled:
+            add("go_nogo.go_trigger_code", self.go_nogo.go_trigger_code)
+            add("go_nogo.nogo_trigger_code", self.go_nogo.nogo_trigger_code)
+        if self.baseline.enabled:
+            add("baseline.start_trigger_code", self.baseline.start_trigger_code)
+            add("baseline.stop_trigger_code", self.baseline.stop_trigger_code)
+        if self.familiarization.enabled:
+            add("familiarization.start_trigger_code", self.familiarization.start_trigger_code)
+            add("familiarization.stop_trigger_code", self.familiarization.stop_trigger_code)
+
+        seen: dict[int, str] = {}
+        for label, code in labeled:
+            if code in seen:
+                raise ValueError(
+                    f"trigger code {code} is used by both '{seen[code]}' and '{label}' -- these "
+                    "events would be indistinguishable from each other in the EEG recording. Give "
+                    "each enabled trigger-emitting field its own code."
+                )
+            seen[code] = label
+        return self
+
 
 class FPVSSchema:
     """``ParameterSchema`` for :class:`xpman.tasks.fpvs.task.FPVSTask`."""

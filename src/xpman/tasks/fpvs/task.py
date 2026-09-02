@@ -1468,11 +1468,10 @@ class FPVSTask(TaskModule):
 
         base_code = params.base.base_trigger_code
         oddball_code = params.oddball.oddball_trigger_code
-        if base_code is not None and base_code == oddball_code:
-            warnings.append(
-                f"base and oddball use the same trigger code ({base_code}) -- base and "
-                "oddball events will be indistinguishable in the EEG recording"
-            )
+        # Any trigger-code collision (base/oddball vs each other, vs a stream, vs distractor/
+        # go_nogo/baseline/familiarization) is now a hard error raised by
+        # FPVSConditionParams._check_all_trigger_codes_disjoint -- model_validate() above already
+        # rejects it, so params here is never in a colliding state; no advisory needed.
 
         # Oddball ordering pattern: it overrides oddball_freq_hz, so surface the resulting oddball
         # frequency (never let the override be silent) and flag an entered frequency that disagrees
@@ -1626,13 +1625,8 @@ class FPVSTask(TaskModule):
                     f"trial ({params.base.trial_duration_seconds:g}s) -- no distractor event can be "
                     "scheduled. Reduce guard_seconds or lengthen the trial."
                 )
-            # Distractor trigger equal to a stimulus trigger: markers become indistinguishable.
-            if distractor.trigger_code is not None and distractor.trigger_code in (base_code, oddball_code):
-                warnings.append(
-                    f"distractor.trigger_code ({distractor.trigger_code}) equals a base/oddball "
-                    "trigger code -- distractor and stimulus events would be indistinguishable in "
-                    "the EEG. Use a distinct code."
-                )
+            # (A distractor trigger code colliding with base/oddball is a HARD error -- see
+            # FPVSConditionParams._check_all_trigger_codes_disjoint -- so no advisory needed here.)
 
         # Go/no-go (spatial attention) advisories.
         go_nogo = params.go_nogo
@@ -1654,12 +1648,8 @@ class FPVSTask(TaskModule):
                     "both the central distractor and the spatial go/no-go task are enabled -- run one "
                     "behavioural task at a time (their events and keys would otherwise interfere)."
                 )
-            gn_codes = [c for c in (go_nogo.go_trigger_code, go_nogo.nogo_trigger_code) if c is not None]
-            if any(c in (base_code, oddball_code) for c in gn_codes):
-                warnings.append(
-                    "a go_nogo trigger code equals a base/oddball trigger code -- go/no-go and "
-                    "stimulus events would be indistinguishable in the EEG. Use distinct codes."
-                )
+            # (A go_nogo trigger code colliding with base/oddball is a HARD error -- see
+            # FPVSConditionParams._check_all_trigger_codes_disjoint -- so no advisory needed here.)
 
         if params.sweep.enabled:
             warnings.append(
