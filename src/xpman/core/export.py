@@ -183,13 +183,67 @@ def export_run_results_to_csv(session: Session, run_id: int, output_path: str | 
     output_path = Path(output_path)
     rows = get_run_results_rows(session, run_id)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_path, rows, list(_CONTEXT_COLUMNS))
+    return output_path
 
-    columns = list(rows[0].keys()) if rows else list(_CONTEXT_COLUMNS)
 
+def _write_csv(output_path: Path, rows: list[dict[str, Any]], fallback_columns: list[str]) -> None:
+    columns = list(rows[0].keys()) if rows else fallback_columns
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
 
+
+def get_multi_run_results_rows(session: Session, run_ids: list[int]) -> list[dict[str, Any]]:
+    """The same per-trial denormalized rows as :func:`get_run_results_rows`, for MULTIPLE Runs
+    concatenated into one table -- for group-level analysis (N subjects x conditions is the
+    normal unit of an EEG study, not one Run) instead of hand-joining separate per-run exports.
+
+    Rows are normalized ONCE across the combined set (not per-run then re-joined), so every row
+    in the output shares one consistent column set/order regardless of which Run it came from.
+
+    Raises:
+        LookupError: if any ``run_id`` doesn't resolve to a real Run.
+    """
+    rows: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        rows.extend(_build_rows(session, run_id))
+    return _normalize_rows(rows)
+
+
+def export_multi_run_results_to_parquet(
+    session: Session, run_ids: list[int], output_path: str | Path
+) -> Path:
+    """Export :func:`get_multi_run_results_rows` for ``run_ids`` to one Parquet file.
+
+    Raises:
+        LookupError: if any ``run_id`` doesn't resolve to a real Run.
+    """
+    output_path = Path(output_path)
+    rows = get_multi_run_results_rows(session, run_ids)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if rows:
+        table = pa.Table.from_pylist(rows)
+    else:
+        # Same zero-rows edge case as export_run_results_to_parquet (see its comment): no
+        # outcome data to infer a schema from, so only the fixed context columns are written.
+        table = pa.Table.from_pylist([], schema=pa.schema([(col, pa.null()) for col in _CONTEXT_COLUMNS]))
+
+    pq.write_table(table, output_path)
+    return output_path
+
+
+def export_multi_run_results_to_csv(session: Session, run_ids: list[int], output_path: str | Path) -> Path:
+    """Export the same rows/columns as :func:`export_multi_run_results_to_parquet`, as CSV.
+
+    Raises:
+        LookupError: if any ``run_id`` doesn't resolve to a real Run.
+    """
+    output_path = Path(output_path)
+    rows = get_multi_run_results_rows(session, run_ids)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_path, rows, list(_CONTEXT_COLUMNS))
     return output_path

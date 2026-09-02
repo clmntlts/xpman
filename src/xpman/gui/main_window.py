@@ -40,8 +40,16 @@ from sqlalchemy.orm import Session
 
 from xpman.core import clone
 from xpman.core import repository as repo
-from xpman.core.export import export_run_results_to_csv, export_run_results_to_parquet, get_run_results_rows
+from xpman.core.export import (
+    export_multi_run_results_to_csv,
+    export_multi_run_results_to_parquet,
+    export_run_results_to_csv,
+    export_run_results_to_parquet,
+    get_run_results_rows,
+)
 from xpman.core.instance import get_instance
+from xpman.core.raw_export import export_run_raw_bundle
+from xpman.core.raw_export import resolve_run_events_csv as _resolve_run_events_csv_path
 from xpman.gui.commit import safe_commit
 from xpman.gui.dialogs.block_create_dialog import BlockCreateDialog
 from xpman.gui.dialogs.block_edit_dialog import BlockEditDialog
@@ -272,16 +280,69 @@ class MainWindow(QMainWindow):
 
     def _show_instance_info(self, instance_id: int) -> None:
         instance = get_instance(self._session, instance_id)
+        run_count = len(repo.list_runs(self._session, instance_id=instance_id))
         lines = [
             f"Name: {instance.name}",
             f"Created: {_fmt_dt(instance.created_at)}",
             f"Schema version: {instance.schema_version}",
             f"Checksum: {instance.checksum}",
+            f"Runs: {run_count}",
             "",
             "This is an immutable snapshot -- editing the live Program/Experiment/Condition "
             "tree below does not change what this Instance will run.",
         ]
-        self._show_info_panel("Instance (read-only)", lines)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        info = QLabel("\n".join(lines))
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        export_row = QHBoxLayout()
+        export_csv_button = QPushButton("Export All Results (CSV)...")
+        export_csv_button.setToolTip(
+            "One combined, tidy table across every Run of this Instance (every subject who has "
+            "run it) -- for group-level analysis, instead of hand-joining per-run exports."
+        )
+        export_csv_button.setEnabled(run_count > 0)
+        export_csv_button.clicked.connect(lambda: self._on_export_instance_results(instance_id, "csv"))
+        export_row.addWidget(export_csv_button)
+        export_parquet_button = QPushButton("Export All Results (Parquet)...")
+        export_parquet_button.setEnabled(run_count > 0)
+        export_parquet_button.clicked.connect(lambda: self._on_export_instance_results(instance_id, "parquet"))
+        export_row.addWidget(export_parquet_button)
+        export_row.addStretch(1)
+        layout.addLayout(export_row)
+
+        self._set_detail_widget(container)
+        self._current_form = None
+        self._detail_title.setText("Instance (read-only)")
+        self._save_button.setEnabled(False)
+        self._preview_button.hide()
+
+    def _on_export_instance_results(self, instance_id: int, fmt: str) -> None:
+        run_ids = [run.id for run in repo.list_runs(self._session, instance_id=instance_id)]
+        if fmt == "csv":
+            file_filter, default_name, export_fn = (
+                "CSV files (*.csv)", f"instance_{instance_id}_all_results.csv", export_multi_run_results_to_csv,
+            )
+        else:
+            file_filter, default_name, export_fn = (
+                "Parquet files (*.parquet)", f"instance_{instance_id}_all_results.parquet",
+                export_multi_run_results_to_parquet,
+            )
+
+        path_str, _ = QFileDialog.getSaveFileName(self, "Export All Results", default_name, file_filter)
+        if not path_str:
+            return
+
+        try:
+            export_fn(self._session, run_ids, Path(path_str))
+        except Exception as exc:  # noqa: BLE001 - surface any export failure to the user, not a crash
+            QMessageBox.warning(self, "Export failed", f"Could not export results:\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"Exported {len(run_ids)} run(s) to {path_str}", 5000)
 
     def _show_block_info(self, block_id: int) -> None:
         block = repo.get_block(self._session, block_id)
@@ -354,6 +415,14 @@ class MainWindow(QMainWindow):
         export_parquet_button = QPushButton("Export Parquet...")
         export_parquet_button.clicked.connect(lambda: self._on_export_run(run_id, "parquet"))
         export_row.addWidget(export_parquet_button)
+        export_raw_button = QPushButton("Export Raw Data...")
+        export_raw_button.setToolTip(
+            "Everything actually recorded for this Run: every timestamped event (flips, "
+            "onsets, trigger sends, trial/phase boundaries) plus a manifest of Run/Subject/"
+            "Instance provenance and the exact frozen Condition parameters used."
+        )
+        export_raw_button.clicked.connect(lambda: self._on_export_run_raw(run_id))
+        export_row.addWidget(export_raw_button)
         export_row.addStretch(1)
         layout.addLayout(export_row)
 
@@ -364,20 +433,24 @@ class MainWindow(QMainWindow):
 
     def _resolve_run_events_csv(self, run) -> "Path | None":
         """Best path to a Run's ``events.csv`` for the trigger viewer, or ``None`` if it can't be
-        located. Prefers a Result's stored ``events_file_path`` (recorded at run time, relative to
-        data_dir -- and it survives the subject later being deleted), falling back to the canonical
-        ``data_dir/<instance>/<subject>/<run>/events.csv`` layout."""
-        if self._data_dir is None:
-            return None
-        for result in run.results:
-            if result.events_file_path:
-                stored = Path(result.events_file_path)
-                if not stored.is_absolute():
-                    stored = Path(self._data_dir) / stored
-                return stored.with_suffix(".csv")
-        if run.subject_id is not None:
-            return Path(self._data_dir) / str(run.instance_id) / str(run.subject_id) / str(run.id) / "events.csv"
-        return None
+        located. See ``core.raw_export.resolve_run_events_csv`` for the resolution rule (this is
+        a thin GUI-side wrapper so callers here don't have to know about ``core.raw_export``)."""
+        return _resolve_run_events_csv_path(self._data_dir, run)
+
+    def _on_export_run_raw(self, run_id: int) -> None:
+        output_dir = QFileDialog.getExistingDirectory(self, "Export Raw Data -- choose a folder")
+        if not output_dir:
+            return
+
+        try:
+            csv_path, _parquet_path, _manifest_path = export_run_raw_bundle(
+                self._session, run_id, self._data_dir, output_dir
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any export failure to the user, not a crash
+            QMessageBox.warning(self, "Export failed", f"Could not export raw data:\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"Exported raw data to {csv_path.parent}", 5000)
 
     def _on_view_events(self, run_id: int) -> None:
         run = repo.get_run(self._session, run_id)
