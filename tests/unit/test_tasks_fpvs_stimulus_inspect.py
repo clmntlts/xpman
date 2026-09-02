@@ -73,3 +73,19 @@ def test_empty_pool_returns_none_luminance(tmp_path):
     assert result.mean_luminance is None
     assert result.distinct_sizes == ()
     assert result.dimensions_uniform is True  # nothing to disagree about
+
+
+def test_mean_luminance_uses_bt709_not_itu601_coefficients(tmp_path):
+    """A pure-green image distinguishes the two standards: BT.709's green weight is 0.7152
+    (this module's definition, matching tasks.fpvs.luminance_contrast and the equalization
+    feature) vs. ITU-R 601's 0.587 (PIL's convert("L") default) -- the two must agree, or the
+    pool-divergence advisory and equalization would silently disagree about what "luminance"
+    means for the same image."""
+    from PIL import Image
+
+    path = tmp_path / "green.png"
+    Image.new("RGB", (16, 16), color=(0, 255, 0)).save(path)
+
+    result = inspect_pool([path])
+    assert result.mean_luminance == pytest.approx(0.7152, abs=0.001)  # BT.709 green coefficient
+    assert result.mean_luminance != pytest.approx(0.587, abs=0.01)  # NOT the ITU-R 601 coefficient

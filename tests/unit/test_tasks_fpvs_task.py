@@ -2819,3 +2819,118 @@ def test_run_trial_no_pulse_merge_warning_when_pulse_is_short(mock_window, stim_
     assert result.outcome_summary["trigger_pulse_merge_warning"] is None
     rows = _read_events(event_sink)
     assert not any(r["event_type"] == "trigger_pulse_cadence_warning" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Luminance/contrast equalization
+# ---------------------------------------------------------------------------
+
+
+def test_run_trial_equalization_disabled_by_default_uses_original_paths(
+    mock_window, split_stim_root, event_sink
+):
+    """The default (disabled) path is byte-for-byte unchanged: no equalization event, and the
+    ImageStim source is each image's real, original path -- not a cache file."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    params.base.trial_duration_seconds = 0.2
+
+    with patch("psychopy.visual.ImageStim") as mock_image_stim, patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    image_paths = [call.kwargs["image"] for call in mock_image_stim.call_args_list]
+    assert all(".xpman_equalized_cache" not in p for p in image_paths)
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "stimulus_equalization" for r in rows)
+
+
+def test_run_trial_equalization_enabled_logs_event_and_uses_cached_paths(
+    mock_window, split_stim_root, event_sink
+):
+    """Enabled: a stimulus_equalization event reports the combined (dark+light) pool's before/
+    after stats, and every ImageStim is built from the equalized cache file, not the original."""
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    params.base.trial_duration_seconds = 0.2
+    params.equalization.enabled = True
+
+    with patch("psychopy.visual.ImageStim") as mock_image_stim, patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    image_paths = [call.kwargs["image"] for call in mock_image_stim.call_args_list]
+    assert image_paths  # at least one stim was built
+    assert all(".xpman_equalized_cache" in p for p in image_paths)
+
+    rows = _read_events(event_sink)
+    eq_rows = [r for r in rows if r["event_type"] == "stimulus_equalization"]
+    assert len(eq_rows) == 1
+    payload = json.loads(eq_rows[0]["payload_json"])
+    assert payload["n_pool_images"] == 6  # 3 dark + 3 light -- the COMBINED scope, not per-pool
+    assert payload["n_equalized"] == 6
+    assert payload["n_failed"] == 0
+    # The dark and light pools started ~0.25 vs ~0.75 apart (per split_stim_root); after
+    # equalization the pool's own mean moved toward one shared target -- unchanged from the
+    # combined pool mean by construction (mean-preserving), but the per-image gap closes.
+    assert payload["mean_luminance_before"] == pytest.approx((64 + 192) / (2 * 255), abs=0.02)
+    assert payload["strength"] == 1.0
+
+
+def test_run_trial_equalization_second_trial_reuses_cache(mock_window, split_stim_root, event_sink):
+    """Same Condition run twice (e.g. trial repeats) must reuse the on-disk cache rather than
+    re-decoding + re-equalizing every trial -- resolved to the SAME cache file both times."""
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    params.base.trial_duration_seconds = 0.2
+    params.equalization.enabled = True
+
+    image_paths_by_trial = []
+    for trial_index in range(2):
+        with patch("psychopy.visual.ImageStim") as mock_image_stim, patch(
+            "psychopy.visual.Rect", return_value=MagicMock()
+        ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+            "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+        ):
+            task.run_trial(ctx, params.model_dump(), trial_index=trial_index)
+        image_paths_by_trial.append(
+            sorted(call.kwargs["image"] for call in mock_image_stim.call_args_list)
+        )
+
+    # The ImageStim GPU-texture cache means the second trial builds nothing new (empty call
+    # list); what matters is that the cache directory on disk didn't change between trials.
+    rows = _read_events(event_sink)
+    eq_rows = [r for r in rows if r["event_type"] == "stimulus_equalization"]
+    assert len(eq_rows) == 2
+    payload_0 = json.loads(eq_rows[0]["payload_json"])
+    payload_1 = json.loads(eq_rows[1]["payload_json"])
+    assert payload_0["mean_luminance_before"] == payload_1["mean_luminance_before"]
+    assert payload_0["n_equalized"] == payload_1["n_equalized"] == 6

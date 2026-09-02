@@ -79,13 +79,13 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "7"
+    assert FPVSSchema.SCHEMA_VERSION == "8"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("7", {"x": 1})
-    assert version == "7"
+    version, data = schema.migrate("8", {"x": 1})
+    assert version == "8"
     assert data == {"x": 1}
 
 
@@ -98,7 +98,7 @@ def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "7"
+    assert version == "8"
     assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
     assert data["oddball_selector"] == {}
 
@@ -179,7 +179,7 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "7"
+    assert version == "8"
     assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
 
 
@@ -189,7 +189,7 @@ def test_migrate_v2_to_current_passes_data_through():
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "7"
+    assert version == "8"
     assert data == v2_data
 
 
@@ -203,6 +203,25 @@ def test_condition_params_have_go_nogo_disabled_by_default():
     assert params.go_nogo.enabled is False
 
 
+def test_condition_params_have_equalization_disabled_by_default():
+    params = FPVSConditionParams()
+    assert params.equalization.enabled is False
+    assert params.equalization.equalize_luminance is True
+    assert params.equalization.equalize_contrast is True
+    assert params.equalization.strength == 1.0
+
+
+def test_equalization_params_strength_bounds():
+    from xpman.tasks.fpvs.schema import EqualizationParams
+
+    EqualizationParams(strength=0.0)
+    EqualizationParams(strength=1.0)
+    with pytest.raises(ValidationError):
+        EqualizationParams(strength=-0.1)
+    with pytest.raises(ValidationError):
+        EqualizationParams(strength=1.1)
+
+
 def test_condition_params_have_sweep_disabled_by_default():
     params = FPVSConditionParams()
     assert params.sweep.enabled is False
@@ -213,7 +232,7 @@ def test_migrate_v5_to_v6_is_additive_passthrough():
     schema = FPVSSchema()
     v5 = {"base": {"base_freq_hz": 6.0}, "go_nogo": {"enabled": False}}
     version, data = schema.migrate("5", v5)
-    assert version == "7"
+    assert version == "8"
     assert data == v5  # sweep default (disabled) fills in on validation
 
 
@@ -227,12 +246,24 @@ def test_migrate_v6_to_v7_is_additive_passthrough():
         "stream_position_pix": (0.0, 0.0),
     }
     version, data = schema.migrate("6", v6)
-    assert version == "7"
+    assert version == "8"
     assert data == v6  # additional_streams=[] / oddball_enabled=True defaults fill in on validation
     # And the migrated dict validates, with the new fields at their default-off values.
     params = FPVSConditionParams.model_validate(data)
     assert params.additional_streams == []
     assert params.second_stream.oddball_enabled is True
+
+
+def test_migrate_v7_to_v8_is_additive_passthrough():
+    # v7 -> v8 is additive: equalization (default disabled) fills in on validation, so a frozen
+    # v7 payload passes straight through the migrate.
+    schema = FPVSSchema()
+    v7 = {"base": {"base_freq_hz": 6.0}, "additional_streams": []}
+    version, data = schema.migrate("7", v7)
+    assert version == "8"
+    assert data == v7  # equalization.enabled=False default fills in on validation
+    params = FPVSConditionParams.model_validate(data)
+    assert params.equalization.enabled is False
 
 
 def test_sweep_with_triggered_single_stream_overlay_is_allowed():
