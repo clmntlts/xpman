@@ -467,9 +467,10 @@ def _present_stimulus(
                     timestamp=flip_time,
                 )
             # Log which image this onset showed (stimulus provenance -- reading onsets in order
-            # also recovers the full resolved/shuffled presentation order). ``identity`` is an
-            # optional generic attribute the stimulus wrapper may set; None when unknown. Once per
-            # stimulus (not per frame), so it stays off the timing-critical per-frame path.
+            # also recovers the full resolved/shuffled presentation order). ``identity`` and
+            # ``category`` are optional generic attributes the stimulus wrapper may set; None when
+            # unknown. Once per stimulus (not per frame), so it stays off the timing-critical
+            # per-frame path.
             event_sink.log(
                 onset_event_type,
                 {
@@ -477,6 +478,10 @@ def _present_stimulus(
                     "frame_index": global_frame_index,
                     "is_oddball": is_oddball,
                     "image": getattr(stim, "identity", None),
+                    # The selector's relative_dir that matched this image (#30) -- so an onset is
+                    # self-describing without joining back to the frozen Condition params to know
+                    # which pool/category produced it.
+                    "category": getattr(stim, "category", None),
                     # Where this image was shown: [x, y] pixel offset from center, or None when
                     # centered (jitter off) -- so onsets record position provenance the same way
                     # they record image identity (WP-B).
@@ -1572,6 +1577,9 @@ def _run_dual_stream(
                             "frame_index": global_frame_index,
                             "is_oddball": rt.current_is_oddball,
                             "image": getattr(rt.current_stim, "identity", None),
+                            # The selector's relative_dir that matched this image (#30) -- see the
+                            # single-stream site above for why.
+                            "category": getattr(rt.current_stim, "category", None),
                             # Actual drawn position: the stream's centre plus any jitter offset. With no
                             # jitter this equals position_pix (unchanged from v1); with jitter it is the
                             # jittered position, matching how the single-stream path logs each onset (#3).

@@ -465,6 +465,32 @@ def test_run_trial_logs_image_identity_at_onsets(mock_window, real_stim_root, ev
         assert json.loads(row["payload_json"])["image"] in names
 
 
+def test_run_trial_logs_selector_category_at_onsets(mock_window, split_stim_root, event_sink):
+    """#30: onset events record which selector/subdirectory produced the image (the
+    convention-agnostic stand-in for "category"), not just the bare filename -- recoverable
+    directly from the event stream without joining back to the frozen Condition params."""
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        base_selector=StimulusSelector(subdirectory="dark"),
+        oddball_selector=StimulusSelector(subdirectory="light"),
+    )
+    # Long enough for at least one oddball (default 1.2 Hz, period 5 @ 6 Hz base) to actually fire.
+    params.base.trial_duration_seconds = 2.0
+    _run_trial_outcome(task, ctx, params)
+
+    rows = _read_events(event_sink)
+    base_onsets = [json.loads(r["payload_json"]) for r in rows if r["event_type"] == "stimulus_onset"]
+    oddball_onsets = [json.loads(r["payload_json"]) for r in rows if r["event_type"] == "oddball_onset"]
+    assert base_onsets and oddball_onsets
+    assert all(o["category"] == "dark" for o in base_onsets)
+    assert all(o["category"] == "light" for o in oddball_onsets)
+
+
 class _OpacityRecorder:
     """Stands in for a psychopy ImageStim, recording every opacity assignment so a test can
     check the per-frame contrast curve. All ImageStim() calls in a trial return this one

@@ -1293,13 +1293,16 @@ def test_present_fixation_only_aborts_early(mock_window, event_sink, clock):
 
 
 def _identified_stims(names: list[str]) -> list[MagicMock]:
-    """Build MagicMocks whose ``.identity`` is an explicit string (a bare MagicMock returns a
-    truthy child mock for ``.identity``, so onset payloads would log those child mocks instead
-    of a real identity)."""
+    """Build MagicMocks whose ``.identity`` is an explicit string and ``.category`` is explicit
+    ``None`` (a bare MagicMock returns a fresh, distinct-per-instance child mock for either
+    attribute, so onset payloads would log those child mocks -- and the "category" field's
+    MagicMock repr would break byte-for-byte event-log equality across separately-built stim
+    lists -- instead of a real identity/category)."""
     stims = []
     for name in names:
         m = MagicMock(name=name)
         m.identity = name
+        m.category = None
         stims.append(m)
     return stims
 
@@ -1333,6 +1336,53 @@ def _run_oddball_and_read_onset_identities(event_sink, trigger, clock, mock_wind
         if r["event_type"] in ("stimulus_onset", "oddball_onset"):
             identities.append(json.loads(r["payload_json"])["image"])
     return identities
+
+
+def test_onset_events_log_category_alongside_identity(mock_window, event_sink, trigger, clock):
+    """#30: an onset event's "category" (the selector's relative_dir -- xpman's stand-in for a
+    category label) is logged alongside "image", not just recoverable via a database join."""
+    base = MagicMock(name="base0")
+    base.identity = "img001.png"
+    base.category = "faces/happy"
+
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[base],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=0.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    onsets = [json.loads(r["payload_json"]) for r in rows if r["event_type"] == "stimulus_onset"]
+    assert onsets  # at least one onset happened
+    assert all(o["image"] == "img001.png" and o["category"] == "faces/happy" for o in onsets)
+
+
+def test_onset_events_log_category_none_when_stim_has_no_category(mock_window, event_sink, trigger, clock):
+    """A real _ImageWithFixation defaults category=None when not given one; the event log must
+    reflect that (not silently omit the key or invent a truthy mock value)."""
+    from xpman.tasks.fpvs.task import _ImageWithFixation
+
+    stim = _ImageWithFixation(MagicMock(), None, identity="img.png")
+    run_base_sequence(
+        window=mock_window,
+        stimuli=[stim],
+        params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=0.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    onsets = [json.loads(r["payload_json"]) for r in rows if r["event_type"] == "stimulus_onset"]
+    assert onsets
+    assert all(o["category"] is None for o in onsets)
 
 
 def test_golden_pool_interleaving_order_is_stable_across_wraparounds(

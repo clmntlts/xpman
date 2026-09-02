@@ -400,12 +400,19 @@ class _ImageWithFixation:
     by paradigm_oddball) -- the fixation marker on top stays at full opacity so it never fades
     with the stimulation, matching real FPVS where fixation is continuously visible."""
 
-    def __init__(self, image_stim, fixation_stim, identity: str | None = None) -> None:
+    def __init__(
+        self, image_stim, fixation_stim, identity: str | None = None, category: str | None = None
+    ) -> None:
         self._image_stim = image_stim
         self._fixation_stim = fixation_stim
         #: The source image's filename, logged at each onset for stimulus provenance (which image
         #: appeared when). Read generically by paradigm_oddball via ``getattr(stim, "identity")``.
         self.identity = identity
+        #: The selector's ``relative_dir`` (e.g. "faces/happy") that matched this image -- the
+        #: convention-agnostic stand-in for a "category" label (#30). Logged alongside identity so
+        #: an onset event is self-describing without joining back to the frozen Condition params
+        #: to know which pool/category produced it. Read via ``getattr(stim, "category")``.
+        self.category = category
 
     def set_modulation(self, opacity: float) -> None:
         self._image_stim.opacity = opacity
@@ -650,6 +657,7 @@ class FPVSTask(TaskModule):
                 _get_image_stim(self._image_stim_cache, ctx.window, base_entries[i], path_overrides),
                 fixation_stim,
                 base_entries[i].path.name,
+                base_entries[i].relative_dir,
             )
             for i in base_order
         ]
@@ -658,6 +666,7 @@ class FPVSTask(TaskModule):
                 _get_image_stim(self._image_stim_cache, ctx.window, oddball_entries[i], path_overrides),
                 fixation_stim,
                 oddball_entries[i].path.name,
+                oddball_entries[i].relative_dir,
             )
             for i in oddball_order
         ]
@@ -952,6 +961,7 @@ class FPVSTask(TaskModule):
                         _get_image_stim(self._image_stim_cache, ctx.window, s_base_entries[i], path_overrides),
                         fixation_stim,
                         s_base_entries[i].path.name,
+                        s_base_entries[i].relative_dir,
                     )
                     for i in s_base_order
                 ]
@@ -967,6 +977,7 @@ class FPVSTask(TaskModule):
                             _get_image_stim(self._image_stim_cache, ctx.window, s_oddball_entries[i], path_overrides),
                             fixation_stim,
                             s_oddball_entries[i].path.name,
+                            s_oddball_entries[i].relative_dir,
                         )
                         for i in s_oddball_order
                     ]
