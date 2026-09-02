@@ -66,6 +66,14 @@ def _build_trial_sequence(
     -- so re-running the same subject against the same Instance reproduces their exact prior
     order). Each block repetition (``repeat_count``) draws its own independent shuffle rather
     than repeating one shuffle verbatim, so identical repeats don't present trials in lockstep.
+
+    Block order follows the same split: ``Experiment.order_index`` on each Block fixes one
+    sequence at freeze time (identical for every subject), and an Experiment's
+    ``randomize_block_order_per_subject`` flag layers a *runtime* reshuffle of that Block order
+    on top, drawn from the same per-(Instance, Subject) ``rng`` -- so counterbalancing designs
+    (ABBA, Latin-square-like rotation across a lab's subjects) fall out of subjects simply
+    getting independent, reproducible Block orders, the same way ``randomize_per_subject``
+    already does for Trial order within a Block.
     """
     conditions_by_id: dict[int, dict] = {}
     for experiment in frozen_program.get("experiments", []):
@@ -77,6 +85,9 @@ def _build_trial_sequence(
         if experiment_id is not None and experiment["id"] != experiment_id:
             continue
         blocks = sorted(experiment.get("blocks", []), key=lambda b: (b["order_index"], b["id"]))
+        if experiment.get("randomize_block_order_per_subject") and len(blocks) > 1:
+            permutation = rng.permutation(len(blocks))
+            blocks = [blocks[i] for i in permutation]
         for block in blocks:
             trials = sorted(block.get("trials", []), key=lambda t: (t["order_index"], t["id"]))
             for _ in range(max(block.get("repeat_count", 1), 0)):

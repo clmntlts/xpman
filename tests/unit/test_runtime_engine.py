@@ -1,10 +1,12 @@
-"""Tests for runtime.engine.count_trials (a pure function over a frozen_json program tree)."""
+"""Tests for runtime.engine.count_trials (a pure function over a frozen_json program tree) and
+the private ``_build_trial_sequence`` block-order-randomization logic."""
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
-from xpman.runtime.engine import count_trials
+from xpman.runtime.engine import _build_trial_sequence, count_trials
 
 
 def _program(experiments):
@@ -14,9 +16,9 @@ def _program(experiments):
 _next_block_id = iter(range(1, 1_000_000))
 
 
-def _block(trials, repeat_count=1, randomize_per_subject=False, order_index=0):
+def _block(trials, repeat_count=1, randomize_per_subject=False, order_index=0, block_id=None):
     return {
-        "id": next(_next_block_id),
+        "id": block_id if block_id is not None else next(_next_block_id),
         "order_index": order_index,
         "repeat_count": repeat_count,
         "randomize_per_subject": randomize_per_subject,
@@ -100,8 +102,13 @@ def test_trial_with_null_condition_id_raises_clear_error():
 # ---------------------------------------------------------------------------
 
 
-def _experiment(experiment_id, blocks):
-    return {"id": experiment_id, "conditions": [], "blocks": blocks}
+def _experiment(experiment_id, blocks, randomize_block_order_per_subject=False):
+    return {
+        "id": experiment_id,
+        "conditions": [],
+        "blocks": blocks,
+        "randomize_block_order_per_subject": randomize_block_order_per_subject,
+    }
 
 
 def test_experiment_id_none_counts_all_experiments():
@@ -128,6 +135,75 @@ def test_experiment_id_scopes_count_to_that_experiment():
 def test_experiment_id_not_present_counts_zero():
     program = _program([_experiment(1, [_block([_trial(1, 10, 0)])])])
     assert count_trials(program, experiment_id=999) == 0
+
+
+# ---------------------------------------------------------------------------
+# randomize_block_order_per_subject (issue #31: per-subject Block-order counterbalancing)
+# ---------------------------------------------------------------------------
+
+
+def _blocks_by_trial_order(program, rng, experiment_id=None):
+    """The sequence of trial ids produced -- with one single-trial Block per slot, this is
+    exactly the Block order the engine walked."""
+    return [spec.trial_id for spec in _build_trial_sequence(program, rng, experiment_id=experiment_id)]
+
+
+def _three_single_trial_blocks(randomize_block_order_per_subject):
+    return _program(
+        [
+            _experiment(
+                1,
+                [
+                    _block([_trial(1, 10, 0)], order_index=0, block_id=100),
+                    _block([_trial(2, 10, 0)], order_index=1, block_id=101),
+                    _block([_trial(3, 10, 0)], order_index=2, block_id=102),
+                ],
+                randomize_block_order_per_subject=randomize_block_order_per_subject,
+            )
+        ]
+    )
+
+
+def test_randomize_block_order_per_subject_false_preserves_frozen_order():
+    program = _three_single_trial_blocks(randomize_block_order_per_subject=False)
+    assert _blocks_by_trial_order(program, np.random.default_rng(0)) == [1, 2, 3]
+
+
+def test_randomize_block_order_per_subject_true_can_reorder_blocks():
+    program = _three_single_trial_blocks(randomize_block_order_per_subject=True)
+    assert _blocks_by_trial_order(program, np.random.default_rng(7)) != [1, 2, 3]
+
+
+def test_randomize_block_order_per_subject_does_not_change_trial_count():
+    program = _three_single_trial_blocks(randomize_block_order_per_subject=True)
+    assert count_trials(program) == 3
+
+
+def test_randomize_block_order_per_subject_is_deterministic_for_same_rng_seed():
+    program = _three_single_trial_blocks(randomize_block_order_per_subject=True)
+    first = _blocks_by_trial_order(program, np.random.default_rng(42))
+    second = _blocks_by_trial_order(program, np.random.default_rng(42))
+    assert first == second
+
+
+def test_randomize_block_order_per_subject_differs_across_subject_seeds():
+    program = _three_single_trial_blocks(randomize_block_order_per_subject=True)
+    seed_5 = _blocks_by_trial_order(program, np.random.default_rng(5))
+    seed_6 = _blocks_by_trial_order(program, np.random.default_rng(6))
+    assert seed_5 != seed_6
+
+
+def test_randomize_block_order_per_subject_single_block_is_noop():
+    program = _program(
+        [
+            _experiment(
+                1,
+                [_block([_trial(1, 10, 0)], order_index=0, block_id=100)],
+                randomize_block_order_per_subject=True,
+            )
+        ]
+    )
+    assert _blocks_by_trial_order(program, np.random.default_rng(0)) == [1]
 
 
 def test_experiment_id_filter_skips_other_experiments_null_condition():

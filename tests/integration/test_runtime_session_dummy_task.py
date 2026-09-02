@@ -111,6 +111,74 @@ def _build_dummy_program_instance(session) -> tuple[int, int]:
     return instance.id, subject.id
 
 
+def _build_dummy_program_instance_with_randomized_block_order(session) -> tuple[int, int]:
+    """Build a tree with 3 single-trial Blocks under an Experiment with
+    ``randomize_block_order_per_subject=True`` (issue #31), freeze it, and return
+    (instance_id, subject_id)."""
+    profile = repo.create_profile(session, name="Integration Test Profile")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    program = repo.create_program(
+        session,
+        profile_id=profile.id,
+        name="Dummy Proving Ground",
+        resource_main_directory="C:/stim",
+        task_name="dummy",
+        task_schema_version="1",
+        parameters_json={},
+    )
+    experiment = repo.create_experiment(
+        session,
+        program_id=program.id,
+        name="Exp 1",
+        parameters_json={},
+        randomize_block_order_per_subject=True,
+    )
+    for i, (rate, trigger_code) in enumerate([(20, 10), (15, 20), (10, 30)]):
+        condition = repo.create_condition(
+            session,
+            experiment_id=experiment.id,
+            name=f"Cond {i}",
+            parameters_json={"flip_rate_hz": rate, "duration_seconds": 0.1, "trigger_code": trigger_code},
+        )
+        block = repo.create_block(session, experiment_id=experiment.id, name=f"Block {i}", order_index=i)
+        repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)
+    session.commit()
+
+    instance = freeze_program(session, program.id, name="Instance 1")
+    session.commit()
+    return instance.id, subject.id
+
+
+def test_randomize_block_order_per_subject_is_reproducible_for_same_subject(
+    session, registry, mock_window, tmp_path
+):
+    """Re-running the SAME (instance, subject) pair must reproduce the same Block order --
+    the whole point of seeding rng from (Instance, Subject) in core.rng, now extended to
+    Block order (issue #31)."""
+    instance_id, subject_id = _build_dummy_program_instance_with_randomized_block_order(session)
+
+    def _run_and_get_condition_sequence(run_dir_suffix):
+        with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+            run = launch_run(
+                session,
+                instance_id=instance_id,
+                subject_id=subject_id,
+                registry=registry,
+                window=mock_window,
+                trigger=NullTrigger(reset_after=0.0),
+                clock=Clock(),
+                data_dir=tmp_path / run_dir_suffix,
+            )
+        results = session.query(Result).filter(Result.run_id == run.id).order_by(Result.trial_index).all()
+        return [r.condition_id for r in results]
+
+    first_sequence = _run_and_get_condition_sequence("run1")
+    second_sequence = _run_and_get_condition_sequence("run2")
+
+    assert len(first_sequence) == 3
+    assert first_sequence == second_sequence
+
+
 def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     instance_id, subject_id = _build_dummy_program_instance(session)
 

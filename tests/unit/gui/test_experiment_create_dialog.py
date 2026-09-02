@@ -85,6 +85,19 @@ def test_create_with_name_persists_and_accepts(qtbot, session, program_id):
     assert experiment.name == "My Experiment"
     assert experiment.parameters_json == {}
     assert experiment.program_id == program_id
+    assert experiment.randomize_block_order_per_subject is False
+
+
+def test_randomize_block_order_checkbox_persists_when_checked(qtbot, session, program_id):
+    dialog = ExperimentCreateDialog(session, program_id)
+    qtbot.addWidget(dialog)
+
+    dialog._name_edit.setText("Counterbalanced Experiment")
+    dialog._randomize_block_order_check.setChecked(True)
+    dialog._on_create()
+
+    experiment = repo.get_experiment(session, dialog.created_experiment_id)
+    assert experiment.randomize_block_order_per_subject is True
 
 
 def test_return_pressed_creates_experiment(qtbot, session, program_id):

@@ -109,10 +109,17 @@ def _serialize_condition(condition: Condition) -> dict:
 
 
 def _serialize_experiment(experiment: Experiment) -> dict:
+    """Serialize an Experiment. ``randomize_block_order_per_subject`` is passed through as-is
+    (not baked in here): unlike ``Block.randomize_trials``, Block order has no "shuffle once,
+    same for everyone" analog, only a per-subject one -- see
+    ``Block.randomize_per_subject``'s comment and ``runtime/engine.py``, which performs the
+    actual reshuffle at run time using the (Instance, Subject)-seeded RNG.
+    """
     return {
         "id": experiment.id,
         "name": experiment.name,
         "parameters_json": copy.deepcopy(experiment.parameters_json),
+        "randomize_block_order_per_subject": experiment.randomize_block_order_per_subject,
         "conditions": [
             _serialize_condition(condition)
             for condition in sorted(experiment.conditions, key=lambda c: c.id)

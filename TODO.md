@@ -109,13 +109,19 @@ selected; 647 tests + a 24-check offscreen end-to-end walkthrough pass.
       action, **refused when the Instance has Runs** (cascade would destroy results — a
       deliberate, documented divergence from legacy's "delete but keep results," which xpman's
       Run→Instance result model can't support).
+- [x] **Block-order counterbalancing across subjects** (issue #31) — `Block.order_index` fixed
+      one sequence at freeze time with no per-subject analog, unlike `randomize_per_subject` for
+      Trial order. New `Experiment.randomize_block_order_per_subject` flag layers a runtime
+      per-(Instance, Subject)-seeded reshuffle of Block order on top of the frozen sequence, the
+      same relationship `randomize_per_subject` already has to Trial order
+      (`runtime/engine.py::_build_trial_sequence`).
 
 **Deliberate divergences (documented, not bugs):** instance-delete refuses rather than orphaning
 results; `randomize_trials` is deterministic-per-block (no click-to-reshuffle button); profile
 passwords and cross-profile visibility remain inert dead fields (single-machine model) — candidate
 for later removal or wiring.
 
-**Deferred (below / open_questions):** block-order randomization across blocks; persisting
+**Deferred (below / open_questions):** persisting
 `Run.experiment_id` (needs a migration story); per-subject aggregate results view; in-GUI events
 viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm breadth (next section).
 
