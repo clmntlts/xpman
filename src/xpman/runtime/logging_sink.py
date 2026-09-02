@@ -1,8 +1,8 @@
 """``EventSink``: incremental, crash-safe per-Run event logging to CSV + Parquet.
 
-Per the plan's Section 1.4 design: SQL (``core.models.Result``/``Event``) holds trial-level
-*summaries*; the full per-flip/per-event stream for a Run lives here, on disk, referenced from
-``Result.events_file_path``.
+Per the plan's Section 1.4 design: SQL (``core.models.Result``) holds trial-level *summaries*;
+the full per-flip/per-event stream for a Run lives here, on disk, referenced from
+``Result.events_file_path`` -- there is deliberately no SQL-queryable event mirror (issue #32).
 
 CSV is the crash-safety source of truth: each :meth:`EventSink.log` call writes and flushes a
 row immediately, so a mid-session app crash leaves a fully readable partial CSV on disk. The

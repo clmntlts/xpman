@@ -50,9 +50,9 @@ Instance, Result) since the lab is already fluent in it.
   `frozen_json`, never live rows** — editing a Program later cannot retroactively change a past
   Instance's behavior. This is the reproducibility guarantee.
 - **Run**: one launch of an Instance against one Subject. **Result**: one row per executed
-  Trial (small JSON summary + a path to that run's Parquet event file). **Event**: an optional
-  lightweight DB mirror of only high-value events, for fast cross-run queries without opening
-  every Parquet file.
+  Trial (small JSON summary + a path to that run's Parquet event file). There is no SQL-queryable
+  event mirror -- the full per-flip/per-trigger stream lives entirely in that Parquet/CSV file
+  (see `core/raw_export.py` for reading it back across many runs at once).
 - **Task-specific parameters** (Program/Experiment/Condition) are stored as JSON columns
   validated against a Pydantic schema declared per task type — not EAV, not per-task tables —
   so adding a new task type needs zero core schema migrations.

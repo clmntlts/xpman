@@ -56,10 +56,46 @@ def test_downgrade_removes_trigger_provenance_columns(db_url):
     command.upgrade(cfg, "head")
     assert {"trigger_backend", "trigger_port", "pyserial_version"} <= _run_columns(db_url)
 
-    command.downgrade(cfg, "-1")
+    # Target the specific revision that added these columns, not a relative "-1" -- head has since
+    # grown a migration on top of it (the events-table drop), so "-1" from head no longer lands here.
+    command.downgrade(cfg, "a1b2c3d4e5f6")
     cols = _run_columns(db_url)
     assert "trigger_backend" not in cols
     assert "trigger_port" not in cols
     assert "pyserial_version" not in cols
     # The earlier provenance columns (from the prior migration) must survive the downgrade.
     assert {"psychopy_version", "numpy_version"} <= cols
+
+
+def _table_names(db_url: str) -> set[str]:
+    engine = create_engine(db_url)
+    try:
+        return set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_head_drops_the_unused_events_table(db_url):
+    """#32: the events table (core.models.Event) was defined but never written to -- dropped
+    rather than wired up, so it must not exist after upgrading to head."""
+    command.upgrade(_alembic_config(db_url), "head")
+    assert "events" not in _table_names(db_url)
+
+
+def test_downgrade_recreates_the_events_table(db_url):
+    """Downgrading past the drop migration must restore the table exactly (same columns/FK),
+    matching every other migration's upgrade/downgrade round-trip guarantee."""
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+    assert "events" not in _table_names(db_url)
+
+    command.downgrade(cfg, "-1")
+    tables = _table_names(db_url)
+    assert "events" in tables
+
+    engine = create_engine(db_url)
+    try:
+        columns = {col["name"] for col in inspect(engine).get_columns("events")}
+    finally:
+        engine.dispose()
+    assert columns == {"id", "result_id", "timestamp", "event_type", "payload_json"}

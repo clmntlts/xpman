@@ -10,7 +10,6 @@ from xpman.core.models import (
     Base,
     Block,
     Condition,
-    Event,
     Experiment,
     Instance,
     Profile,
@@ -49,7 +48,6 @@ def test_all_expected_tables_exist():
         "instances",
         "runs",
         "results",
-        "events",
     }
     assert expected <= set(Base.metadata.tables.keys())
 
@@ -179,7 +177,7 @@ def test_deleting_program_does_not_delete_instance(session):
     assert surviving_instance.program_id is None
 
 
-def test_run_result_event_chain_and_cascade(session):
+def test_run_result_chain_and_cascade(session):
     program = _make_full_tree(session)
     condition = session.scalars(select(Condition)).one()
     instance = Instance(
@@ -201,17 +199,12 @@ def test_run_result_event_chain_and_cascade(session):
     session.add(result)
     session.flush()
 
-    event = Event(result_id=result.id, event_type="flip", payload_json={"frame": 1})
-    session.add(event)
-    session.flush()
-
     run_id = run.id
     session.delete(run)
     session.flush()
 
     assert session.get(Run, run_id) is None
     assert session.scalars(select(Result)).first() is None
-    assert session.scalars(select(Event)).first() is None
 
 
 def test_run_status_enum_roundtrip(session):

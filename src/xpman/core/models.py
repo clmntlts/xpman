@@ -7,7 +7,7 @@ Hierarchy (mirrors the legacy XP Man vocabulary):
                                       -> Block -> Trial (-> Condition)
 
     Program -> Instance (frozen snapshot of the Program's full tree)
-    Instance -> Run -> Result -> Event
+    Instance -> Run -> Result
     Subject -> Run
 
 No PsychoPy/Qt/hardware imports here deliberately -- this module must stay importable
@@ -315,36 +315,13 @@ class Result(Base):
         ForeignKey("conditions.id", ondelete="SET NULL"), nullable=True
     )
     outcome_summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # The full per-flip/per-trigger event stream lives in the Run's Parquet/CSV file (see
+    # runtime/logging_sink.py and core/export.py), referenced by this path -- there is
+    # deliberately no SQL-queryable event mirror (a prior "events" table was defined but never
+    # written to anywhere; dropped rather than wired up, see migrations/.../drop_unused_events_table).
     events_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped[Run] = relationship(back_populates="results")
-    events: Mapped[list["Event"]] = relationship(
-        back_populates="result", cascade="all, delete-orphan", passive_deletes=True,
-        order_by="Event.timestamp",
-    )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"Result(id={self.id!r}, run_id={self.run_id!r}, trial_index={self.trial_index!r})"
-
-
-class Event(Base):
-    """A lightweight DB mirror of a high-value event (block start, abort, ...).
-
-    The full per-flip event stream lives in the Run's Parquet file, not here -- see
-    ``core/export.py`` and ``docs/architecture.md``.
-    """
-
-    __tablename__ = "events"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    result_id: Mapped[int] = mapped_column(
-        ForeignKey("results.id", ondelete="CASCADE"), nullable=False
-    )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-
-    result: Mapped[Result] = relationship(back_populates="events")
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"Event(id={self.id!r}, result_id={self.result_id!r}, event_type={self.event_type!r})"
