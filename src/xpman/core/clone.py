@@ -108,6 +108,7 @@ def _clone_experiment_into(session: Session, source: Experiment, program_id: int
         program_id=program_id,
         name=name,
         parameters_json=_cloned_params(source.parameters_json),
+        randomize_block_order_per_subject=source.randomize_block_order_per_subject,
     )
     condition_id_map: dict[int, int] = {}
     for condition in repo.list_conditions(session, experiment_id=source.id):

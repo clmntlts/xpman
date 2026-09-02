@@ -74,6 +74,10 @@ def test_program_experiment_condition_block_trial_crud(session):
         task_schema_version="1",
     )
     experiment = repo.create_experiment(session, program_id=program.id, name="Exp")
+    assert experiment.randomize_block_order_per_subject is False
+    repo.update_experiment(session, experiment.id, randomize_block_order_per_subject=True)
+    assert repo.get_experiment(session, experiment.id).randomize_block_order_per_subject is True
+
     condition = repo.create_condition(session, experiment_id=experiment.id, name="Cond", parameters_json={"a": 1})
     block = repo.create_block(session, experiment_id=experiment.id, name="Block", order_index=0)
     trial = repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)

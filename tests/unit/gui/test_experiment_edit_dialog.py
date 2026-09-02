@@ -50,6 +50,31 @@ def test_dialog_opens_prefilled_with_existing_name(qtbot, session, experiment_id
 
     assert dialog._name_edit.text() == "Original Name"
     assert dialog._ok_button.isEnabled()
+    assert dialog._randomize_block_order_check.isChecked() is False
+
+
+def test_dialog_opens_prefilled_with_randomize_block_order_flag(qtbot, session, program_id):
+    experiment = repo.create_experiment(
+        session, program_id=program_id, name="Counterbalanced", randomize_block_order_per_subject=True
+    )
+    session.commit()
+
+    dialog = ExperimentEditDialog(session, experiment.id)
+    qtbot.addWidget(dialog)
+
+    assert dialog._randomize_block_order_check.isChecked() is True
+
+
+def test_toggling_randomize_block_order_persists_via_repo_update(qtbot, session, experiment_id):
+    dialog = ExperimentEditDialog(session, experiment_id)
+    qtbot.addWidget(dialog)
+
+    dialog._randomize_block_order_check.setChecked(True)
+    dialog._on_save()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    experiment = repo.get_experiment(session, experiment_id)
+    assert experiment.randomize_block_order_per_subject is True
 
 
 def test_blank_name_disables_ok_and_prevents_save(qtbot, session, experiment_id):

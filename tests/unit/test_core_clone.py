@@ -36,7 +36,11 @@ def fixture(session):
         visible_to_others=True,
     )
     experiment = repo.create_experiment(
-        session, program_id=program.id, name="Exp 1", parameters_json={"exp_key": "exp_val"}
+        session,
+        program_id=program.id,
+        name="Exp 1",
+        parameters_json={"exp_key": "exp_val"},
+        randomize_block_order_per_subject=True,
     )
     condition_a = repo.create_condition(
         session, experiment_id=experiment.id, name="Cond A", parameters_json={"deep": {"freq": 6.0}}
@@ -150,6 +154,7 @@ def test_clone_experiment_remaps_trial_conditions_to_cloned_conditions(session, 
 
     assert new.name == "Exp 1 (copy)"
     assert new.parameters_json == {"exp_key": "exp_val"}
+    assert new.randomize_block_order_per_subject is True
 
     original_condition_ids = {fixture["condition_a"].id, fixture["condition_b"].id}
     new_conditions = repo.list_conditions(session, experiment_id=new.id)

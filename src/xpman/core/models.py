@@ -139,6 +139,13 @@ class Experiment(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     parameters_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Counterbalancing across subjects: Block.order_index fixes one sequence at freeze time
+    # (see core/instance.py), identical for every subject -- this flag layers a *runtime*,
+    # per-subject reshuffle of that Block order on top, mirroring Block.randomize_per_subject's
+    # relationship to Trial order (see runtime/engine.py's _build_trial_sequence).
+    randomize_block_order_per_subject: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

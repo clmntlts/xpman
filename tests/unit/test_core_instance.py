@@ -48,7 +48,13 @@ def _build_full_program_tree(session) -> int:
         task_schema_version="1",
         parameters_json={"base_freq_hz": 6.0},
     )
-    experiment = repo.create_experiment(session, program_id=program.id, name="Exp 1", parameters_json={"trials": 100})
+    experiment = repo.create_experiment(
+        session,
+        program_id=program.id,
+        name="Exp 1",
+        parameters_json={"trials": 100},
+        randomize_block_order_per_subject=True,
+    )
     condition_a = repo.create_condition(
         session, experiment_id=experiment.id, name="Faces", parameters_json={"oddball_freq_hz": 1.2}
     )
@@ -81,6 +87,7 @@ def test_build_snapshot_contains_full_tree(session):
     assert len(experiments[0]["conditions"]) == 2
     assert len(experiments[0]["blocks"]) == 1
     assert len(experiments[0]["blocks"][0]["trials"]) == 2
+    assert experiments[0]["randomize_block_order_per_subject"] is True
 
 
 def test_build_snapshot_missing_program_raises(session):

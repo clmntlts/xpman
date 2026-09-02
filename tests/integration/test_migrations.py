@@ -89,7 +89,10 @@ def test_downgrade_recreates_the_events_table(db_url):
     command.upgrade(cfg, "head")
     assert "events" not in _table_names(db_url)
 
-    command.downgrade(cfg, "-1")
+    # Target the revision just before the drop, not a relative "-1" -- head has since grown a
+    # migration on top of it (the Experiment block-order-randomization column), so "-1" from head
+    # no longer lands here.
+    command.downgrade(cfg, "b2c3d4e5f6a7")
     tables = _table_names(db_url)
     assert "events" in tables
 

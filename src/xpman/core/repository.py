@@ -210,9 +210,19 @@ def delete_program(session: Session, program_id: int) -> None:
 
 
 def create_experiment(
-    session: Session, *, program_id: int, name: str, parameters_json: dict | None = None
+    session: Session,
+    *,
+    program_id: int,
+    name: str,
+    parameters_json: dict | None = None,
+    randomize_block_order_per_subject: bool = False,
 ) -> Experiment:
-    experiment = Experiment(program_id=program_id, name=name, parameters_json=parameters_json or {})
+    experiment = Experiment(
+        program_id=program_id,
+        name=name,
+        parameters_json=parameters_json or {},
+        randomize_block_order_per_subject=randomize_block_order_per_subject,
+    )
     session.add(experiment)
     session.flush()
     return experiment
@@ -230,13 +240,20 @@ def list_experiments(session: Session, *, program_id: int | None = None) -> list
 
 
 def update_experiment(
-    session: Session, experiment_id: int, *, name: str | None = None, parameters_json: dict | None = None
+    session: Session,
+    experiment_id: int,
+    *,
+    name: str | None = None,
+    parameters_json: dict | None = None,
+    randomize_block_order_per_subject: bool | None = None,
 ) -> Experiment:
     experiment = _require(session, Experiment, experiment_id)
     if name is not None:
         experiment.name = name
     if parameters_json is not None:
         experiment.parameters_json = parameters_json
+    if randomize_block_order_per_subject is not None:
+        experiment.randomize_block_order_per_subject = randomize_block_order_per_subject
     session.flush()
     return experiment
 

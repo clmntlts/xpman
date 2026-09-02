@@ -11,11 +11,23 @@ Experiment exists and is selected in the tree.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QLineEdit,
+    QVBoxLayout,
+)
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
 from xpman.gui.commit import safe_commit
+
+_RANDOMIZE_BLOCK_ORDER_TOOLTIP = (
+    "Re-shuffled fresh for each subject: every subject gets their own independent random "
+    "order of this Experiment's Blocks (counterbalancing across subjects)."
+)
 
 
 class ExperimentCreateDialog(QDialog):
@@ -28,7 +40,7 @@ class ExperimentCreateDialog(QDialog):
     def __init__(self, session: Session, program_id: int, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("xpman -- New Experiment")
-        self.resize(360, 140)
+        self.resize(360, 170)
         self._session = session
         self._program_id = program_id
         self.created_experiment_id: int | None = None
@@ -41,6 +53,10 @@ class ExperimentCreateDialog(QDialog):
         self._name_edit.textChanged.connect(self._update_button_state)
         self._name_edit.returnPressed.connect(self._on_create)
         layout.addWidget(self._name_edit)
+
+        self._randomize_block_order_check = QCheckBox("Randomize block order per subject")
+        self._randomize_block_order_check.setToolTip(_RANDOMIZE_BLOCK_ORDER_TOOLTIP)
+        layout.addWidget(self._randomize_block_order_check)
 
         layout.addStretch(1)
 
@@ -67,6 +83,7 @@ class ExperimentCreateDialog(QDialog):
             program_id=self._program_id,
             name=name,
             parameters_json={},
+            randomize_block_order_per_subject=self._randomize_block_order_check.isChecked(),
         )
         if not safe_commit(self._session, self, action="create the experiment"):
             return
