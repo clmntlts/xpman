@@ -63,6 +63,17 @@ def test_scan_recognizes_all_image_extensions(tmp_path):
     assert result.warnings == []
 
 
+def test_scan_skips_dot_prefixed_directories_silently(tmp_path):
+    """The equalization cache (.xpman_equalized_cache, see equalization_cache.py) lives inside
+    the resource directory -- it must never be picked up as a "real" stimulus, silently or with
+    a warning (it's xpman's own generated data, not a researcher's misplaced file)."""
+    _touch(tmp_path / "faces" / "a.png")
+    _touch(tmp_path / ".xpman_equalized_cache" / "some_key" / "a_deadbeef.png")
+    result = scan_directory(tmp_path)
+    assert {e.path.name for e in result.entries} == {"a.png"}
+    assert result.warnings == []
+
+
 def test_scan_empty_directory_returns_nothing(tmp_path):
     result = scan_directory(tmp_path)
     assert result.entries == []

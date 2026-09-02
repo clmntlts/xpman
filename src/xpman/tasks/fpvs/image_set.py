@@ -59,12 +59,21 @@ def scan_directory(root: Path) -> ImageSetScanResult:
     Every file with a recognized image extension becomes an ``ImageEntry`` tagged with its
     ``relative_dir``; non-image files are skipped with an informational warning. No naming
     convention is assumed -- selection happens later via ``filter_entries``.
+
+    A path with any dot-prefixed component (e.g. ``.xpman_equalized_cache``, the equalization
+    feature's on-disk cache -- see ``tasks.fpvs.equalization_cache``) is skipped entirely,
+    silently and without a warning: it is xpman's own generated data living alongside the
+    stimuli, not a stimulus set a researcher organized, and including it here would let a cache
+    file get matched by a selector and presented as a "real" image, or worse, feed back into the
+    equalization pool computation itself.
     """
     root = Path(root)
     entries: list[ImageEntry] = []
     warnings: list[str] = []
 
     for file_path in sorted(p for p in root.rglob("*") if p.is_file()):
+        if any(part.startswith(".") for part in file_path.relative_to(root).parts):
+            continue
         if file_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             warnings.append(f"skipped non-image file: {file_path}")
             continue

@@ -188,6 +188,41 @@ class PositionJitterParams(BaseModel):
         return self.x_range_pix == (0.0, 0.0) and self.y_range_pix == (0.0, 0.0)
 
 
+class EqualizationParams(BaseModel):
+    """Optional luminance/contrast equalization across every pool a Condition presents (base +
+    oddball + any active stream pools), per ``docs/Luminance and Contrast equalisation.pdf``.
+    Disabled by default: standard FPVS practice for many designs, but a real per-study decision,
+    not something to silently turn on.
+
+    **Scope is the combined pool, not per-pool.** Base and oddball images are typically different
+    categories with different natural mean luminance/contrast; equalizing each pool to its own
+    mean would leave that BETWEEN-category difference untouched, and it is exactly that
+    difference that turns every oddball onset into a low-level luminance/contrast step recurring
+    at the oddball frequency -- the same confound ``check_triggers``' pool-divergence advisory
+    already flags. Equalizing the union of every pool to one shared target removes it.
+
+    See ``tasks.fpvs.luminance_contrast`` for the exact formulas (BT.709 luminance, RMS contrast)
+    and how ``strength`` is interpreted, and ``tasks.fpvs.equalization_cache`` for how the result
+    is computed once and cached to disk rather than redone at every Run launch.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Equalize luminance/contrast across every pool this Condition presents."
+    )
+    equalize_luminance: bool = Field(
+        default=True, description="Scale each image's mean luminance toward the combined pool's mean."
+    )
+    equalize_contrast: bool = Field(
+        default=True, description="Scale each image's RMS contrast toward the combined pool's mean."
+    )
+    strength: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="0 = no equalization, 1 = full equalization (image mean/contrast becomes exactly the pool's).",
+    )
+
+
 class FPVSProgramParams(BaseModel):
     """No program-level parameters needed yet."""
 
@@ -367,6 +402,11 @@ class FPVSConditionParams(BaseModel):
             "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
             "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
         ),
+        json_schema_extra={"section": "Stimulation"},
+    )
+    equalization: EqualizationParams = Field(
+        default_factory=EqualizationParams,
+        description="Luminance/contrast equalization across every pool this Condition presents (see EqualizationParams).",
         json_schema_extra={"section": "Stimulation"},
     )
 
@@ -728,10 +768,12 @@ class FPVSSchema:
     #: and the ``go_nogo`` spatial task; v6 adds the stepped ``sweep``, the per-trial ``baseline``,
     #: and dual bilateral streams (``second_stream`` + ``stream_position_pix``); v7 generalises dual
     #: streams to N with ``additional_streams`` and a per-stream ``oddball_enabled`` toggle (base-only
-    #: filler streams) -- all additive, default off/None (``additional_streams=[]``,
-    #: ``oddball_enabled=True``). v4 was the one breaking bump (old SepStim selector keys are dropped
-    #: on validation -- re-freeze such dev-only Instances); every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "7"
+    #: filler streams); v8 adds ``equalization`` (luminance/contrast equalization across every pool a
+    #: Condition presents) -- all additive, default off/None (``additional_streams=[]``,
+    #: ``oddball_enabled=True``, ``equalization.enabled=False``). v4 was the one breaking bump (old
+    #: SepStim selector keys are dropped on validation -- re-freeze such dev-only Instances); every
+    #: other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "8"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -760,11 +802,11 @@ class FPVSSchema:
         # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4", "5", "6"):
+        if old_version not in ("1", "2", "3", "4", "5", "6", "7"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7 are additive (position_jitter, distractor, oddball
-        # pattern + go_nogo, sweep, additional_streams + per-stream oddball_enabled: disabled/None/[]
-        # defaults fill in). v3->v4 drops the SepStim selector filters:
+        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8 are additive (position_jitter, distractor,
+        # oddball pattern + go_nogo, sweep, additional_streams + per-stream oddball_enabled,
+        # equalization: disabled/None/[]/False defaults fill in). v3->v4 drops the SepStim selector filters:
         # strip them from base/oddball selectors so the migrated dict carries only
         # subdirectory/filename_pattern.
         migrated = dict(data)

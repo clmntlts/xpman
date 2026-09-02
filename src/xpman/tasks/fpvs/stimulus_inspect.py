@@ -62,6 +62,8 @@ def inspect_pool(paths: list[Path], *, sample_size: int | None = None) -> PoolIn
     from PIL import Image  # lazy: PsychoPy already pulls in Pillow; keep module import light
     import numpy as np
 
+    from xpman.tasks.fpvs.luminance_contrast import luminance as bt709_luminance
+
     selected = list(paths)
     if sample_size is not None and len(selected) > sample_size:
         selected = selected[:sample_size]
@@ -73,13 +75,17 @@ def inspect_pool(paths: list[Path], *, sample_size: int | None = None) -> PoolIn
         try:
             with Image.open(path) as img:
                 size = img.size
-                gray = np.asarray(img.convert("L"), dtype=np.float64)
+                # BT.709 luma (tasks.fpvs.luminance_contrast), matching the equalization feature's
+                # definition of "luminance" -- previously PIL's convert("L") ITU-R 601 coefficients
+                # (0.299/0.587/0.114), a different (also common, but here inconsistent) standard.
+                rgb = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
+                gray = bt709_luminance(rgb)
         except Exception:  # noqa: BLE001 - advisory only: a bad image is skipped, never fatal
             n_failed += 1
             continue
         sizes.add((int(size[0]), int(size[1])))
         if gray.size:
-            luminances.append(float(gray.mean()) / 255.0)
+            luminances.append(float(gray.mean()))
 
     mean_luminance = (sum(luminances) / len(luminances)) if luminances else None
     return PoolInspection(

@@ -65,6 +65,7 @@ from xpman.tasks.fpvs.go_nogo import (
     schedule_go_nogo_events,
     score_go_nogo,
 )
+from xpman.tasks.fpvs.equalization_cache import resolve_equalized_pool
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
@@ -183,23 +184,36 @@ def _select_pool(entries: list[ImageEntry], selector: StimulusSelector) -> list[
     )
 
 
-def _build_image_stim(window: "psychopy.visual.Window", entry: ImageEntry) -> "psychopy.visual.ImageStim":
+def _build_image_stim(
+    window: "psychopy.visual.Window", entry: ImageEntry, source_path: "Path | None" = None
+) -> "psychopy.visual.ImageStim":
     import psychopy.visual as visual
 
-    return visual.ImageStim(window, image=str(entry.path), units="pix")
+    return visual.ImageStim(window, image=str(source_path or entry.path), units="pix")
 
 
 def _get_image_stim(
-    cache: dict, window: "psychopy.visual.Window", entry: ImageEntry
+    cache: dict,
+    window: "psychopy.visual.Window",
+    entry: ImageEntry,
+    path_overrides: "dict[Path, Path] | None" = None,
 ) -> "psychopy.visual.ImageStim":
     """Return a cached ImageStim for ``entry``, building (and caching) it on first use. The same
     images recur every trial, so caching the GPU texture avoids re-decoding + re-uploading it each
     trial -- the cost that otherwise makes every trial slow to start. Opacity is set per draw, so
-    sharing one instance across a trial's repeated presentations is safe (draws are sequential)."""
+    sharing one instance across a trial's repeated presentations is safe (draws are sequential).
+
+    ``path_overrides`` (from luminance/contrast equalization, see ``equalization_cache``) swaps
+    which file's PIXELS get loaded without touching ``entry`` itself -- ``entry.path.name`` stays
+    the original filename everywhere else (onset logging, identity), so equalization is invisible
+    to everything downstream of the stimulus's actual pixel content. Cached by ``entry.path``
+    (the original identity), so the GPU texture is still shared correctly across a Run regardless.
+    """
     key = str(entry.path)
     stim = cache.get(key)
     if stim is None:
-        stim = _build_image_stim(window, entry)
+        source_path = (path_overrides or {}).get(entry.path)
+        stim = _build_image_stim(window, entry, source_path)
         cache[key] = stim
     return stim
 
@@ -581,6 +595,42 @@ class FPVSTask(TaskModule):
                 f"images (out of {len(self._image_entries)} found in resource directory)"
             )
 
+        # Luminance/contrast equalization (opt-in, default off -- resolve_equalized_pool returns
+        # an empty mapping when disabled, so the disabled path is byte-for-byte unchanged: no
+        # extra rng draws, no path-override lookups that ever hit). Scope is the COMBINED pool --
+        # base + oddball + every active stream's own pools -- not per-pool, so equalization
+        # removes any low-level luminance/contrast difference BETWEEN categories, not just noise
+        # within one; see EqualizationParams' docstring for why that's the scope that matters.
+        # _select_pool is pure/cheap (an in-memory filter, no rng draws), so resolving each active
+        # stream's pools again here -- ahead of their normal resolution further below -- is safe
+        # and free of side effects.
+        path_overrides: "dict[Path, Path]" = {}
+        if params.equalization.enabled:
+            equalization_entries = list(base_entries) + list(oddball_entries)
+            for s in ([params.second_stream] if params.second_stream.enabled else []) + [
+                s for s in params.additional_streams if s.enabled
+            ]:
+                equalization_entries += _select_pool(self._image_entries, s.base_selector)
+                if s.oddball_enabled:
+                    equalization_entries += _select_pool(self._image_entries, s.oddball_selector)
+            equalization_result = resolve_equalized_pool(
+                equalization_entries, params.equalization, Path(ctx.resource_dir)
+            )
+            path_overrides = equalization_result.resolved_paths
+            ctx.event_sink.log(
+                "stimulus_equalization",
+                {
+                    "n_pool_images": len(equalization_entries),
+                    "n_equalized": equalization_result.n_equalized,
+                    "n_failed": equalization_result.n_failed,
+                    "mean_luminance_before": equalization_result.mean_luminance_before,
+                    "mean_contrast_before": equalization_result.mean_contrast_before,
+                    "mean_luminance_after": equalization_result.mean_luminance_after,
+                    "mean_contrast_after": equalization_result.mean_contrast_after,
+                    "strength": params.equalization.strength,
+                },
+            )
+
         # Shuffle pool order using the Instance/Subject-seeded rng, so which images appear in
         # what order is reproducible given the same (Instance, Subject) -- same guarantee the
         # rest of xpman's randomization relies on (see core.rng).
@@ -597,7 +647,7 @@ class FPVSTask(TaskModule):
         fixation_stim = build_fixation_stimulus(ctx.window, params.fixation)
         base_stims = [
             _ImageWithFixation(
-                _get_image_stim(self._image_stim_cache, ctx.window, base_entries[i]),
+                _get_image_stim(self._image_stim_cache, ctx.window, base_entries[i], path_overrides),
                 fixation_stim,
                 base_entries[i].path.name,
             )
@@ -605,7 +655,7 @@ class FPVSTask(TaskModule):
         ]
         oddball_stims = [
             _ImageWithFixation(
-                _get_image_stim(self._image_stim_cache, ctx.window, oddball_entries[i]),
+                _get_image_stim(self._image_stim_cache, ctx.window, oddball_entries[i], path_overrides),
                 fixation_stim,
                 oddball_entries[i].path.name,
             )
@@ -899,7 +949,7 @@ class FPVSTask(TaskModule):
                 s_base_order = ctx.rng.permutation(len(s_base_entries))
                 s_base_stims = [
                     _ImageWithFixation(
-                        _get_image_stim(self._image_stim_cache, ctx.window, s_base_entries[i]),
+                        _get_image_stim(self._image_stim_cache, ctx.window, s_base_entries[i], path_overrides),
                         fixation_stim,
                         s_base_entries[i].path.name,
                     )
@@ -914,7 +964,7 @@ class FPVSTask(TaskModule):
                     s_oddball_order = ctx.rng.permutation(len(s_oddball_entries))
                     s_oddball_stims = [
                         _ImageWithFixation(
-                            _get_image_stim(self._image_stim_cache, ctx.window, s_oddball_entries[i]),
+                            _get_image_stim(self._image_stim_cache, ctx.window, s_oddball_entries[i], path_overrides),
                             fixation_stim,
                             s_oddball_entries[i].path.name,
                         )
@@ -1246,6 +1296,10 @@ class FPVSTask(TaskModule):
                     "base_vs_background_warning": base_pool_luminance_warning,
                     "oddball_vs_background_warning": oddball_pool_luminance_warning,
                     "base_vs_oddball_mismatch_warning": pool_luminance_mismatch_warning,
+                    # Points at the actual fix: this exact confound (a base/oddball luminance gap
+                    # recurring at the oddball frequency) is what equalization.enabled removes --
+                    # see EqualizationParams. Only suggested when it isn't already on.
+                    "equalization_would_help": not params.equalization.enabled,
                 },
             )
 
