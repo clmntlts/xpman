@@ -1363,7 +1363,11 @@ def _clean_condition() -> FPVSConditionParams:
     return params
 
 
-def test_check_triggers_warns_when_base_and_oddball_codes_equal():
+def test_check_triggers_rejects_base_and_oddball_codes_equal():
+    # Base/oddball code collision is now a HARD error at the schema level (see
+    # FPVSConditionParams._check_all_trigger_codes_disjoint), so a Condition with colliding codes
+    # can't even be constructed -- check_triggers surfaces that as its usual "parameters do not
+    # validate" single-item result rather than a softer advisory.
     task = FPVSTask()
     params = _clean_condition()
     params.base.base_trigger_code = 7
@@ -1371,7 +1375,8 @@ def test_check_triggers_warns_when_base_and_oddball_codes_equal():
 
     warnings = task.check_triggers(params.model_dump())
     assert len(warnings) == 1
-    assert "same trigger code (7)" in warnings[0]
+    assert "do not validate" in warnings[0]
+    assert "trigger code 7" in warnings[0]
 
 
 def test_check_triggers_clean_when_codes_differ():

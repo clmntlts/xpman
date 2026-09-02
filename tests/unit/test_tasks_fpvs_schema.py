@@ -778,6 +778,89 @@ def test_coincidence_codes_inert_when_second_stream_disabled():
     assert params.second_stream.enabled is False
 
 
+def test_base_and_oddball_trigger_code_collision_is_rejected():
+    with pytest.raises(ValidationError, match="trigger code 7"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=7),
+            oddball=OddballParams(oddball_trigger_code=7),
+        )
+
+
+def test_distractor_trigger_code_colliding_with_base_is_rejected():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+
+    with pytest.raises(ValidationError, match="trigger code 10.*base.base_trigger_code.*distractor"):
+        FPVSConditionParams(
+            base=BaseSequenceParams(base_trigger_code=10),
+            distractor=DistractorParams(enabled=True, trigger_code=10, keys=["a"]),
+        )
+
+
+def test_go_nogo_trigger_code_colliding_with_second_stream_is_rejected():
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="trigger code 30"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0), base_trigger_code=30),
+            go_nogo=GoNoGoParams(enabled=True, go_trigger_code=30, keys=["a"]),
+        )
+
+
+def test_baseline_and_familiarization_trigger_code_collision_is_rejected():
+    from xpman.tasks.fpvs.schema import BaselineParams, FamiliarizationParams
+
+    with pytest.raises(ValidationError, match="trigger code 70"):
+        FPVSConditionParams(
+            baseline=BaselineParams(enabled=True, start_trigger_code=70),
+            familiarization=FamiliarizationParams(enabled=True, start_trigger_code=70),
+        )
+
+
+def test_additional_stream_trigger_code_colliding_with_distractor_is_rejected():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="trigger code 80"):
+        FPVSConditionParams(
+            stream_position_pix=(-200.0, 0.0),
+            additional_streams=[
+                StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0), base_trigger_code=80)
+            ],
+            distractor=DistractorParams(enabled=True, trigger_code=80, keys=["a"]),
+        )
+
+
+def test_disabled_subsystem_trigger_code_does_not_count_toward_collision():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+
+    # distractor is disabled, so its trigger_code is inert -- reusing base's code must NOT raise.
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=10),
+        distractor=DistractorParams(enabled=False, trigger_code=10, keys=["a"]),
+    )
+    assert params.distractor.trigger_code == 10
+
+
+def test_many_stacked_features_with_all_distinct_codes_is_accepted():
+    from xpman.tasks.fpvs.distractor import DistractorParams
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+    from xpman.tasks.fpvs.schema import BaselineParams, FamiliarizationParams, StreamParams
+
+    params = FPVSConditionParams(
+        base=BaseSequenceParams(base_trigger_code=1),
+        oddball=OddballParams(oddball_trigger_code=2),
+        stream_position_pix=(-200.0, 0.0),
+        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        distractor=DistractorParams(enabled=True, trigger_code=3, keys=["a"]),
+        go_nogo=GoNoGoParams(enabled=False, go_trigger_code=4, nogo_trigger_code=5, keys=["a"]),
+        baseline=BaselineParams(enabled=True, start_trigger_code=6, stop_trigger_code=7),
+        familiarization=FamiliarizationParams(enabled=True, start_trigger_code=8, stop_trigger_code=9),
+    )
+    assert params.distractor.enabled and params.baseline.enabled and params.familiarization.enabled
+
+
 def test_response_task_is_off_by_default_and_oddball_referenced():
     """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
     its RT reference is the oddball onset (not the most-recent stimulus)."""
