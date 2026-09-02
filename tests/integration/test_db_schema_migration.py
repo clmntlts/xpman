@@ -18,7 +18,7 @@ from xpman.core.db import ensure_schema, get_engine
 from xpman.core.models import Base
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_HEAD_REVISION = "b2c3d4e5f6a7"
+_HEAD_REVISION = "c3d4e5f6a7b8"
 _PRE_TRIGGER_REVISION = "a1b2c3d4e5f6"  # has provenance cols but NOT the trigger cols
 _TRIGGER_COLUMNS = {"pyserial_version", "trigger_backend", "trigger_port"}
 
