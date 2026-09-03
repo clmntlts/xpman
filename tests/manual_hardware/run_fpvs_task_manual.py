@@ -8,9 +8,9 @@ photodiode/oscilloscope/logic-analyzer rig described in ``docs/verification_prot
 
 Companion to ``run_dummy_task_manual.py``: that script proves out the timing/trigger
 *pipeline*; this one runs the actual FPVS paradigm (base+oddball sequencing, photodiode,
-triggers, fixation, response collection) so both can be validated against real hardware in one
-lab visit. Do this after (or alongside) the dummy-task check, not instead of it -- the dummy
-task isolates pipeline problems from paradigm-specific ones.
+triggers, fixation) so both can be validated against real hardware in one lab visit. Do this
+after (or alongside) the dummy-task check, not instead of it -- the dummy task isolates pipeline
+problems from paradigm-specific ones.
 
 Usage:
     .venv\\Scripts\\python.exe tests\\manual_hardware\\run_fpvs_task_manual.py
@@ -45,7 +45,7 @@ from xpman.hardware.trigger import ParallelPortTrigger  # noqa: E402
 from xpman.hardware.trigger_null import NullTrigger  # noqa: E402
 from xpman.hardware.trigger_serial import SerialTrigger  # noqa: E402
 from xpman.runtime.session import launch_run  # noqa: E402
-from xpman.tasks.fpvs.schema import FPVSConditionParams, StimulusSelector  # noqa: E402
+from xpman.tasks.fpvs.schema import FPVSConditionParams, StimulusSelector, StreamParams  # noqa: E402
 from xpman.tasks.fpvs.task import FPVSTask  # noqa: E402
 from xpman.tasks.registry import TaskRegistry  # noqa: E402
 
@@ -141,14 +141,16 @@ def main() -> None:
     experiment = repo.create_experiment(session, program_id=program.id, name="Exp 1", parameters_json={})
 
     condition_params = FPVSConditionParams(
-        base_selector=StimulusSelector(category=args.base_category),
-        oddball_selector=StimulusSelector(category=args.oddball_category),
+        main_stream=StreamParams(
+            base_selector=StimulusSelector(category=args.base_category),
+            oddball_selector=StimulusSelector(category=args.oddball_category),
+        ),
     )
-    condition_params.base.base_freq_hz = args.base_freq_hz
-    condition_params.base.trial_duration_seconds = args.trial_duration_seconds
-    condition_params.base.base_trigger_code = args.base_trigger_code
-    condition_params.oddball.oddball_freq_hz = args.oddball_freq_hz
-    condition_params.oddball.oddball_trigger_code = args.oddball_trigger_code
+    condition_params.main_stream.base.base_freq_hz = args.base_freq_hz
+    condition_params.main_stream.base.trial_duration_seconds = args.trial_duration_seconds
+    condition_params.main_stream.base.base_trigger_code = args.base_trigger_code
+    condition_params.main_stream.oddball.oddball_freq_hz = args.oddball_freq_hz
+    condition_params.main_stream.oddball.oddball_trigger_code = args.oddball_trigger_code
 
     condition = repo.create_condition(
         session,

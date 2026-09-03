@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from xpman.tasks.fpvs.distractor import DistractorParams
 from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.schema import (
     BaselineParams,
     FPVSConditionParams,
@@ -32,20 +33,15 @@ def test_default_layout_single_centered_stream_plus_fixation_and_photodiode():
 
 
 def test_dual_stream_places_both_streams_at_their_positions():
-    params = FPVSConditionParams(
-        stream_position_pix=(-300.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.5, position_pix=(300.0, 0.0)),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.5), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(300.0, 0.0)))
+    params.main_stream.position_pix = (-300.0, 0.0)
     streams = [e for e in build_spatial_layout(params).elements if e.kind == "stream"]
     assert [(s.label, s.x) for s in streams] == [("Stream 1", -300.0), ("Stream 2", 300.0)]
 
 
 def test_jitter_region_drawn_per_stream_when_enabled():
-    params = FPVSConditionParams(
-        stream_position_pix=(-300.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.5, position_pix=(300.0, 0.0)),
-        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=40.0),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.5), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(300.0, 0.0)), position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=40.0))
+    params.main_stream.position_pix = (-300.0, 0.0)
     jitters = [e for e in build_spatial_layout(params).elements if e.kind == "jitter"]
     assert len(jitters) == 2  # one region per stream centre
     assert all(j.region == "disk" and j.radius == 40.0 for j in jitters)
@@ -76,15 +72,14 @@ def test_default_timeline_is_single_stimulation_phase():
 
 
 def test_sweep_produces_one_segment_per_step():
-    params = FPVSConditionParams(
-        sweep=FrequencySweepParams(
+    params = FPVSConditionParams()
+    params.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[
                 SweepStep(base_freq_hz=6.0, duration_seconds=5.0),
                 SweepStep(base_freq_hz=10.0, duration_seconds=5.0),
             ],
         )
-    )
     stim = next(p for p in build_trial_schematic(params).phases if p.kind == "stimulation")
     assert [s.base_freq_hz for s in stim.segments] == [6.0, 10.0]
     assert stim.label.startswith("Frequency sweep")
@@ -125,4 +120,4 @@ def test_task_hook_returns_pair_and_none_on_invalid():
     preview = FPVSTask().build_condition_preview(FPVSConditionParams().model_dump())
     assert preview is not None and len(preview) == 2
     # Invalid params -> None (the GUI then falls back to the text resource preview).
-    assert FPVSTask().build_condition_preview({"base": {"base_freq_hz": -1.0}}) is None
+    assert FPVSTask().build_condition_preview({"main_stream": {"base": {"base_freq_hz": -1.0}}}) is None

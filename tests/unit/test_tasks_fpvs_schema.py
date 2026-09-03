@@ -11,6 +11,7 @@ from xpman.tasks.fpvs.schema import (
     FPVSSchema,
     PositionJitterParams,
     StimulusSelector,
+    StreamParams,
 )
 
 
@@ -51,21 +52,20 @@ def test_every_condition_param_field_declares_a_gui_section():
 
 def test_condition_params_have_defaults_for_every_sub_model():
     params = FPVSConditionParams()
-    assert params.base.base_freq_hz == 6.0
-    assert params.oddball.oddball_freq_hz == 1.2
-    assert params.base_selector.subdirectory is None
-    assert params.oddball_selector.subdirectory is None
+    assert params.main_stream.base.base_freq_hz == 6.0
+    assert params.main_stream.oddball.oddball_freq_hz == 1.2
+    assert params.main_stream.base_selector.subdirectory is None
+    assert params.main_stream.oddball_selector.subdirectory is None
 
 
 def test_condition_params_roundtrip_via_dict():
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
     restored = FPVSConditionParams.model_validate(params.model_dump())
     assert restored == params
-    assert restored.base_selector.subdirectory == "objects"
-    assert restored.oddball_selector.subdirectory == "faces"
+    assert restored.main_stream.base_selector.subdirectory == "objects"
+    assert restored.main_stream.oddball_selector.subdirectory == "faces"
 
 
 def test_schema_exposes_expected_models():
@@ -79,28 +79,30 @@ def test_schema_exposes_expected_models():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "8"
+    assert FPVSSchema.SCHEMA_VERSION == "9"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("8", {"x": 1})
-    assert version == "8"
+    version, data = schema.migrate("9", {"x": 1})
+    assert version == "9"
     assert data == {"x": 1}
 
 
 def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
     """v3 -> v4 replaces the SepStim selector filters with subdirectory/filename_pattern. The
-    migrated dict strips the removed keys from base/oddball selectors."""
+    migrated dict strips the removed keys from base/oddball selectors -- collapsed, along with
+    every other v9 main-stream migration, into the main_stream dict (v9 breaking bump)."""
     schema = FPVSSchema()
     v3 = {
         "base_selector": {"category": "object", "angle_deg": 0, "filename_pattern": "*a*"},
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "8"
-    assert data["base_selector"] == {"filename_pattern": "*a*"}  # only supported keys survive
-    assert data["oddball_selector"] == {}
+    assert version == "9"
+    # only supported selector keys survive, and both selectors land under main_stream (v9).
+    assert data["main_stream"]["base_selector"] == {"filename_pattern": "*a*"}
+    assert data["main_stream"]["oddball_selector"] == {}
 
 
 def test_migrate_unknown_version_raises():
@@ -175,22 +177,33 @@ def test_position_jitter_has_zero_extent():
 
 
 def test_migrate_v1_to_current_passes_data_through():
-    """v1 -> current is additive: old data passes straight through, and the new version is returned."""
+    """v1 -> current: no selector keys to strip (v3->v4) and no response key to drop, so the only
+    change is the v9 main-stream collapse every pre-v9 payload goes through."""
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "8"
-    assert data == v1_data  # no selector keys present -> nothing to strip; defaults fill the rest
+    assert version == "9"
+    assert data == {
+        "main_stream": {
+            "enabled": True,
+            "oddball_enabled": True,
+            "base": {"base_freq_hz": 6.0},
+            "oddball": {"oddball_freq_hz": 1.2},
+        }
+    }
 
 
 def test_migrate_v2_to_current_passes_data_through():
-    """v2 -> current: no SepStim selector keys present here, so the payload passes through and the
-    current version is returned."""
+    """v2 -> current: no SepStim selector keys present here, so the only change is the v9
+    main-stream collapse."""
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "8"
-    assert data == v2_data
+    assert version == "9"
+    assert data == {
+        "position_jitter": {"enabled": False},
+        "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
+    }
 
 
 def test_condition_params_have_distractor_disabled_by_default():
@@ -224,21 +237,27 @@ def test_equalization_params_strength_bounds():
 
 def test_condition_params_have_sweep_disabled_by_default():
     params = FPVSConditionParams()
-    assert params.sweep.enabled is False
-    assert params.sweep.steps == []
+    assert params.main_stream.sweep.enabled is False
+    assert params.main_stream.sweep.steps == []
 
 
 def test_migrate_v5_to_v6_is_additive_passthrough():
+    # sweep default (disabled) fills in on validation; the only real change through migrate is the
+    # v9 main-stream collapse every pre-v9 payload goes through.
     schema = FPVSSchema()
     v5 = {"base": {"base_freq_hz": 6.0}, "go_nogo": {"enabled": False}}
     version, data = schema.migrate("5", v5)
-    assert version == "8"
-    assert data == v5  # sweep default (disabled) fills in on validation
+    assert version == "9"
+    assert data == {
+        "go_nogo": {"enabled": False},
+        "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
+    }
 
 
 def test_migrate_v6_to_v7_is_additive_passthrough():
     # v6 -> v7 is additive: additional_streams (default []) and per-stream oddball_enabled (default
-    # True) fill in on validation, so a frozen v6 payload passes straight through the migrate.
+    # True) fill in on validation. The migrate also applies the v9 main-stream collapse (base +
+    # stream_position_pix -> main_stream), same as every pre-v9 payload.
     schema = FPVSSchema()
     v6 = {
         "base": {"base_freq_hz": 6.0},
@@ -246,8 +265,16 @@ def test_migrate_v6_to_v7_is_additive_passthrough():
         "stream_position_pix": (0.0, 0.0),
     }
     version, data = schema.migrate("6", v6)
-    assert version == "8"
-    assert data == v6  # additional_streams=[] / oddball_enabled=True defaults fill in on validation
+    assert version == "9"
+    assert data == {
+        "second_stream": {"enabled": False},
+        "main_stream": {
+            "enabled": True,
+            "oddball_enabled": True,
+            "base": {"base_freq_hz": 6.0},
+            "position_pix": (0.0, 0.0),
+        },
+    }
     # And the migrated dict validates, with the new fields at their default-off values.
     params = FPVSConditionParams.model_validate(data)
     assert params.additional_streams == []
@@ -255,13 +282,16 @@ def test_migrate_v6_to_v7_is_additive_passthrough():
 
 
 def test_migrate_v7_to_v8_is_additive_passthrough():
-    # v7 -> v8 is additive: equalization (default disabled) fills in on validation, so a frozen
-    # v7 payload passes straight through the migrate.
+    # v7 -> v8 is additive: equalization (default disabled) fills in on validation. Plus the v9
+    # main-stream collapse every pre-v9 payload goes through.
     schema = FPVSSchema()
     v7 = {"base": {"base_freq_hz": 6.0}, "additional_streams": []}
     version, data = schema.migrate("7", v7)
-    assert version == "8"
-    assert data == v7  # equalization.enabled=False default fills in on validation
+    assert version == "9"
+    assert data == {
+        "additional_streams": [],
+        "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
+    }
     params = FPVSConditionParams.model_validate(data)
     assert params.equalization.enabled is False
 
@@ -273,11 +303,9 @@ def test_sweep_with_triggered_single_stream_overlay_is_allowed():
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
-    params = FPVSConditionParams(
-        sweep=FrequencySweepParams(enabled=True, steps=steps),
-        distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
-    )
-    assert params.sweep.enabled and params.distractor.trigger_code == 50
+    params = FPVSConditionParams(distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]))
+    params.main_stream.sweep = FrequencySweepParams(enabled=True, steps=steps)
+    assert params.main_stream.sweep.enabled and params.distractor.trigger_code == 50
 
 
 def test_triggered_overlay_with_sweep_dual_stream_is_allowed():
@@ -292,14 +320,10 @@ def test_triggered_overlay_with_sweep_dual_stream_is_allowed():
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
     params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=second),
+        main_stream=StreamParams(
+            enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main)
         ),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second)),
         distractor=DistractorParams(enabled=True, trigger_code=50, keys=["a"]),
     )
     assert params.distractor.trigger_code == 50 and params.second_stream.sweep.enabled
@@ -315,11 +339,7 @@ def test_triggered_overlay_with_nonsweep_dual_stream_is_allowed():
     from xpman.tasks.fpvs.schema import StreamParams
 
     def _dual(**overlay):
-        return FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-            **overlay,
-        )
+        return FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), **overlay)
 
     # Neither of these raises now (validation succeeds).
     assert _dual(distractor=DistractorParams(enabled=True, trigger_code=99, keys=["a"])).second_stream.enabled
@@ -333,11 +353,9 @@ def test_sweep_with_untriggered_overlay_is_allowed():
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
-    params = FPVSConditionParams(
-        sweep=FrequencySweepParams(enabled=True, steps=steps),
-        distractor=DistractorParams(enabled=True, trigger_code=None, keys=["a"]),
-    )
-    assert params.sweep.enabled is True and params.distractor.enabled is True
+    params = FPVSConditionParams(distractor=DistractorParams(enabled=True, trigger_code=None, keys=["a"]))
+    params.main_stream.sweep = FrequencySweepParams(enabled=True, steps=steps)
+    assert params.main_stream.sweep.enabled is True and params.distractor.enabled is True
 
 
 def test_condition_params_have_baseline_disabled_by_default():
@@ -357,22 +375,17 @@ def test_dual_stream_allows_harmonic_base_frequencies():
     # v7 (researcher decision: all frequencies must be possible): harmonically-related dual-stream
     # bases (main 6 Hz, second 12 Hz = 2*6) are NO LONGER a hard error -- spectral-collision advisories
     # are surfaced via check_triggers, not rejected here. Distinct positions are still required.
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=12.0, position_pix=(200.0, 0.0)),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=12.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)))
+    params.main_stream.position_pix = (-200.0, 0.0)
     assert params.second_stream.enabled is True
-    assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 12.0)
+    assert (params.main_stream.base.base_freq_hz, params.second_stream.base.base_freq_hz) == (6.0, 12.0)
 
 
 def test_dual_stream_rejects_identical_positions():
     from xpman.tasks.fpvs.schema import StreamParams
 
     with pytest.raises(ValidationError, match="distinct positions"):
-        FPVSConditionParams(
-            stream_position_pix=(100.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(100.0, 0.0)),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(100.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(100.0, 0.0)))
 
 
 def test_dual_stream_rejects_one_sided_sweep():
@@ -382,14 +395,10 @@ def test_dual_stream_rejects_one_sided_sweep():
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     with pytest.raises(ValidationError, match="both.*enabled|BOTH"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(
                 enabled=True,
                 steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)],
-            ),
-            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        )
+            )), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)))
 
 
 def test_dual_stream_rejects_independent_per_stream_sweep_timelines():
@@ -401,16 +410,7 @@ def test_dual_stream_rejects_independent_per_stream_sweep_timelines():
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=4.0), SweepStep(base_freq_hz=4.0, duration_seconds=6.0)]
     with pytest.raises(ValidationError, match="share ONE step timeline"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=main),
-            second_stream=StreamParams(
-                enabled=True,
-                base_freq_hz=7.0,
-                position_pix=(200.0, 0.0),
-                sweep=FrequencySweepParams(enabled=True, steps=second),
-            ),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second)))
 
 
 def test_dual_stream_rejects_harmonic_sweep_step():
@@ -421,16 +421,7 @@ def test_dual_stream_rejects_harmonic_sweep_step():
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=10.0, duration_seconds=5.0)]  # step 1: 5 & 10 = harmonic
     with pytest.raises(ValidationError, match="harmonically related"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=main),
-            second_stream=StreamParams(
-                enabled=True,
-                base_freq_hz=7.0,
-                position_pix=(200.0, 0.0),
-                sweep=FrequencySweepParams(enabled=True, steps=second),
-            ),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second)))
 
 
 def test_shared_timeline_sweep_dual_stream_is_accepted():
@@ -442,28 +433,22 @@ def test_shared_timeline_sweep_dual_stream_is_accepted():
     main = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     second = [SweepStep(base_freq_hz=7.0, duration_seconds=5.0), SweepStep(base_freq_hz=4.0, duration_seconds=5.0)]
     params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=second),
+        main_stream=StreamParams(
+            enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main)
         ),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second)),
     )
-    assert params.sweep.enabled and params.second_stream.sweep.enabled
-    assert [s.duration_seconds for s in params.sweep.steps] == [s.duration_seconds for s in params.second_stream.sweep.steps]
+    assert params.main_stream.sweep.enabled and params.second_stream.sweep.enabled
+    assert [s.duration_seconds for s in params.main_stream.sweep.steps] == [s.duration_seconds for s in params.second_stream.sweep.steps]
 
 
 def test_valid_dual_stream_is_accepted():
     from xpman.tasks.fpvs.schema import StreamParams
 
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)))
+    params.main_stream.position_pix = (-200.0, 0.0)
     assert params.second_stream.enabled is True
-    assert (params.base.base_freq_hz, params.second_stream.base_freq_hz) == (6.0, 7.0)
+    assert (params.main_stream.base.base_freq_hz, params.second_stream.base.base_freq_hz) == (6.0, 7.0)
 
 
 # ---------------------------------------------------------------------------
@@ -484,14 +469,11 @@ def test_additional_streams_with_distinct_positions_is_accepted():
     from xpman.tasks.fpvs.schema import StreamParams
 
     # The requesting paradigm: one main + several simultaneous streams at distinct locations.
-    params = FPVSConditionParams(
-        stream_position_pix=(0.0, 200.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, -200.0)),
-        additional_streams=[
-            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(-200.0, 0.0)),
-            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-        ],
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(0.0, -200.0)), additional_streams=[
+            StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(-200.0, 0.0)),
+            StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(200.0, 0.0)),
+        ])
+    params.main_stream.position_pix = (0.0, 200.0)
     assert len(params.additional_streams) == 2
     assert all(s.enabled for s in params.additional_streams)
 
@@ -501,13 +483,10 @@ def test_additional_streams_ignore_disabled_entries_for_position_check():
 
     # A DISABLED additional stream is inactive: it does not participate in the position-distinctness
     # check even if it collides with an active one.
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        additional_streams=[
-            StreamParams(enabled=False, position_pix=(200.0, 0.0)),  # collides but inactive -> ignored
-        ],
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+            StreamParams(oddball_enabled=False, enabled=False, position_pix=(200.0, 0.0)),  # collides but inactive -> ignored
+        ])
+    params.main_stream.position_pix = (-200.0, 0.0)
     assert params.second_stream.enabled is True
 
 
@@ -516,13 +495,9 @@ def test_additional_streams_duplicate_positions_across_three_streams_raise():
 
     # Three active streams, two sharing a position -> rejected (positions must be pairwise-distinct).
     with pytest.raises(ValidationError, match="distinct positions"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-            additional_streams=[
-                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),  # dup of second
-            ],
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(200.0, 0.0)),  # dup of second
+            ])
 
 
 def test_additional_stream_colliding_with_main_position_raises():
@@ -530,13 +505,9 @@ def test_additional_stream_colliding_with_main_position_raises():
 
     # An additional stream sharing the MAIN stream's position is rejected too.
     with pytest.raises(ValidationError, match="distinct positions"):
-        FPVSConditionParams(
-            stream_position_pix=(0.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-            additional_streams=[
-                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 0.0)),  # == main
-            ],
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(0.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(0.0, 0.0)),  # == main
+            ])
 
 
 def test_more_than_two_active_streams_with_trigger_code_raises():
@@ -545,18 +516,9 @@ def test_more_than_two_active_streams_with_trigger_code_raises():
     # >2 active streams and a per-stream trigger code -> rejected (8-bit combiner is 2-stream only).
     # Here the third stream carries the trigger code.
     with pytest.raises(ValidationError, match="per-stream EEG triggers"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-            additional_streams=[
-                StreamParams(
-                    enabled=True,
-                    base_freq_hz=6.0,
-                    position_pix=(0.0, 200.0),
-                    base_trigger_code=42,
-                ),
-            ],
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0, base_trigger_code=42), enabled=True, position_pix=(0.0, 200.0)),
+            ])
 
 
 def test_more_than_two_active_streams_with_main_trigger_code_raises():
@@ -564,27 +526,19 @@ def test_more_than_two_active_streams_with_main_trigger_code_raises():
 
     # The main stream's trigger code also trips the >2-stream trigger guard.
     with pytest.raises(ValidationError, match="per-stream EEG triggers"):
-        FPVSConditionParams(
-            base=BaseSequenceParams(base_freq_hz=6.0, base_trigger_code=10),
-            stream_position_pix=(-200.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-            additional_streams=[
-                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
-            ],
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_freq_hz=6.0, base_trigger_code=10), position_pix=(-200.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(0.0, 200.0)),
+            ])
 
 
 def test_three_active_streams_without_trigger_codes_is_accepted():
     from xpman.tasks.fpvs.schema import StreamParams
 
     # >2 streams are fine as long as no per-stream trigger codes are set (frequency-domain readout).
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-        additional_streams=[
-            StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
-        ],
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+            StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(0.0, 200.0)),
+        ])
+    params.main_stream.position_pix = (-200.0, 0.0)
     assert len(params.additional_streams) == 1
 
 
@@ -595,14 +549,9 @@ def test_additional_streams_with_sweep_raises():
     # sweep x N (>2 streams) is out of scope: an active additional stream + any sweep is rejected.
     steps = [SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=5.0, duration_seconds=5.0)]
     with pytest.raises(ValidationError, match="only supported with at most two streams"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=steps),
-            second_stream=StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(200.0, 0.0)),
-            additional_streams=[
-                StreamParams(enabled=True, base_freq_hz=6.0, position_pix=(0.0, 200.0)),
-            ],
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=steps)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, position_pix=(0.0, 200.0)),
+            ])
 
 
 def test_base_only_additional_stream_is_accepted():
@@ -610,22 +559,196 @@ def test_base_only_additional_stream_is_accepted():
 
     # A "similar" filler stream: oddball_enabled=False -> base-only, contributes flicker but no
     # oddball-frequency response. Accepted (the requesting paradigm's odd-one-out setup).
-    params = FPVSConditionParams(
-        stream_position_pix=(0.0, 200.0),
-        second_stream=StreamParams(
-            enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(0.0, -200.0)
-        ),
-        additional_streams=[
-            StreamParams(
-                enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(-200.0, 0.0)
-            ),
-            StreamParams(
-                enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=(200.0, 0.0)
-            ),
-        ],
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, oddball_enabled=False, position_pix=(0.0, -200.0)), additional_streams=[
+            StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, oddball_enabled=False, position_pix=(-200.0, 0.0)),
+            StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, oddball_enabled=False, position_pix=(200.0, 0.0)),
+        ])
+    params.main_stream.position_pix = (0.0, 200.0)
     assert params.second_stream.oddball_enabled is False
     assert all(s.oddball_enabled is False for s in params.additional_streams)
+
+
+# ---------------------------------------------------------------------------
+# Oddball-frequency collision hard check (issue #31 discussion): narrower than plain base-vs-base
+# harmonic relatedness -- only an oddball-carrying stream's own frequency exactly equaling another
+# active stream's driving frequency is rejected; sharing a base rate (even one from which the
+# oddball is itself derived, e.g. base/5) is fine.
+# ---------------------------------------------------------------------------
+
+
+def test_two_streams_each_with_their_own_oddball_at_identical_frequencies_is_rejected():
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="exactly equals"):
+        FPVSConditionParams(
+            main_stream=StreamParams(
+                enabled=True,
+                base=BaseSequenceParams(base_freq_hz=6.0),
+                oddball=OddballParams(oddball_freq_hz=1.2),
+                position_pix=(0.0, 0.0),
+            ),
+            second_stream=StreamParams(
+                enabled=True,
+                oddball_enabled=True,
+                base=BaseSequenceParams(base_freq_hz=10.0),
+                oddball=OddballParams(oddball_freq_hz=1.2),  # collides with main's oddball
+                position_pix=(200.0, 0.0),
+            ),
+        )
+
+
+def test_base_only_filler_colliding_with_another_streams_oddball_frequency_is_rejected():
+    """Distinguishes 'sharing a base rate' (fine) from 'a filler's base rate landing exactly on
+    another stream's oddball rate' (rejected) -- the base-only stream contributes no energy at any
+    oddball frequency, but here its OWN base fundamental IS the main stream's measured frequency."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="exactly equals"):
+        FPVSConditionParams(
+            main_stream=StreamParams(
+                enabled=True,
+                base=BaseSequenceParams(base_freq_hz=6.0),
+                oddball=OddballParams(oddball_freq_hz=1.2),
+                position_pix=(0.0, 0.0),
+            ),
+            second_stream=StreamParams(
+                enabled=True,
+                oddball_enabled=False,
+                base=BaseSequenceParams(base_freq_hz=1.2),  # == main's oddball frequency
+                oddball=OddballParams(oddball_freq_hz=0.5),  # irrelevant: oddball_enabled=False
+                position_pix=(200.0, 0.0),
+            ),
+        )
+
+
+def test_two_streams_each_with_their_own_oddball_sharing_a_base_rate_is_accepted():
+    """Two INDEPENDENT oddball measurements stay valid even sharing one base rate, as long as
+    neither's own oddball frequency collides with anything -- more permissive than requiring
+    distinct base frequencies across every stream."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),  # same base rate as main
+            oddball=OddballParams(oddball_freq_hz=1.5),  # but a different, non-colliding oddball
+            position_pix=(200.0, 0.0),
+        ),
+    )
+    assert params.main_stream.base.base_freq_hz == params.second_stream.base.base_freq_hz == 6.0
+    assert params.main_stream.oddball.oddball_freq_hz != params.second_stream.oddball.oddball_freq_hz
+
+
+def test_cardinal_streams_design_with_default_oddball_rate_is_accepted():
+    """The design that motivated narrowing this check: 3 base-only streams + 1 oddball-carrying
+    stream, all sharing the default base rate, testing whether oddball POSITION (not frequency)
+    modulates the response -- note the default oddball_freq_hz (1.2) is itself base_freq_hz/5, an
+    inherent harmonic sub-multiple of the shared base rate, which must NOT be rejected."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    shared_base = BaseSequenceParams(base_freq_hz=6.0)
+    params = FPVSConditionParams(
+        main_stream=StreamParams(enabled=True, oddball_enabled=True, base=shared_base, position_pix=(0.0, 200.0)),
+        second_stream=StreamParams(
+            enabled=True, oddball_enabled=False, base=shared_base, position_pix=(0.0, -200.0)
+        ),
+        additional_streams=[
+            StreamParams(enabled=True, oddball_enabled=False, base=shared_base, position_pix=(-200.0, 0.0)),
+            StreamParams(enabled=True, oddball_enabled=False, base=shared_base, position_pix=(200.0, 0.0)),
+        ],
+    )
+    assert params.main_stream.oddball.oddball_freq_hz == 1.2  # unaffected default
+    assert params.second_stream.base.base_freq_hz == 6.0
+    assert all(s.base.base_freq_hz == 6.0 for s in params.additional_streams)
+
+
+def test_pattern_based_oddball_is_skipped_by_the_collision_check():
+    """A pattern overrides oddball_freq_hz entirely (paradigm_oddball.OddballParams docstring), so
+    there's no single numeric rate to compare -- the collision check must skip a pattern-based
+    oddball on EITHER side of a comparison, even when its raw (unused) oddball_freq_hz field would
+    otherwise numerically collide."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    # Pattern-based stream is the ONE being compared (s side): its raw oddball_freq_hz (7.0) would
+    # collide with the other stream's base (7.0) if not skipped -- must validate cleanly.
+    params_s_side = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=7.0, pattern="BBBBO"),
+            position_pix=(0.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=False,
+            base=BaseSequenceParams(base_freq_hz=7.0),
+            position_pix=(200.0, 0.0),
+        ),
+    )
+    assert params_s_side.main_stream.oddball.pattern == "BBBBO"
+
+    # Pattern-based stream is the OTHER stream being compared against (t side): its raw
+    # oddball_freq_hz (1.2, the class default) would collide with main's real oddball (1.2) if its
+    # pattern didn't exclude it from the candidate list -- must validate cleanly.
+    params_t_side = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=10.0),
+            oddball=OddballParams(oddball_freq_hz=1.2, pattern="BBBBO"),  # would collide if not skipped
+            position_pix=(200.0, 0.0),
+        ),
+    )
+    assert params_t_side.second_stream.oddball.pattern == "BBBBO"
+
+
+def test_oddball_collision_check_covers_every_pair_not_just_adjacent_streams():
+    """3 active streams, each carrying its own oddball at a distinct rate EXCEPT main and the
+    non-adjacent additional_streams[0] entry (second_stream sits between them in field order) --
+    must still be rejected, proving the pairwise loop checks every pair, not just neighbours."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="exactly equals"):
+        FPVSConditionParams(
+            main_stream=StreamParams(
+                enabled=True,
+                oddball_enabled=True,
+                base=BaseSequenceParams(base_freq_hz=6.0),
+                oddball=OddballParams(oddball_freq_hz=1.2),
+                position_pix=(0.0, 200.0),
+            ),
+            second_stream=StreamParams(
+                enabled=True,
+                oddball_enabled=True,
+                base=BaseSequenceParams(base_freq_hz=8.0),
+                oddball=OddballParams(oddball_freq_hz=1.6),  # distinct, no collision
+                position_pix=(0.0, -200.0),
+            ),
+            additional_streams=[
+                StreamParams(
+                    enabled=True,
+                    oddball_enabled=True,
+                    base=BaseSequenceParams(base_freq_hz=10.0),
+                    oddball=OddballParams(oddball_freq_hz=1.2),  # collides with MAIN, not second
+                    position_pix=(-200.0, 0.0),
+                ),
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -634,18 +757,28 @@ def test_base_only_additional_stream_is_accepted():
 
 
 def _dual_condition(**over):
-    """A valid dual-stream Condition (distinct positions, non-harmonic 6 & 7 Hz) with fields to
-    override for the coincidence-code tests."""
+    """A valid dual-stream Condition (distinct positions, non-harmonic 6 & 7 Hz bases, distinct
+    1.2/1.1 Hz oddballs) with fields to override for the coincidence-code tests. ``main_base_code``/
+    ``main_oddball_code`` set the MAIN stream's trigger codes; ``s2_base_code``/``s2_oddball_code``
+    set the second stream's (mirroring the old top-level ``base=``/``oddball=`` + this helper's
+    ``s2_*`` kwargs a caller used to combine -- now both streams' codes go through this one helper
+    since both live under per-stream ``StreamParams`` fields)."""
     from xpman.tasks.fpvs.schema import StreamParams
 
     base = dict(
-        stream_position_pix=(-200.0, 0.0),
+        main_stream=StreamParams(
+            enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0, base_trigger_code=over.pop("main_base_code", None)),
+            oddball=OddballParams(oddball_trigger_code=over.pop("main_oddball_code", None)),
+            position_pix=(-200.0, 0.0),
+        ),
         second_stream=StreamParams(
             enabled=True,
-            base_freq_hz=7.0,
+            base=BaseSequenceParams(base_freq_hz=7.0, base_trigger_code=over.pop("s2_base_code", None)),
+            oddball=OddballParams(
+                oddball_freq_hz=1.1, oddball_trigger_code=over.pop("s2_oddball_code", None)
+            ),
             position_pix=(200.0, 0.0),
-            base_trigger_code=over.pop("s2_base_code", None),
-            oddball_trigger_code=over.pop("s2_oddball_code", None),
         ),
     )
     base.update(over)
@@ -656,7 +789,7 @@ def test_coincidence_codes_default_none_and_off_path_unaffected():
     # Default: no per-stream triggers, no coincidence codes -> valid (v1 behavior preserved).
     params = FPVSConditionParams(**_dual_condition())
     assert not params.coincidence_codes.any_set()
-    assert params.second_stream.base_trigger_code is None
+    assert params.second_stream.base.base_trigger_code is None
 
 
 def test_both_streams_triggered_require_full_coincidence_table():
@@ -665,17 +798,13 @@ def test_both_streams_triggered_require_full_coincidence_table():
     # Both streams triggered but coincidence table missing -> rejected.
     with pytest.raises(ValidationError, match="all four coincidence_codes"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+                        **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
         )
     # Partial table -> also rejected (lists missing).
     with pytest.raises(ValidationError, match="all four coincidence_codes"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            coincidence_codes=CoincidenceCodes(both_base=200, a_base_b_oddball=201),
-            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+                        coincidence_codes=CoincidenceCodes(both_base=200, a_base_b_oddball=201),
+            **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
         )
 
 
@@ -683,12 +812,10 @@ def test_both_streams_triggered_with_disjoint_full_table_is_accepted():
     from xpman.tasks.fpvs.schema import CoincidenceCodes
 
     params = FPVSConditionParams(
-        base=BaseSequenceParams(base_trigger_code=10),
-        oddball=OddballParams(oddball_trigger_code=11),
-        coincidence_codes=CoincidenceCodes(
+                coincidence_codes=CoincidenceCodes(
             both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
         ),
-        **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
     )
     table = params.coincidence_codes.as_reserved_table()
     assert table == {
@@ -705,12 +832,10 @@ def test_reserved_code_colliding_with_stream_code_is_rejected():
     # 10 is the main stream's base code; reusing it as a reserved code is a collision.
     with pytest.raises(ValidationError, match="collide"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            coincidence_codes=CoincidenceCodes(
+                        coincidence_codes=CoincidenceCodes(
                 both_base=10, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
             ),
-            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+            **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
         )
 
 
@@ -722,12 +847,10 @@ def test_reserved_code_colliding_with_second_stream_code_is_rejected():
 
     with pytest.raises(ValidationError, match="collide"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            coincidence_codes=CoincidenceCodes(
+                        coincidence_codes=CoincidenceCodes(
                 both_base=200, a_base_b_oddball=21, a_oddball_b_base=202, both_oddball=203
             ),
-            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+            **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
         )
 
 
@@ -738,12 +861,10 @@ def test_disjoint_full_table_accepted_at_8bit_boundaries():
     from xpman.tasks.fpvs.schema import CoincidenceCodes
 
     params = FPVSConditionParams(
-        base=BaseSequenceParams(base_trigger_code=10),
-        oddball=OddballParams(oddball_trigger_code=11),
-        coincidence_codes=CoincidenceCodes(
+                coincidence_codes=CoincidenceCodes(
             both_base=1, a_base_b_oddball=2, a_oddball_b_base=254, both_oddball=255
         ),
-        **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+        **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
     )
     assert params.coincidence_codes.as_reserved_table() == {
         (False, False): 1,
@@ -758,12 +879,10 @@ def test_duplicate_reserved_codes_are_rejected():
 
     with pytest.raises(ValidationError, match="DISTINCT"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            coincidence_codes=CoincidenceCodes(
+                        coincidence_codes=CoincidenceCodes(
                 both_base=200, a_base_b_oddball=200, a_oddball_b_base=202, both_oddball=203
             ),
-            **_dual_condition(s2_base_code=20, s2_oddball_code=21),
+            **_dual_condition(main_base_code=10, main_oddball_code=11, s2_base_code=20, s2_oddball_code=21),
         )
 
 
@@ -774,12 +893,10 @@ def test_coincidence_codes_without_both_streams_triggered_is_rejected():
     # is flagged as a misconfiguration rather than silently ignored.
     with pytest.raises(ValidationError, match="not both triggered"):
         FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            oddball=OddballParams(oddball_trigger_code=11),
-            coincidence_codes=CoincidenceCodes(
+                        coincidence_codes=CoincidenceCodes(
                 both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
             ),
-            **_dual_condition(),  # second stream has NO trigger codes
+            **_dual_condition(main_base_code=10, main_oddball_code=11),  # second stream has NO trigger codes
         )
 
 
@@ -795,36 +912,28 @@ def test_second_stream_trigger_codes_default_none():
     from xpman.tasks.fpvs.schema import StreamParams
 
     s = StreamParams()
-    assert s.base_trigger_code is None and s.oddball_trigger_code is None
+    assert s.base.base_trigger_code is None and s.oddball.oddball_trigger_code is None
 
 
 def test_coincidence_codes_inert_when_second_stream_disabled():
     from xpman.tasks.fpvs.schema import CoincidenceCodes
 
     # Second stream disabled: coincidence codes are inert and never checked (single-stream unaffected).
-    params = FPVSConditionParams(
-        base=BaseSequenceParams(base_trigger_code=10),
-        coincidence_codes=CoincidenceCodes(both_base=10),  # would collide IF checked
-    )
+    params = FPVSConditionParams(coincidence_codes=CoincidenceCodes(both_base=10))
+    params.main_stream.base = BaseSequenceParams(base_trigger_code=10)
     assert params.second_stream.enabled is False
 
 
 def test_base_and_oddball_trigger_code_collision_is_rejected():
     with pytest.raises(ValidationError, match="trigger code 7"):
-        FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=7),
-            oddball=OddballParams(oddball_trigger_code=7),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_trigger_code=7), oddball=OddballParams(oddball_trigger_code=7)), )
 
 
 def test_distractor_trigger_code_colliding_with_base_is_rejected():
     from xpman.tasks.fpvs.distractor import DistractorParams
 
     with pytest.raises(ValidationError, match="trigger code 10.*base.base_trigger_code.*distractor"):
-        FPVSConditionParams(
-            base=BaseSequenceParams(base_trigger_code=10),
-            distractor=DistractorParams(enabled=True, trigger_code=10, keys=["a"]),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_trigger_code=10)), distractor=DistractorParams(enabled=True, trigger_code=10, keys=["a"]))
 
 
 def test_go_nogo_trigger_code_colliding_with_second_stream_is_rejected():
@@ -832,11 +941,7 @@ def test_go_nogo_trigger_code_colliding_with_second_stream_is_rejected():
     from xpman.tasks.fpvs.schema import StreamParams
 
     with pytest.raises(ValidationError, match="trigger code 30"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0), base_trigger_code=30),
-            go_nogo=GoNoGoParams(enabled=True, go_trigger_code=30, keys=["a"]),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)), second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0, base_trigger_code=30), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), go_nogo=GoNoGoParams(enabled=True, go_trigger_code=30, keys=["a"]))
 
 
 def test_baseline_and_familiarization_trigger_code_collision_is_rejected():
@@ -854,23 +959,17 @@ def test_additional_stream_trigger_code_colliding_with_distractor_is_rejected():
     from xpman.tasks.fpvs.schema import StreamParams
 
     with pytest.raises(ValidationError, match="trigger code 80"):
-        FPVSConditionParams(
-            stream_position_pix=(-200.0, 0.0),
-            additional_streams=[
-                StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0), base_trigger_code=80)
-            ],
-            distractor=DistractorParams(enabled=True, trigger_code=80, keys=["a"]),
-        )
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)), additional_streams=[
+                StreamParams(oddball_enabled=False, base=BaseSequenceParams(base_freq_hz=7.0, base_trigger_code=80), enabled=True, position_pix=(200.0, 0.0))
+            ], distractor=DistractorParams(enabled=True, trigger_code=80, keys=["a"]))
 
 
 def test_disabled_subsystem_trigger_code_does_not_count_toward_collision():
     from xpman.tasks.fpvs.distractor import DistractorParams
 
     # distractor is disabled, so its trigger_code is inert -- reusing base's code must NOT raise.
-    params = FPVSConditionParams(
-        base=BaseSequenceParams(base_trigger_code=10),
-        distractor=DistractorParams(enabled=False, trigger_code=10, keys=["a"]),
-    )
+    params = FPVSConditionParams(distractor=DistractorParams(enabled=False, trigger_code=10, keys=["a"]))
+    params.main_stream.base = BaseSequenceParams(base_trigger_code=10)
     assert params.distractor.trigger_code == 10
 
 
@@ -879,41 +978,18 @@ def test_many_stacked_features_with_all_distinct_codes_is_accepted():
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
     from xpman.tasks.fpvs.schema import BaselineParams, FamiliarizationParams, StreamParams
 
-    params = FPVSConditionParams(
-        base=BaseSequenceParams(base_trigger_code=1),
-        oddball=OddballParams(oddball_trigger_code=2),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        distractor=DistractorParams(enabled=True, trigger_code=3, keys=["a"]),
-        go_nogo=GoNoGoParams(enabled=False, go_trigger_code=4, nogo_trigger_code=5, keys=["a"]),
-        baseline=BaselineParams(enabled=True, start_trigger_code=6, stop_trigger_code=7),
-        familiarization=FamiliarizationParams(enabled=True, start_trigger_code=8, stop_trigger_code=9),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), distractor=DistractorParams(enabled=True, trigger_code=3, keys=["a"]), go_nogo=GoNoGoParams(enabled=False, go_trigger_code=4, nogo_trigger_code=5, keys=["a"]), baseline=BaselineParams(enabled=True, start_trigger_code=6, stop_trigger_code=7), familiarization=FamiliarizationParams(enabled=True, start_trigger_code=8, stop_trigger_code=9))
+    params.main_stream.base = BaseSequenceParams(base_trigger_code=1)
+    params.main_stream.oddball = OddballParams(oddball_trigger_code=2)
+    params.main_stream.position_pix = (-200.0, 0.0)
     assert params.distractor.enabled and params.baseline.enabled and params.familiarization.enabled
-
-
-def test_response_task_is_off_by_default_and_oddball_referenced():
-    """Standard FPVS is passive: the explicit oddball-response task is off by default, and when on
-    its RT reference is the oddball onset (not the most-recent stimulus)."""
-    from xpman.tasks.fpvs.response import RTReference
-
-    r = FPVSConditionParams().response
-    assert r.enabled is False
-    assert r.rt_reference is RTReference.MOST_RECENT_ODDBALL_ONSET
 
 
 def test_two_enabled_behavioural_tasks_sharing_a_key_is_rejected():
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
-    from xpman.tasks.fpvs.response import ResponseKeyParams
 
-    # response + distractor both on "space" -> a press would be scored by both -> rejected.
-    with pytest.raises(ValidationError, match="share key"):
-        FPVSConditionParams(
-            response=ResponseKeyParams(enabled=True, keys=["space"]),
-            distractor=DistractorParams(enabled=True, keys=["space"]),
-        )
-    # distractor + go_nogo both on "space" -> rejected.
+    # distractor + go_nogo both on "space" -> a press would be scored by both -> rejected.
     with pytest.raises(ValidationError, match="share key"):
         FPVSConditionParams(
             distractor=DistractorParams(enabled=True, keys=["space"]),
@@ -923,17 +999,17 @@ def test_two_enabled_behavioural_tasks_sharing_a_key_is_rejected():
 
 def test_distinct_keys_or_disabled_tasks_are_allowed():
     from xpman.tasks.fpvs.distractor import DistractorParams
-    from xpman.tasks.fpvs.response import ResponseKeyParams
+    from xpman.tasks.fpvs.go_nogo import GoNoGoParams
 
     # Distinct keys: fine.
     FPVSConditionParams(
-        response=ResponseKeyParams(enabled=True, keys=["a"]),
-        distractor=DistractorParams(enabled=True, keys=["space"]),
+        distractor=DistractorParams(enabled=True, keys=["a"]),
+        go_nogo=GoNoGoParams(enabled=True, keys=["space"]),
     )
     # Same key but one task disabled: fine (only one collects).
     FPVSConditionParams(
-        response=ResponseKeyParams(enabled=False, keys=["space"]),
         distractor=DistractorParams(enabled=True, keys=["space"]),
+        go_nogo=GoNoGoParams(enabled=False, keys=["space"]),
     )
 
 
@@ -942,10 +1018,10 @@ def test_v4_condition_without_go_nogo_or_pattern_validates_defaults():
     new blocks defaulting to off/None -- old Instances keep running unchanged."""
     v4 = FPVSConditionParams().model_dump()
     v4.pop("go_nogo")
-    v4["oddball"].pop("pattern", None)
+    v4["main_stream"]["oddball"].pop("pattern", None)
     params = FPVSConditionParams.model_validate(v4)
     assert params.go_nogo.enabled is False
-    assert params.oddball.pattern is None
+    assert params.main_stream.oddball.pattern is None
 
 
 def test_v2_condition_without_distractor_still_validates_disabled():
@@ -1016,16 +1092,17 @@ def test_migrate_v3_to_v4_strip_is_destructive_and_stays_off_load_path():
     """Why migrate is design-time only: its v3->v4 step is *destructive* (it strips the legacy
     SepStim selector keys). model_validate simply ignores those same keys instead (extra=ignore),
     so a frozen v3 Instance loads unchanged WITHOUT that destructive transform ever running -- the
-    lower-risk backward-compat mechanism that keeps old Instances reproducible."""
+    lower-risk backward-compat mechanism that keeps old Instances reproducible. Uses a genuinely
+    v3-shaped dict (flat top-level base_selector, pre-v9 main-stream collapse) -- a v9 model_dump()
+    would already have base_selector nested under main_stream, unlike real historical v3 data."""
     schema = FPVSSchema()
-    v3 = FPVSConditionParams().model_dump()
-    v3["base_selector"]["category"] = "face"  # a since-removed legacy SepStim key
+    v3 = {"base_selector": {"subdirectory": "objects", "category": "face"}}  # a since-removed legacy SepStim key
     # migrate() would purge it (destructive):
     _, migrated = schema.migrate("3", v3)
-    assert "category" not in migrated["base_selector"]
+    assert "category" not in migrated["main_stream"]["base_selector"]
     # the load path (model_validate) instead ignores it, without mutating/migrating anything:
     params = FPVSConditionParams.model_validate(v3)
-    assert params.base_selector.subdirectory is None  # loads fine, legacy key harmlessly dropped
+    assert params.main_stream.base_selector.subdirectory is None  # loads fine, legacy key harmlessly dropped
 
 
 def test_stimulus_selector_defaults_to_whole_set():
@@ -1067,17 +1144,17 @@ def test_default_params_satisfy_the_oddball_frequency_constraint():
 
 
 def test_oddball_freq_below_base_freq_is_valid():
-    FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.2))
+    FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=1.2)), )
 
 
 def test_oddball_freq_equal_to_base_freq_is_rejected():
-    with pytest.raises(ValidationError, match="strictly less than"):
-        FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=6.0))
+    with pytest.raises(ValidationError, match="must be < its"):
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=6.0)), )
 
 
 def test_oddball_freq_exceeding_base_freq_is_rejected():
-    with pytest.raises(ValidationError, match="strictly less than"):
-        FPVSConditionParams(base=BaseSequenceParams(base_freq_hz=3.0), oddball=OddballParams(oddball_freq_hz=6.0))
+    with pytest.raises(ValidationError, match="must be < its"):
+        FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_freq_hz=3.0), oddball=OddballParams(oddball_freq_hz=6.0)), )
 
 
 def test_oddball_pattern_valid_roundtrips_and_normalizes():
@@ -1094,14 +1171,13 @@ def test_oddball_pattern_rejects_invalid(bad):
 def test_pattern_bypasses_oddball_below_base_frequency_check():
     """A pattern overrides oddball_freq_hz, so the oddball<base cross-check must not fire even if
     oddball_freq_hz is left at a value >= base (it's ignored)."""
-    FPVSConditionParams(
-        base=BaseSequenceParams(base_freq_hz=6.0),
-        oddball=OddballParams(oddball_freq_hz=6.0, pattern="BBBO"),  # 6.0 would normally be rejected
-    )
+    FPVSConditionParams(main_stream=StreamParams(enabled=True, base=BaseSequenceParams(base_freq_hz=6.0), oddball=OddballParams(oddball_freq_hz=6.0, pattern="BBBO")), )
 
 
 def test_oddball_frequency_constraint_enforced_via_model_validate():
     """The GUI's SchemaForm.get_validated_model() calls model_validate(), not the constructor
     directly -- confirm the cross-field check fires on that path too, not just __init__."""
-    with pytest.raises(ValidationError, match="strictly less than"):
-        FPVSConditionParams.model_validate({"base": {"base_freq_hz": 3.0}, "oddball": {"oddball_freq_hz": 6.0}})
+    with pytest.raises(ValidationError, match="must be < its"):
+        FPVSConditionParams.model_validate(
+            {"main_stream": {"base": {"base_freq_hz": 3.0}, "oddball": {"oddball_freq_hz": 6.0}}}
+        )

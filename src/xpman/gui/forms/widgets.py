@@ -10,11 +10,11 @@ if/elif ladder duplicated at every call site.
 Design choices ("your call" items from the brief):
 
 - ``list[str]`` is rendered as a single comma-separated ``QLineEdit`` (:class:`StringListFieldWidget`)
-  rather than a full add/remove list widget. The only real-model use of ``list[str]`` in the
-  repo today is ``ResponseKeyParams.keys`` (e.g. ``["space"]``) -- a short, rarely-edited list of
-  token-like strings. A full add/remove/reorder widget is easy to bolt on later (it would only
-  need to satisfy the same ``get_value``/``set_value`` interface) but would be speculative
-  generality for the one field that currently needs it.
+  rather than a full add/remove list widget. The real-model uses of ``list[str]`` in the repo
+  today are key lists like ``DistractorParams.keys``/``GoNoGoParams.keys`` (e.g. ``["space"]``) --
+  a short, rarely-edited list of token-like strings. A full add/remove/reorder widget is easy to
+  bolt on later (it would only need to satisfy the same ``get_value``/``set_value`` interface) but
+  would be speculative generality for the fields that currently need it.
 - Invalid-field styling is a red border via a Qt stylesheet applied directly to the leaf widget,
   plus a small red ``QLabel`` inserted beneath it carrying the specific message. The stylesheet
   alone would be visible but mute; the label makes the *reason* discoverable without hunting for

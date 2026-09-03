@@ -1,5 +1,5 @@
 """Tests for tasks.fpvs.task.FPVSTask -- the integration point wiring image_set, fixation,
-photodiode, paradigm_oddball, and response together.
+photodiode, paradigm_oddball, and the distractor/go_nogo behavioural tasks together.
 
 Uses a synthetic stimulus directory (tmp_path, mirroring the real SepStim/ convention), a
 mocked psychopy.visual.Window/ImageStim/Rect/Line, and a mocked
@@ -21,6 +21,7 @@ from xpman.runtime.logging_sink import EventSink
 from xpman.tasks.base import SubjectInfo, TaskContext
 from xpman.tasks.fpvs.image_set import scan_directory
 from xpman.tasks.fpvs.modulation import Waveform
+from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.schema import (
     FPVSConditionParams,
     PositionJitterParams,
@@ -271,13 +272,12 @@ def test_run_trial_selects_correct_pools_and_runs_sequence(mock_window, stim_roo
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
-    params.base.base_freq_hz = 6.0
-    params.oddball.oddball_freq_hz = 1.2
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
+    params.main_stream.base.base_freq_hz = 6.0
+    params.main_stream.oddball.oddball_freq_hz = 1.2
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -302,12 +302,11 @@ def test_run_trial_hard_fails_when_base_freq_too_high_for_refresh(mock_window, s
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz refresh
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.base_freq_hz = 60.0  # 60/60 -> 1 frame/cycle: no modulation possible
-    params.oddball.oddball_freq_hz = 12.0  # still < base, so the model validates
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.base_freq_hz = 60.0  # 60/60 -> 1 frame/cycle: no modulation possible
+    params.main_stream.oddball.oddball_freq_hz = 12.0  # still < base, so the model validates
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -326,7 +325,7 @@ def test_run_trial_flags_background_luminance_divergence(mock_window, real_stim_
     task.prepare(ctx)  # pool mean luminance ~0.5 (mid-gray images)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.5
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.background_gray = 0.0  # far from the ~0.5 mean -> opacity != true contrast modulation
     outcome = _run_trial_outcome(task, ctx, params)
     assert outcome["background_luminance_warning"] is True
@@ -341,7 +340,7 @@ def test_run_trial_no_luminance_warning_when_background_matches(
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.5
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.background_gray = 0.5  # matches the images' mean luminance
     outcome = _run_trial_outcome(task, ctx, params)
     assert outcome["background_luminance_warning"] is False
@@ -358,11 +357,10 @@ def test_run_trial_flags_base_oddball_pool_luminance_mismatch(
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.background_gray = 64 / 255  # matches the dark base pool, not the light oddball pool
     outcome = _run_trial_outcome(task, ctx, params)
 
@@ -383,7 +381,7 @@ def test_run_trial_no_pool_mismatch_when_pools_match(mock_window, real_stim_root
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.5
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.background_gray = 128 / 255  # matches both pools
     outcome = _run_trial_outcome(task, ctx, params)
     assert outcome["base_pool_luminance_warning"] is False
@@ -400,11 +398,10 @@ def test_pool_luminance_inspected_once_per_selector(mock_window, split_stim_root
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.5
     _run_trial_outcome(task, ctx, params)
     assert set(task._pool_luminance_cache) == {("dark", None), ("light", None)}
 
@@ -418,7 +415,7 @@ def test_image_stims_cached_across_trials(mock_window, real_stim_root, event_sin
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.3
+    params.main_stream.base.trial_duration_seconds = 0.3
 
     with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")) as mk_stim, patch(
         "psychopy.visual.Rect", return_value=MagicMock()
@@ -452,7 +449,7 @@ def test_run_trial_logs_image_identity_at_onsets(mock_window, real_stim_root, ev
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.5
+    params.main_stream.base.trial_duration_seconds = 0.5
     _run_trial_outcome(task, ctx, params)
 
     rows = _read_events(event_sink)
@@ -475,12 +472,11 @@ def test_run_trial_logs_selector_category_at_onsets(mock_window, split_stim_root
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
     # Long enough for at least one oddball (default 1.2 Hz, period 5 @ 6 Hz base) to actually fire.
-    params.base.trial_duration_seconds = 2.0
+    params.main_stream.base.trial_duration_seconds = 2.0
     _run_trial_outcome(task, ctx, params)
 
     rows = _read_events(event_sink)
@@ -524,11 +520,10 @@ def test_run_trial_applies_sinusoidal_modulation_to_image(mock_window, stim_root
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
 
     recorder = _OpacityRecorder()
     with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
@@ -549,12 +544,11 @@ def test_run_trial_none_waveform_keeps_full_opacity(mock_window, stim_root, even
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
-    params.modulation.waveform = params.modulation.waveform.NONE
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
+    params.main_stream.modulation.waveform = params.main_stream.modulation.waveform.NONE
 
     recorder = _OpacityRecorder()
     with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
@@ -573,11 +567,10 @@ def test_run_trial_runs_pre_and_post_fixation_intervals(mock_window, stim_root, 
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.timing.pre_interval_seconds = (0.5, 0.5)   # 30 frames @ 60 Hz
     params.timing.post_interval_seconds = (0.25, 0.25)  # 15 frames
 
@@ -604,11 +597,10 @@ def test_run_trial_fade_frames_reported_in_outcome(mock_window, stim_root, event
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
     params.timing.fade_in_seconds = 0.5   # 30 frames @ 60 Hz
     params.timing.fade_out_seconds = 0.25  # 15 frames
 
@@ -627,11 +619,10 @@ def test_run_trial_sets_mid_gray_background(mock_window, stim_root, event_sink):
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.2
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.2
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -650,11 +641,10 @@ def test_run_trial_runs_familiarization_before_main_on_first_trial_when_enabled(
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.familiarization.enabled = True
     params.familiarization.duration_seconds = 0.3
     params.familiarization.post_blank_seconds = 0.1
@@ -692,11 +682,10 @@ def test_run_trial_familiarization_only_on_first_trial(mock_window, stim_root, e
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
     params.familiarization.enabled = True
     params.familiarization.duration_seconds = 0.3
     params.familiarization.start_trigger_code = 40
@@ -724,11 +713,10 @@ def test_run_trial_skips_familiarization_by_default(mock_window, stim_root, even
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.3
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.3
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -772,7 +760,8 @@ def test_run_trial_raises_clear_error_when_base_selector_matches_nothing(mock_wi
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(base_selector=StimulusSelector(subdirectory="does_not_exist"))
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="does_not_exist")
     with pytest.raises(ValueError, match="base_selector"):
         task.run_trial(ctx, params.model_dump(), trial_index=0)
 
@@ -782,50 +771,10 @@ def test_run_trial_raises_clear_error_when_oddball_selector_matches_nothing(mock
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(oddball_selector=StimulusSelector(subdirectory="does_not_exist"))
+    params = FPVSConditionParams()
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="does_not_exist")
     with pytest.raises(ValueError, match="oddball_selector"):
         task.run_trial(ctx, params.model_dump(), trial_index=0)
-
-
-def test_run_trial_scores_responses_and_includes_in_outcome(mock_window, stim_root, event_sink):
-    task = FPVSTask()
-    ctx = _make_ctx(mock_window, stim_root, event_sink)
-    task.prepare(ctx)
-
-    params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 1.0
-    params.response.enabled = True  # the explicit oddball-response task is off by default now
-
-    fake_keypress = MagicMock()
-    fake_keypress.name = "space"
-    fake_keypress.tDown = 0.05  # matches the clock basis Clock() and window.flip() use here
-
-    patches = _psychopy_patches()
-    with patches[0], patches[1], patches[2], patch(
-        "psychopy.hardware.keyboard.Keyboard",
-        return_value=MagicMock(getKeys=MagicMock(return_value=[fake_keypress])),
-    ):
-        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
-
-    assert result.outcome_summary["n_responses"] == 1
-
-
-def test_run_trial_no_responses_gives_none_mean_rt(mock_window, stim_root, event_sink):
-    task = FPVSTask()
-    ctx = _make_ctx(mock_window, stim_root, event_sink)
-    task.prepare(ctx)
-
-    params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 1.0
-
-    patches = _psychopy_patches()
-    with patches[0], patches[1], patches[2], patch(
-        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
-    ):
-        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
-
-    assert result.outcome_summary["n_valid_responses"] == 0
-    assert result.outcome_summary["mean_rt_seconds"] is None
 
 
 def test_run_trial_respects_abort_check(mock_window, stim_root, event_sink):
@@ -841,7 +790,7 @@ def test_run_trial_respects_abort_check(mock_window, stim_root, event_sink):
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 10.0  # long, so abort actually triggers first
+    params.main_stream.base.trial_duration_seconds = 10.0  # long, so abort actually triggers first
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -920,11 +869,10 @@ class _PosRecorder:
 
 
 def _jitter_condition(radius_pix: float = 120.0) -> FPVSConditionParams:
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
     params.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=radius_pix)
     return params
 
@@ -963,11 +911,10 @@ def test_run_trial_jitter_disabled_recenters_image(mock_window, stim_root, event
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
     assert params.position_jitter.enabled is False  # default
 
     recorder = _PosRecorder()
@@ -1008,13 +955,13 @@ def test_run_trial_jitter_does_not_leak_offset_into_next_centered_trial(
     task.prepare(ctx)
 
     jittered = FPVSConditionParams()
-    jittered.base.trial_duration_seconds = 0.3
+    jittered.main_stream.base.trial_duration_seconds = 0.3
     jittered.position_jitter.enabled = True
     jittered.position_jitter.radius_pix = 100.0
     jittered.position_jitter.region = "disk"
 
     centered = FPVSConditionParams()
-    centered.base.trial_duration_seconds = 0.3  # jitter disabled (default)
+    centered.main_stream.base.trial_duration_seconds = 0.3  # jitter disabled (default)
 
     recorder = _PosRecorder()
     with patch("psychopy.visual.ImageStim", return_value=recorder), patch(
@@ -1066,11 +1013,10 @@ def test_run_trial_no_jitter_onsets_log_pos_none(mock_window, stim_root, event_s
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
     _run_trial_outcome(task, ctx, params)
 
     rows = _read_events(event_sink)
@@ -1120,11 +1066,10 @@ def test_enabling_jitter_does_not_change_pool_shuffle_order(mock_window, stim_ro
             abort_check=lambda: False,
         )
 
-    base_params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    base_params.base.trial_duration_seconds = 2.0
+    base_params = FPVSConditionParams()
+    base_params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    base_params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    base_params.main_stream.base.trial_duration_seconds = 2.0
 
     disabled = base_params.model_copy(deep=True)
     enabled = base_params.model_copy(deep=True)
@@ -1171,19 +1116,11 @@ def test_dual_stream_enabling_jitter_does_not_change_pool_shuffle_order(mock_win
             abort_check=lambda: False,
         )
 
-    base_params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-    )
-    base_params.base.trial_duration_seconds = 2.0
+    base_params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")))
+    base_params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    base_params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    base_params.main_stream.position_pix = (-200.0, 0.0)
+    base_params.main_stream.base.trial_duration_seconds = 2.0
 
     disabled = base_params.model_copy(deep=True)
     enabled = base_params.model_copy(deep=True)
@@ -1212,8 +1149,8 @@ def test_dual_stream_enabling_jitter_does_not_change_pool_shuffle_order(mock_win
 def test_check_triggers_warns_on_large_position_jitter():
     task = FPVSTask()
     params = FPVSConditionParams()
-    params.base.base_trigger_code = 1
-    params.oddball.oddball_trigger_code = 2
+    params.main_stream.base.base_trigger_code = 1
+    params.main_stream.oddball.oddball_trigger_code = 2
     params.timing.fade_in_seconds = 1.0
     params.timing.fade_out_seconds = 1.0
     params.position_jitter = PositionJitterParams(enabled=True, region="disk", radius_pix=1000.0)
@@ -1224,8 +1161,8 @@ def test_check_triggers_warns_on_large_position_jitter():
 def test_check_triggers_no_position_warning_for_small_jitter():
     task = FPVSTask()
     params = FPVSConditionParams()
-    params.base.base_trigger_code = 1
-    params.oddball.oddball_trigger_code = 2
+    params.main_stream.base.base_trigger_code = 1
+    params.main_stream.oddball.oddball_trigger_code = 2
     params.timing.fade_in_seconds = 1.0
     params.timing.fade_out_seconds = 1.0
     params.position_jitter = PositionJitterParams(
@@ -1238,8 +1175,8 @@ def test_check_triggers_no_position_warning_for_small_jitter():
 def test_check_triggers_no_position_warning_when_disabled():
     task = FPVSTask()
     params = FPVSConditionParams()
-    params.base.base_trigger_code = 1
-    params.oddball.oddball_trigger_code = 2
+    params.main_stream.base.base_trigger_code = 1
+    params.main_stream.oddball.oddball_trigger_code = 2
     params.timing.fade_in_seconds = 1.0
     params.timing.fade_out_seconds = 1.0
     # Large region but DISABLED -> no advisory (nothing is jittered).
@@ -1254,11 +1191,8 @@ def test_check_triggers_warns_dual_stream_jitter_can_cross_midline():
     250 px (>= 200) -> warn."""
     from xpman.tasks.fpvs.schema import StreamParams
 
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=250.0),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=250.0))
+    params.main_stream.position_pix = (-200.0, 0.0)
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert any("cross the midline" in w for w in warnings)
 
@@ -1266,11 +1200,8 @@ def test_check_triggers_warns_dual_stream_jitter_can_cross_midline():
 def test_check_triggers_no_crossover_for_small_dual_stream_jitter():
     from xpman.tasks.fpvs.schema import StreamParams
 
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=50.0),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=50.0))
+    params.main_stream.position_pix = (-200.0, 0.0)
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert not any("cross the midline" in w for w in warnings)
 
@@ -1307,10 +1238,9 @@ def test_check_triggers_no_photodiode_overlap_when_patch_far():
 
 def test_describe_condition_resources_reports_counts_per_selector(stim_root):
     task = FPVSTask()
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
 
     lines = task.describe_condition_resources(params.model_dump(), str(stim_root))
     text = "\n".join(lines)
@@ -1324,10 +1254,9 @@ def test_describe_condition_resources_reports_counts_per_selector(stim_root):
 
 def test_describe_condition_resources_flags_zero_match_selector(stim_root):
     task = FPVSTask()
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(filename_pattern="*no_such_image*"),
-    )
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(filename_pattern="*no_such_image*")
 
     lines = task.describe_condition_resources(params.model_dump(), str(stim_root))
     text = "\n".join(lines)
@@ -1358,7 +1287,7 @@ def test_describe_condition_resources_missing_dir_returns_message(stim_root):
 
 def test_describe_condition_resources_invalid_params_returns_message_not_exception(stim_root):
     task = FPVSTask()
-    lines = task.describe_condition_resources({"base": {"base_freq_hz": -1.0}}, str(stim_root))
+    lines = task.describe_condition_resources({"main_stream": {"base": {"base_freq_hz": -1.0}}}, str(stim_root))
     assert len(lines) == 1
     assert "preview skipped" in lines[0]
 
@@ -1382,8 +1311,8 @@ def _clean_condition() -> FPVSConditionParams:
     """A Condition configured so *only* the check under test can warn: distinct trigger codes
     (no unset-triggers warning) and a fade set (no abrupt-onset warning)."""
     params = FPVSConditionParams()
-    params.base.base_trigger_code = 1
-    params.oddball.oddball_trigger_code = 2
+    params.main_stream.base.base_trigger_code = 1
+    params.main_stream.oddball.oddball_trigger_code = 2
     params.timing.fade_in_seconds = 1.0
     params.timing.fade_out_seconds = 1.0
     return params
@@ -1396,8 +1325,8 @@ def test_check_triggers_rejects_base_and_oddball_codes_equal():
     # validate" single-item result rather than a softer advisory.
     task = FPVSTask()
     params = _clean_condition()
-    params.base.base_trigger_code = 7
-    params.oddball.oddball_trigger_code = 7
+    params.main_stream.base.base_trigger_code = 7
+    params.main_stream.oddball.oddball_trigger_code = 7
 
     warnings = task.check_triggers(params.model_dump())
     assert len(warnings) == 1
@@ -1413,20 +1342,20 @@ def test_check_triggers_clean_when_codes_differ():
 def test_check_triggers_clean_when_either_code_is_none():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.base_trigger_code = None
-    params.oddball.oddball_trigger_code = 2
+    params.main_stream.base.base_trigger_code = None
+    params.main_stream.oddball.oddball_trigger_code = 2
     assert task.check_triggers(params.model_dump()) == []
 
-    params.base.base_trigger_code = 1
-    params.oddball.oddball_trigger_code = None
+    params.main_stream.base.base_trigger_code = 1
+    params.main_stream.oddball.oddball_trigger_code = None
     assert task.check_triggers(params.model_dump()) == []
 
 
 def test_check_triggers_warns_when_no_trigger_codes_set():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.base_trigger_code = None
-    params.oddball.oddball_trigger_code = None
+    params.main_stream.base.base_trigger_code = None
+    params.main_stream.oddball.oddball_trigger_code = None
     warnings = task.check_triggers(params.model_dump())
     assert any("no trigger codes set" in w for w in warnings)
 
@@ -1453,9 +1382,9 @@ def test_check_triggers_warns_on_flat_contrast_modulation():
     there is no contrast signal to tag at the base frequency -- warn."""
     task = FPVSTask()
     params = _clean_condition()
-    params.modulation.waveform = Waveform.SINUSOIDAL
-    params.modulation.contrast_min = 0.5
-    params.modulation.contrast_max = 0.5
+    params.main_stream.modulation.waveform = Waveform.SINUSOIDAL
+    params.main_stream.modulation.contrast_min = 0.5
+    params.main_stream.modulation.contrast_max = 0.5
     warnings = task.check_triggers(params.model_dump())
     assert any("zero" in w and "amplitude" in w for w in warnings)
 
@@ -1465,17 +1394,17 @@ def test_check_triggers_no_flat_contrast_warning_for_waveform_none():
     contrast bounds are irrelevant there -- no warning."""
     task = FPVSTask()
     params = _clean_condition()
-    params.modulation.waveform = Waveform.NONE
-    params.modulation.contrast_min = 0.5
-    params.modulation.contrast_max = 0.5
+    params.main_stream.modulation.waveform = Waveform.NONE
+    params.main_stream.modulation.contrast_min = 0.5
+    params.main_stream.modulation.contrast_max = 0.5
     assert not any("amplitude" in w for w in task.check_triggers(params.model_dump()))
 
 
 def test_check_triggers_surfaces_pattern_derived_oddball_frequency():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.base_freq_hz = 6.0
-    params.oddball.pattern = "BBBO"  # -> 1.5 Hz, overriding oddball_freq_hz
+    params.main_stream.base.base_freq_hz = 6.0
+    params.main_stream.oddball.pattern = "BBBO"  # -> 1.5 Hz, overriding oddball_freq_hz
     warnings = task.check_triggers(params.model_dump())
     assert any("1.5 Hz" in w and "pattern" in w for w in warnings)
 
@@ -1483,7 +1412,7 @@ def test_check_triggers_surfaces_pattern_derived_oddball_frequency():
 def test_check_triggers_warns_on_unevenly_spaced_oddball_pattern():
     task = FPVSTask()
     params = _clean_condition()
-    params.oddball.pattern = "BBOBO"  # O at positions 3 and 5 -> uneven gaps -> smearing
+    params.main_stream.oddball.pattern = "BBOBO"  # O at positions 3 and 5 -> uneven gaps -> smearing
     warnings = task.check_triggers(params.model_dump())
     assert any("UNEVENLY" in w or "smeared" in w for w in warnings)
 
@@ -1491,7 +1420,7 @@ def test_check_triggers_warns_on_unevenly_spaced_oddball_pattern():
 def test_check_triggers_no_uneven_warning_for_single_evenly_spaced_oddball():
     task = FPVSTask()
     params = _clean_condition()
-    params.oddball.pattern = "BBBO"  # one O per cycle -> clean
+    params.main_stream.oddball.pattern = "BBBO"  # one O per cycle -> clean
     assert not any("UNEVENLY" in w for w in task.check_triggers(params.model_dump()))
 
 
@@ -1509,12 +1438,12 @@ def test_check_triggers_warns_when_both_distractor_and_go_nogo_enabled():
 def test_check_triggers_clean_when_go_nogo_well_configured():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.trial_duration_seconds = 60.0
+    params.main_stream.base.trial_duration_seconds = 60.0
     params.go_nogo.enabled = True
     params.go_nogo.min_interval_seconds = 2.0
     params.go_nogo.response_window_seconds = 1.0
     params.go_nogo.guard_seconds = 1.0
-    params.go_nogo.keys = ["p"]  # distinct from response ["space"]
+    params.go_nogo.keys = ["p"]  # avoid the shared "space" default other behavioural tasks use
     params.go_nogo.go_trigger_code = 9  # distinct from base(1)/oddball(2)
     params.go_nogo.nogo_trigger_code = 10
     assert task.check_triggers(params.model_dump()) == []
@@ -1532,7 +1461,7 @@ def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
 def test_check_triggers_warns_when_distractor_guard_spans_whole_trial():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.trial_duration_seconds = 1.0
+    params.main_stream.base.trial_duration_seconds = 1.0
     params.distractor.enabled = True
     params.distractor.response_window_seconds = 0.5
     params.distractor.guard_seconds = 1.0  # 2 x 1.0 >= 1.0 s trial -> no room
@@ -1551,19 +1480,19 @@ def test_check_triggers_warns_when_distractor_trigger_equals_stimulus_code():
 def test_check_triggers_clean_when_distractor_well_configured():
     task = FPVSTask()
     params = _clean_condition()
-    params.base.trial_duration_seconds = 60.0
+    params.main_stream.base.trial_duration_seconds = 60.0
     params.distractor.enabled = True
     params.distractor.min_interval_seconds = 2.0
     params.distractor.response_window_seconds = 1.0
     params.distractor.guard_seconds = 1.0
-    params.distractor.keys = ["p"]  # distinct from the response task's ["space"]
+    params.distractor.keys = ["p"]  # avoid the shared "space" default other behavioural tasks use
     params.distractor.trigger_code = 9  # distinct from base(1)/oddball(2)
     assert task.check_triggers(params.model_dump()) == []
 
 
 def test_check_triggers_invalid_params_returns_skip_message_not_exception():
     task = FPVSTask()
-    warnings = task.check_triggers({"base": {"base_freq_hz": -1.0}})
+    warnings = task.check_triggers({"main_stream": {"base": {"base_freq_hz": -1.0}}})
     assert len(warnings) == 1
     assert "checks skipped" in warnings[0]
 
@@ -1571,7 +1500,7 @@ def test_check_triggers_invalid_params_returns_skip_message_not_exception():
 def test_check_triggers_warns_on_high_base_frequency():
     task = FPVSTask()
     params = FPVSConditionParams()
-    params.base.base_freq_hz = 60.0  # near a 60 Hz refresh -> 1 frame/cycle, degenerate
+    params.main_stream.base.base_freq_hz = 60.0  # near a 60 Hz refresh -> 1 frame/cycle, degenerate
     warnings = task.check_triggers(params.model_dump())
     assert any("base_freq_hz" in w and "high" in w for w in warnings)
 
@@ -1596,12 +1525,11 @@ def test_runtime_flags_base_frequency_precision_when_near_refresh(mock_window, s
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.base_freq_hz = 30.0  # 60/30 = 2 frames/cycle -> below the 3-frame warn threshold
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.base_freq_hz = 30.0  # 60/30 = 2 frames/cycle -> below the 3-frame warn threshold
+    params.main_stream.base.trial_duration_seconds = 1.0
 
     summary = _run_trial_outcome(task, ctx, params)
     assert summary["base_freq_precision_warning"] is True
@@ -1614,12 +1542,11 @@ def test_runtime_no_frequency_warning_for_normal_base(mock_window, stim_root, ev
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.base_freq_hz = 6.0  # 60/6 = 10 frames/cycle, clean
-    params.base.trial_duration_seconds = 1.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.base_freq_hz = 6.0  # 60/6 = 10 frames/cycle, clean
+    params.main_stream.base.trial_duration_seconds = 1.0
 
     summary = _run_trial_outcome(task, ctx, params)
     assert summary["base_freq_precision_warning"] is False
@@ -1637,11 +1564,10 @@ def test_run_trial_with_distractor_populates_outcome_and_logs_events(mock_window
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 5.0  # long enough to schedule several distractor events
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 5.0  # long enough to schedule several distractor events
     params.distractor.enabled = True
     params.distractor.min_interval_seconds = 1.0
     params.distractor.max_interval_seconds = 1.0
@@ -1665,11 +1591,10 @@ def test_run_trial_with_go_nogo_populates_outcome_and_logs_events(mock_window, s
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 5.0
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 5.0
     params.go_nogo.enabled = True
     params.go_nogo.min_interval_seconds = 1.0
     params.go_nogo.max_interval_seconds = 1.0
@@ -1693,11 +1618,10 @@ def test_run_trial_without_go_nogo_leaves_metrics_none(mock_window, stim_root, e
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0  # go/no-go disabled by default
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0  # go/no-go disabled by default
     summary = _run_trial_outcome(task, ctx, params)
     assert summary["go_nogo_enabled"] is False
     assert summary["go_nogo_n_go"] is None
@@ -1709,11 +1633,10 @@ def test_run_trial_without_distractor_leaves_metrics_none(mock_window, stim_root
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 1.0  # distractor disabled by default
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0  # distractor disabled by default
 
     summary = _run_trial_outcome(task, ctx, params)
     assert summary["distractor_enabled"] is False
@@ -1744,26 +1667,25 @@ class _SharedBufferKeyboard:
         return matched
 
 
-def test_run_trial_distractor_responses_are_collected_even_with_response_task_on(
+def test_run_trial_distractor_responses_are_collected_even_with_go_nogo_task_on(
     mock_window, stim_root, event_sink
 ):
-    """Regression: two Keyboard instances share PsychoPy's device buffer, so the oddball-response
-    collector's getKeys(clear=True) used to drain the distractor presses before they were read --
-    every distractor response was silently lost. With the oddball-response task ALSO enabled (on a
-    DIFFERENT key -- shared keys are now a hard error), a distractor press must still be a hit."""
+    """Regression: two Keyboard instances share PsychoPy's device buffer, so a second behavioural
+    task's collector getKeys(clear=True) used to drain the distractor presses before they were read
+    -- every distractor response was silently lost. With go_nogo ALSO enabled (on a DIFFERENT key --
+    shared keys are a hard error), a distractor press must still be a hit."""
     from types import SimpleNamespace
 
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 5.0
-    params.response.enabled = True  # the collector that used to drain the buffer first
-    params.response.keys = ["a"]  # distinct from the distractor key (shared keys now rejected)
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 5.0
+    params.go_nogo.enabled = True  # the second collector that used to drain the buffer first
+    params.go_nogo.keys = ["a"]  # distinct from the distractor key (shared keys now rejected)
     params.distractor.enabled = True
     params.distractor.min_interval_seconds = 1.0
     params.distractor.max_interval_seconds = 1.0
@@ -1780,7 +1702,7 @@ def test_run_trial_distractor_responses_are_collected_even_with_response_task_on
         summary = task.run_trial(ctx, params.model_dump(), trial_index=0).outcome_summary
 
     assert summary["distractor_n_events"] >= 1
-    assert summary["distractor_n_hits"] >= 1  # was 0 before the fix (buffer drained by response task)
+    assert summary["distractor_n_hits"] >= 1  # was 0 before the fix (buffer drained by the other task)
 
 
 # ---------------------------------------------------------------------------
@@ -1788,13 +1710,13 @@ def test_run_trial_distractor_responses_are_collected_even_with_response_task_on
 # ---------------------------------------------------------------------------
 
 
-def test_cleanup_clears_response_collector_and_logs(mock_window, stim_root, event_sink):
+def test_cleanup_clears_keyboard_collector_and_logs(mock_window, stim_root, event_sink):
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
     params = FPVSConditionParams()
-    params.base.trial_duration_seconds = 0.2
+    params.main_stream.base.trial_duration_seconds = 0.2
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
         "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
@@ -1816,17 +1738,16 @@ def test_run_trial_sweep_presents_steps_as_segments(mock_window, stim_root, even
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        sweep=FrequencySweepParams(
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[
                 SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
                 SweepStep(base_freq_hz=12.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
             ],
-        ),
-    )
+        )
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -1869,18 +1790,17 @@ def test_run_trial_sweep_outcome_summary_per_segment_keys(mock_window, stim_root
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        sweep=FrequencySweepParams(
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[
                 SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
                 SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
                 SweepStep(base_freq_hz=15.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
             ],
-        ),
-    )
+        )
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -1907,17 +1827,16 @@ def test_run_trial_triggered_distractor_during_sweep_never_collides(mock_window,
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz mock refresh
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        sweep=FrequencySweepParams(
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[
                 SweepStep(base_freq_hz=6.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
                 SweepStep(base_freq_hz=12.0, duration_seconds=3.0, oddball=OddballParams(oddball_freq_hz=1.2)),
             ],
-        ),
-    )
+        )
     params.distractor.enabled = True
     params.distractor.trigger_code = 55
     params.distractor.min_interval_seconds = 0.4
@@ -1971,18 +1890,14 @@ def test_run_trial_shared_timeline_sweep_dual_stream_presents_both_streams(mock_
         SweepStep(base_freq_hz=10.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.0)),
     ]
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
-        second_stream=StreamParams(
+        main_stream=StreamParams(
             enabled=True,
-            base_freq_hz=7.5,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+            base_selector=StimulusSelector(subdirectory="objects"),
+            oddball_selector=StimulusSelector(subdirectory="faces"),
+            position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main_steps),
         ),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.5), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects"), sweep=FrequencySweepParams(enabled=True, steps=second_steps)),
     )
 
     patches = _psychopy_patches()
@@ -2045,20 +1960,14 @@ def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_w
         SweepStep(base_freq_hz=13.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=2.6)),
     ]
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
-        second_stream=StreamParams(
+        main_stream=StreamParams(
             enabled=True,
-            base_freq_hz=9.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+            base_selector=StimulusSelector(subdirectory="objects"),
+            oddball_selector=StimulusSelector(subdirectory="faces"),
+            position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main_steps),
         ),
-        # UNtriggered distractor here (a triggered one is also supported now -- #27 -- and is covered
-        # by test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay).
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=9.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects"), sweep=FrequencySweepParams(enabled=True, steps=second_steps)),
         distractor=DistractorParams(
             enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.15, guard_seconds=0.0
         ),
@@ -2074,7 +1983,7 @@ def test_run_trial_dual_stream_sweep_overlay_boundaries_align_with_engine(mock_w
     rows = _read_events(event_sink)
 
     # The engine's per-segment boundaries must equal the overlay scheduler's cumulative windows.
-    windows = plan_sweep_overlay_windows(params.sweep, refresh_hz=60.0, n_fade_in_frames=0, n_fade_out_frames=0)
+    windows = plan_sweep_overlay_windows(params.main_stream.sweep, refresh_hz=60.0, n_fade_in_frames=0, n_fade_out_frames=0)
     expected_starts = [w.start_frame for w in windows]  # floored-cumulative boundaries, e.g. [0, 27]
     raw_boundary = round(main_steps[0].duration_seconds * 60.0)  # 30: the pre-fix raw-budget boundary
     assert expected_starts[1] != raw_boundary  # flooring actually moves the boundary here (drift-sensitive)
@@ -2105,19 +2014,17 @@ def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink)
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        baseline=BaselineParams(
+    params = FPVSConditionParams(baseline=BaselineParams(
             enabled=True,
             position="both",
             duration_seconds=0.3,
             blank_seconds=0.0,
             start_trigger_code=60,
             stop_trigger_code=61,
-        ),
-    )
-    params.base.trial_duration_seconds = 0.4
+        ))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.4
 
     trigger = NullTrigger(reset_after=0.0)
     ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
@@ -2153,19 +2060,11 @@ def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, even
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 0.5
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -2226,20 +2125,15 @@ def test_run_trial_dual_stream_triggers_and_jitter_wired(mock_window, stim_root,
     task.prepare(ctx)
 
     params = FPVSConditionParams(
-        base=_Base(base_trigger_code=10, trial_duration_seconds=0.5),
-        oddball=_Odd(oddball_trigger_code=11),
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
+        main_stream=StreamParams(
             enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-            base_trigger_code=20,
-            oddball_trigger_code=21,
+            base=_Base(base_trigger_code=10, trial_duration_seconds=0.5),
+            oddball=_Odd(oddball_trigger_code=11),
+            base_selector=StimulusSelector(subdirectory="objects"),
+            oddball_selector=StimulusSelector(subdirectory="faces"),
+            position_pix=(-200.0, 0.0),
         ),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0, base_trigger_code=20), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects"), oddball=OddballParams(oddball_freq_hz=1.1, oddball_trigger_code=21)),
         coincidence_codes=CoincidenceCodes(
             both_base=200, a_base_b_oddball=201, a_oddball_b_base=202, both_oddball=203
         ),
@@ -2284,19 +2178,11 @@ def test_run_trial_dual_stream_no_triggers_stays_v1(mock_window, stim_root, even
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 0.5
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -2318,11 +2204,10 @@ def test_run_trial_single_stream_outcome_summary_has_no_multi_keys(mock_window, 
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -2347,17 +2232,16 @@ def test_presented_base_frequencies_covers_sweep_second_stream_and_familiarizati
 
     assert _presented_base_frequencies(FPVSConditionParams()) == [("base_freq_hz", 6.0)]
 
-    swept = FPVSConditionParams(
-        sweep=FrequencySweepParams(
+    swept = FPVSConditionParams()
+    swept.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[SweepStep(base_freq_hz=6.0, duration_seconds=5.0), SweepStep(base_freq_hz=8.0, duration_seconds=5.0)],
         )
-    )
     got = _presented_base_frequencies(swept)
     assert [f for _, f in got] == [6.0, 8.0] and all("sweep step" in label for label, _ in got)
 
     rich = FPVSConditionParams(
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)),
         familiarization=FamiliarizationParams(enabled=True, frequency_hz=5.0),
     )
     values = dict(_presented_base_frequencies(rich))
@@ -2375,14 +2259,8 @@ def test_check_triggers_warns_dual_stream_sweep_second_stream_not_whole_cycles()
     main_steps = [SweepStep(base_freq_hz=6.0, duration_seconds=1.0) for _ in range(2)]
     second_steps = [SweepStep(base_freq_hz=7.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.4)) for _ in range(2)]
     params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
-        ),
+        main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main_steps)),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second_steps)),
     )
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert any("does not complete whole cycles" in w for w in warnings)
@@ -2403,14 +2281,8 @@ def test_check_triggers_clean_dual_stream_sweep_when_both_divide_evenly():
         SweepStep(base_freq_hz=3.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=0.75)),
     ]
     params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=5.0,
-            position_pix=(200.0, 0.0),
-            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
-        ),
+        main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=main_steps)),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=5.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), sweep=FrequencySweepParams(enabled=True, steps=second_steps)),
     )
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert not any("does not complete whole cycles" in w for w in warnings)
@@ -2418,21 +2290,20 @@ def test_check_triggers_clean_dual_stream_sweep_when_both_divide_evenly():
 
 def test_run_trial_rejects_too_high_sweep_step(mock_window, stim_root, event_sink):
     """Review CRITICAL: a sweep step near/above the refresh (1 frame/cycle) must hard-fail like the
-    base frequency does -- previously only params.base was checked, so a too-high step slipped through
+    base frequency does -- previously only params.main_stream.base was checked, so a too-high step slipped through
     (and could hang the run with a triggered overlay)."""
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
     task.prepare(ctx)
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        sweep=FrequencySweepParams(
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.sweep = FrequencySweepParams(
             enabled=True,
             steps=[SweepStep(base_freq_hz=6.0, duration_seconds=0.5), SweepStep(base_freq_hz=60.0, duration_seconds=0.5)],
-        ),
-    )
+        )
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
         "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
@@ -2447,18 +2318,10 @@ def test_run_trial_rejects_too_high_second_stream(mock_window, stim_root, event_
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)  # 60 Hz
     task.prepare(ctx)
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=59.0,  # 59 Hz @ 60 Hz -> 1 frame/cycle; non-harmonic to 6 Hz (passes separability)
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=59.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
         "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
@@ -2474,11 +2337,10 @@ def test_run_trial_reports_frames_dropped_when_window_tracks_it(mock_window, sti
     task = FPVSTask()
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
         "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
@@ -2498,22 +2360,13 @@ def test_run_trial_dual_stream_composes_with_untriggered_distractor_overlay(mock
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-        distractor=DistractorParams(
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")), distractor=DistractorParams(
             enabled=True, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
-        ),
-    )
-    params.base.trial_duration_seconds = 1.0
+        ))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 1.0
 
     trigger = NullTrigger(reset_after=0.0)
     ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
@@ -2551,19 +2404,14 @@ def test_run_trial_dual_stream_sweep_with_triggered_distractor_overlay(mock_wind
         SweepStep(base_freq_hz=4.0, duration_seconds=1.0, oddball=OddballParams(oddball_freq_hz=1.0)),
     ]
     params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        sweep=FrequencySweepParams(enabled=True, steps=main_steps),
-        second_stream=StreamParams(
+        main_stream=StreamParams(
             enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-            base_trigger_code=40,  # coded, so a marker landing on its onset would raise
-            sweep=FrequencySweepParams(enabled=True, steps=second_steps),
+            base_selector=StimulusSelector(subdirectory="objects"),
+            oddball_selector=StimulusSelector(subdirectory="faces"),
+            position_pix=(-200.0, 0.0),
+            sweep=FrequencySweepParams(enabled=True, steps=main_steps),
         ),
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0, base_trigger_code=40), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects"), sweep=FrequencySweepParams(enabled=True, steps=second_steps)),
         distractor=DistractorParams(
             enabled=True,
             trigger_code=50,
@@ -2593,11 +2441,8 @@ def test_check_triggers_no_longer_warns_jitter_ignored_under_dual_stream(stim_ro
     # be gone (each stream jitters around its own centre instead).
     from xpman.tasks.fpvs.schema import PositionJitterParams, StreamParams
 
-    params = FPVSConditionParams(
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(enabled=True, base_freq_hz=7.0, position_pix=(200.0, 0.0)),
-        position_jitter=PositionJitterParams(enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0)),
-    )
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)), position_jitter=PositionJitterParams(enabled=True, region="rectangle", x_range_pix=(-50.0, 50.0)))
+    params.main_stream.position_pix = (-200.0, 0.0)
     warnings = FPVSTask().check_triggers(params.model_dump())
     assert not any("IGNORED" in w for w in warnings)
 
@@ -2612,13 +2457,10 @@ def test_distractor_press_before_main_sequence_is_not_a_false_alarm(mock_window,
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        familiarization=FamiliarizationParams(enabled=True, duration_seconds=0.5, post_blank_seconds=0.0),
-        distractor=DistractorParams(enabled=True, keys=["a"], guard_seconds=0.5),
-    )
-    params.base.trial_duration_seconds = 0.5
+    params = FPVSConditionParams(familiarization=FamiliarizationParams(enabled=True, duration_seconds=0.5, post_blank_seconds=0.0), distractor=DistractorParams(enabled=True, keys=["a"], guard_seconds=0.5))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.5
 
     # A press at t=0.001 -- during the pre-interval / familiarization, well before the main sequence's
     # first onset (familiarization alone runs 0.5 s first) -- so it has no distractor event to match.
@@ -2649,22 +2491,13 @@ def test_run_trial_triggered_distractor_with_dual_stream(mock_window, stim_root,
     ctx = _make_ctx(mock_window, stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,  # 60/7 -> 9 frames/stim, vs the main 6 Hz -> 10 frames/stim
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-        distractor=DistractorParams(
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")), distractor=DistractorParams(
             enabled=True, trigger_code=99, keys=["a"], min_interval_seconds=0.1, max_interval_seconds=0.2, guard_seconds=0.0
-        ),
-    )
-    params.base.trial_duration_seconds = 1.0
+        ))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 1.0
 
     trigger = NullTrigger(reset_after=0.0)
     ctx = TaskContext(**{**ctx.__dict__, "trigger": trigger})
@@ -2701,27 +2534,19 @@ def test_run_trial_four_streams_one_oddball_three_base_only(mock_window, stim_ro
     task.prepare(ctx)
 
     def _filler(pos):
-        return StreamParams(
-            enabled=True,
-            oddball_enabled=False,  # base-only 'similar' filler
-            base_freq_hz=6.0,  # SAME base freq as the main stream -- allowed (frequency-domain, one oddball)
-            position_pix=pos,
-            base_selector=StimulusSelector(subdirectory="objects"),
-        )
+        return StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, oddball_enabled=False, position_pix=pos, base_selector=StimulusSelector(subdirectory="objects"))
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(0.0, 200.0),  # up = the oddball-carrying main stream
-        additional_streams=[
+    params = FPVSConditionParams(additional_streams=[
             _filler((0.0, -200.0)),  # down
             _filler((-200.0, 0.0)),  # left
             _filler((200.0, 0.0)),  # right
-        ],
-    )
-    params.base.base_freq_hz = 6.0
+        ])
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (0.0, 200.0)
+    params.main_stream.base.base_freq_hz = 6.0
     # Long enough that the 1.2 Hz oddball (every 5th base image at 6 Hz) actually appears at least once.
-    params.base.trial_duration_seconds = 2.0
+    params.main_stream.base.trial_duration_seconds = 2.0
 
     patches = _psychopy_patches()
     with patches[0], patches[1], patches[2], patch(
@@ -2764,13 +2589,11 @@ def test_check_triggers_multi_stream_advisory_and_shared_base_ok():
     task = FPVSTask()
 
     def _filler(pos):
-        return StreamParams(enabled=True, oddball_enabled=False, base_freq_hz=6.0, position_pix=pos)
+        return StreamParams(base=BaseSequenceParams(base_freq_hz=6.0), enabled=True, oddball_enabled=False, position_pix=pos)
 
-    params = FPVSConditionParams(
-        stream_position_pix=(0.0, 200.0),
-        additional_streams=[_filler((0.0, -200.0)), _filler((-200.0, 0.0)), _filler((200.0, 0.0))],
-    )
-    params.base.base_freq_hz = 6.0
+    params = FPVSConditionParams(additional_streams=[_filler((0.0, -200.0)), _filler((-200.0, 0.0)), _filler((200.0, 0.0))])
+    params.main_stream.position_pix = (0.0, 200.0)
+    params.main_stream.base.base_freq_hz = 6.0
     warnings = task.check_triggers(params.model_dump())
     assert any("multiple simultaneous streams (4)" in w for w in warnings)
     assert any("base-only" in w for w in warnings)
@@ -2791,19 +2614,16 @@ class _FixedPulseTrigger(NullTrigger):
 def _two_stream_params():
     from xpman.tasks.fpvs.schema import StreamParams
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="objects"),
-        oddball_selector=StimulusSelector(subdirectory="faces"),
-        stream_position_pix=(-200.0, 0.0),
-        second_stream=StreamParams(
-            enabled=True,
-            base_freq_hz=7.0,
-            position_pix=(200.0, 0.0),
-            base_selector=StimulusSelector(subdirectory="faces"),
-            oddball_selector=StimulusSelector(subdirectory="objects"),
-        ),
-    )
-    params.base.trial_duration_seconds = 0.5
+    # second stream's oddball freq (1.1 Hz) is deliberately non-harmonic with both streams' base
+    # frequencies (6.0, 7.0) and the main stream's default oddball (1.2) -- these tests exercise
+    # trigger/jitter/pool mechanics, not frequency separability, so any valid, non-colliding rate
+    # works; the Condition validator now hard-rejects colliding oddball-carrying streams (issue #31
+    # follow-up: narrowed multi-stream frequency-collision check).
+    params = FPVSConditionParams(second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"), oddball_selector=StimulusSelector(subdirectory="objects")))
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 0.5
     return params
 
 
@@ -2861,11 +2681,10 @@ def test_run_trial_equalization_disabled_by_default_uses_original_paths(
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
-    params.base.trial_duration_seconds = 0.2
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.2
 
     with patch("psychopy.visual.ImageStim") as mock_image_stim, patch(
         "psychopy.visual.Rect", return_value=MagicMock()
@@ -2891,11 +2710,10 @@ def test_run_trial_equalization_enabled_logs_event_and_uses_cached_paths(
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
-    params.base.trial_duration_seconds = 0.2
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.2
     params.equalization.enabled = True
 
     with patch("psychopy.visual.ImageStim") as mock_image_stim, patch(
@@ -2932,11 +2750,10 @@ def test_run_trial_equalization_second_trial_reuses_cache(mock_window, split_sti
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
 
-    params = FPVSConditionParams(
-        base_selector=StimulusSelector(subdirectory="dark"),
-        oddball_selector=StimulusSelector(subdirectory="light"),
-    )
-    params.base.trial_duration_seconds = 0.2
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.2
     params.equalization.enabled = True
 
     image_paths_by_trial = []

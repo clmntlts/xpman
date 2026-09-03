@@ -4,9 +4,20 @@ N simultaneous FPVS streams (e.g. left/right/up/down of a shared central fixatio
 frequency-tagged at its own base rate (and, for oddball-carrying streams, an oddball rate), are only
 analysable if their tagged responses land on **distinct** FFT frequencies. Two failure modes:
 
-- **Harmonic overlap of the fundamentals** -- if one base frequency is an integer multiple of the
-  other (e.g. 3 Hz & 6 Hz), stream 2's fundamental sits on stream 1's 2nd harmonic. This is a *hard*
-  error (rejected at save/freeze time by the Condition validator).
+- **Exact collision of an oddball-carrying stream's oddball frequency with another active
+  stream's driving frequency** -- if a stream's own oddball frequency EQUALS (not "is harmonically
+  related to" -- see below) another stream's base or oddball frequency, that oddball's response
+  can't be told apart from the other stream's; both would land on the same FFT bin, with no
+  ambiguity about whether it's a real problem. This is a *hard* error (rejected at save/freeze
+  time by ``FPVSConditionParams._check_multi_stream``, via plain frequency-difference comparison,
+  NOT ``bases_harmonically_related`` below -- deliberately: an oddball frequency is routinely
+  derived as base_freq / N, so it is *already*, normally, a harmonic sub-multiple of its own
+  stream's base and of any other stream sharing that base rate; rejecting that broader relationship
+  would block the standard case). A plain BASE-frequency collision that doesn't involve an
+  oddball-carrying stream's own oddball rate is explicitly NOT an error -- e.g. several base-only
+  (filler) streams sharing a base rate with the one stream that carries an oddball, to test whether
+  oddball *position* (not frequency) modulates the response; the fillers contribute zero energy at
+  any oddball frequency, so nothing becomes ambiguous.
 - **Harmonic / intermodulation collisions** -- a base or oddball harmonic of one stream, or a
   low-order intermodulation term ``|n*f1 +/- m*f2|``, coinciding with a tagged frequency of either
   stream. These are surfaced as *advisories* by ``check_triggers`` (they depend on the FFT bin width,
@@ -39,9 +50,15 @@ def _is_integer_multiple(a: float, b: float, *, tol: float = 1e-3) -> bool:
 
 
 def bases_harmonically_related(base1_hz: float, base2_hz: float, *, tol: float = 1e-3) -> bool:
-    """True if the two base frequencies are equal, or one is an integer multiple of the other -- so
-    their fundamentals/harmonics overlap and the two tagged responses can't be told apart. This is the
-    hard constraint the dual-stream Condition validator enforces."""
+    """True if the two frequencies are equal, or one is an integer multiple of the other -- so their
+    fundamentals/harmonics overlap and the two tagged responses can't be told apart. Used for a
+    sweep-step pair (every pair, unconditionally -- see the per-step check in
+    ``FPVSConditionParams._check_multi_stream``). NOT used for the general multi-stream
+    oddball-collision hard check (same method, different rule): that one deliberately tests plain
+    frequency EQUALITY only, not this broader harmonic-multiple relationship -- see that check's own
+    comment for why (an oddball frequency is routinely a harmonic sub-multiple of its own stream's
+    base rate by construction, so this function's definition would false-positive on the standard
+    case)."""
     if abs(base1_hz - base2_hz) <= tol:
         return True
     return _is_integer_multiple(base1_hz, base2_hz, tol=tol)

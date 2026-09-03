@@ -1,7 +1,7 @@
 """Parameter schema for the FPVS (Fast Periodic Visual Stimulation) task.
 
 Bundles the Condition-level parameters every FPVS building block needs (base/oddball timing,
-stimulus pool selection, fixation, photodiode, response collection) into one Pydantic model,
+stimulus pool selection, fixation, photodiode, behavioural attention tasks) into one Pydantic model,
 satisfying the ``ParameterSchema`` protocol ``tasks/base.py`` defines. Every field has a
 sensible default but nothing is hardcoded -- per the 2026-07-02 product direction, all of this
 is meant to be overridden per Condition, and there is deliberately no default pairing of
@@ -21,7 +21,6 @@ from xpman.tasks.fpvs.go_nogo import GoNoGoParams
 from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
-from xpman.tasks.fpvs.response import ResponseKeyParams
 from xpman.tasks.fpvs.streams import bases_harmonically_related
 from xpman.tasks.fpvs.sweep import FrequencySweepParams
 from xpman.tasks.fpvs.trigger_combine import check_reserved_code_collisions
@@ -232,21 +231,32 @@ class FPVSExperimentParams(BaseModel):
 
 
 class StreamParams(BaseModel):
-    """A second simultaneous image stream for **dual bilateral FPVS**. It has its own image pools,
-    base + oddball frequency, screen position, and contrast modulation, and shares the trial duration,
-    fades, and central fixation with the main (first) stream.
+    """One simultaneous FPVS image stream: its own image pools, base + oddball frequency, screen
+    position, contrast modulation, and (optional) sweep. This is the ONE shape used for every
+    stream in a Condition -- the main stream (``FPVSConditionParams.main_stream``, always active),
+    ``second_stream``, and each ``additional_streams`` entry -- so every stream is configured
+    identically instead of the main stream living in its own, differently-shaped fields. All
+    streams share one trial timeline, fade envelope, and central fixation (see
+    ``BaseSequenceParams.trial_duration_seconds`` and ``FPVSConditionParams.timing``) -- only the
+    main stream's ``base.trial_duration_seconds`` is actually used to time the trial; the same
+    field on a second/additional stream has no effect (present only for a uniform shape).
 
-    The two frequency tags are recovered in the frequency domain by FFT, and the photodiode tracks the
-    first stream's timing. **Per-stream EEG triggers are optional (v2, default off):** set
-    ``base_trigger_code`` / ``oddball_trigger_code`` to emit an 8-bit code on this stream's onsets;
-    leaving both ``None`` reproduces v1 (no triggers, byte-for-byte). When BOTH streams send triggers,
-    frames where both onset together resolve to a single reserved coincidence code (see
-    ``FPVSConditionParams.coincidence_codes``) -- one port, one pulse. The two base frequencies must be
-    spectrally separable -- distinct and NOT harmonically related (enforced on the Condition); pick e.g.
-    6 Hz and 7 Hz.
+    The frequency tags are recovered in the frequency domain by FFT, and the photodiode tracks the
+    main stream's timing. **Per-stream EEG triggers are optional (v2, default off):** set
+    ``base.base_trigger_code`` / ``oddball.oddball_trigger_code`` to emit an 8-bit code on this
+    stream's onsets; leaving both ``None`` sends no trigger for it. When two streams BOTH send
+    triggers, frames where both onset together resolve to a single reserved coincidence code (see
+    ``FPVSConditionParams.coincidence_codes``) -- one port, one pulse. Per-stream triggers only
+    work for up to two streams total (enforced on the Condition). If this stream carries its own
+    oddball, its oddball frequency must not EXACTLY EQUAL another active stream's base or oddball
+    frequency (enforced on the Condition, see ``FPVSConditionParams._check_multi_stream``) -- but
+    sharing a plain BASE rate with another stream is fine, including with another oddball-carrying
+    stream, as long as neither's oddball frequency itself collides.
     """
 
-    enabled: bool = Field(default=False, description="Present a second simultaneous bilateral stream.")
+    enabled: bool = Field(
+        default=False, description="Present this stream (the main stream is always active)."
+    )
     oddball_enabled: bool = Field(
         default=True,
         description="When off, this stream is base-only (no oddball) -- a 'similar' filler stream. "
@@ -258,11 +268,18 @@ class StreamParams(BaseModel):
     oddball_selector: StimulusSelector = Field(
         default_factory=StimulusSelector, description="Which images are this stream's oddballs."
     )
-    base_freq_hz: float = Field(
-        default=7.0, gt=0, description="This stream's base frequency (must differ non-harmonically from the main stream)."
+    base: BaseSequenceParams = Field(
+        # 7.0 Hz (not BaseSequenceParams' own bare 6.0 Hz default) -- preserves this field's
+        # original default (a non-harmonic offset from the main stream's 6.0 Hz default) from
+        # before StreamParams was unified onto the shared BaseSequenceParams shape.
+        default_factory=lambda: BaseSequenceParams(base_freq_hz=7.0),
+        description="This stream's base frequency, trial duration (main stream only -- see class "
+        "docstring), and base-onset trigger code.",
     )
     oddball: OddballParams = Field(
-        default_factory=OddballParams, description="This stream's oddball placement (frequency or B/O pattern)."
+        default_factory=OddballParams,
+        description="This stream's oddball placement (frequency or B/O pattern) and oddball-onset "
+        "trigger code.",
     )
     position_pix: tuple[float, float] = Field(
         default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
@@ -270,32 +287,20 @@ class StreamParams(BaseModel):
     modulation: ModulationParams = Field(
         default_factory=ModulationParams, description="Contrast modulation for this stream."
     )
-    base_trigger_code: int | None = Field(
-        default=None,
-        ge=1,
-        le=255,
-        description="Trigger code sent on every base-image onset of THIS stream. None sends no trigger.",
-    )
-    oddball_trigger_code: int | None = Field(
-        default=None,
-        ge=1,
-        le=255,
-        description="Trigger code sent on every oddball-image onset of THIS stream. None sends no trigger.",
-    )
     sweep: FrequencySweepParams = Field(
         default_factory=FrequencySweepParams,
         description="This stream's per-step frequencies for a sweep x dual-stream (v2, #4). Enabled "
-        "only together with the main sweep, and on a SHARED timeline: same number of steps and the "
-        "same per-step durations as the Condition's sweep (only the base/oddball frequencies differ "
-        "per stream). Disabled by default; when off this stream uses its single base_freq_hz/oddball.",
+        "only together with the main stream's sweep, and on a SHARED timeline: same number of steps "
+        "and the same per-step durations (only the base/oddball frequencies differ per stream). "
+        "Disabled by default; when off this stream uses its single base/oddball frequency.",
     )
 
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "StreamParams":
-        if self.oddball.pattern is None and self.oddball.oddball_freq_hz >= self.base_freq_hz:
+        if self.oddball.pattern is None and self.oddball.oddball_freq_hz >= self.base.base_freq_hz:
             raise ValueError(
-                f"second stream oddball_freq_hz ({self.oddball.oddball_freq_hz}) must be < its "
-                f"base_freq_hz ({self.base_freq_hz})"
+                f"stream oddball.oddball_freq_hz ({self.oddball.oddball_freq_hz}) must be < its "
+                f"base.base_freq_hz ({self.base.base_freq_hz})"
             )
         return self
 
@@ -361,37 +366,21 @@ class CoincidenceCodes(BaseModel):
 class FPVSConditionParams(BaseModel):
     """Everything needed to run one FPVS trial.
 
-    Fields are declared grouped by the GUI ``section`` they render under (Stimulation → Trial
-    timing & phases → Fixation & display → Responses & attention tasks → Multiple streams),
-    so the schema-driven Condition editor reads as labelled sections instead of a flat wall of
-    boxes. Section membership is metadata only (``json_schema_extra={"section": ...}``) -- it has
-    no effect on validation or on frozen Instances; reordering these fields is purely cosmetic."""
+    Fields are declared grouped by the GUI ``section`` they render under -- General → Trial
+    phases → Streams → Attention tasks -- so the schema-driven Condition editor reads as a
+    logical narrative instead of a flat wall of boxes: settings that apply regardless of stream
+    count first, then once-per-trial phases, then every active stream's own settings (``main_stream``
+    as "Stream 1 (main)", ``second_stream`` as "Stream 2", each ``additional_streams`` entry as
+    "Stream 3", "Stream 4", ... -- all the SAME ``StreamParams`` shape, so every stream is
+    configured identically), then the attention tasks. Section/title membership is GUI metadata
+    only (``json_schema_extra={"section": ..., "title": ...}``) -- it has no effect on validation
+    or on frozen Instances; reordering these fields is purely cosmetic."""
 
-    # -- Stimulation: the core periodic sequence --------------------------------------------
-    base: BaseSequenceParams = Field(
-        default_factory=BaseSequenceParams,
-        description="Core stimulation: the base frequency (Hz) and the trial duration.",
-        json_schema_extra={"section": "Stimulation"},
-    )
-    oddball: OddballParams = Field(
-        default_factory=OddballParams,
-        description="Oddball placement: its frequency, or a base/oddball repetition pattern (e.g. BBBBO).",
-        json_schema_extra={"section": "Stimulation"},
-    )
-    base_selector: StimulusSelector = Field(
-        default_factory=StimulusSelector,
-        description="Which images make up the base stream (image folder + filename pattern).",
-        json_schema_extra={"section": "Stimulation"},
-    )
-    oddball_selector: StimulusSelector = Field(
-        default_factory=StimulusSelector,
-        description="Which images are the periodically-inserted oddballs (image folder + filename pattern).",
-        json_schema_extra={"section": "Stimulation"},
-    )
-    modulation: ModulationParams = Field(
-        default_factory=ModulationParams,
-        description="Sinusoidal contrast modulation of each image (fades toward the background gray).",
-        json_schema_extra={"section": "Stimulation"},
+    # -- General: applies regardless of how many streams are active -------------------------
+    timing: TimingParams = Field(
+        default_factory=TimingParams,
+        description="Trial timing: fade-in/out durations and pre-/inter-stimulus intervals.",
+        json_schema_extra={"section": "General"},
     )
     background_gray: float = Field(
         default=0.5,
@@ -402,127 +391,99 @@ class FPVSConditionParams(BaseModel):
             "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
             "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
         ),
-        json_schema_extra={"section": "Stimulation"},
+        json_schema_extra={"section": "General"},
     )
     equalization: EqualizationParams = Field(
         default_factory=EqualizationParams,
         description="Luminance/contrast equalization across every pool this Condition presents (see EqualizationParams).",
-        json_schema_extra={"section": "Stimulation"},
+        json_schema_extra={"section": "General"},
     )
-
-    # -- Trial timing & phases --------------------------------------------------------------
-    timing: TimingParams = Field(
-        default_factory=TimingParams,
-        description="Trial timing: fade-in/out durations and pre-/inter-stimulus intervals.",
-        json_schema_extra={"section": "Trial timing & phases"},
-    )
-    sweep: FrequencySweepParams = Field(
-        default_factory=FrequencySweepParams,
-        description="Stepped frequency sweep: present several constant-frequency steps in sequence instead of one.",
-        json_schema_extra={"section": "Trial timing & phases"},
-    )
-    baseline: BaselineParams = Field(
-        default_factory=BaselineParams,
-        description="Add a base-only reference segment (no oddballs) before and/or after the oddball stream.",
-        json_schema_extra={"section": "Trial timing & phases"},
-    )
-    familiarization: FamiliarizationParams = Field(
-        default_factory=FamiliarizationParams,
-        description="A one-off warm-up stream shown once at the start of the Run, before the first trial.",
-        json_schema_extra={"section": "Trial timing & phases"},
-    )
-
-    # -- Fixation & display -----------------------------------------------------------------
     fixation: FixationParams = Field(
         default_factory=FixationParams,
         description="The fixation mark drawn over/near the stimulus.",
-        json_schema_extra={"section": "Fixation & display"},
+        json_schema_extra={"section": "General"},
     )
     position_jitter: PositionJitterParams = Field(
         default_factory=PositionJitterParams,
         description="Randomize each image's position within a region (image only; the fixation stays put).",
-        json_schema_extra={"section": "Fixation & display"},
+        json_schema_extra={"section": "General"},
     )
     photodiode: PhotodiodeParams = Field(
         default_factory=PhotodiodeParams,
         description="Photodiode sync patch for validating presentation timing against real hardware.",
-        json_schema_extra={"section": "Fixation & display"},
+        json_schema_extra={"section": "General"},
     )
 
-    # -- Responses & attention tasks --------------------------------------------------------
-    response: ResponseKeyParams = Field(
-        default_factory=ResponseKeyParams,
-        description="Active oddball-detection task (key press per oddball). Off by default -- standard FPVS is passive.",
-        json_schema_extra={"section": "Responses & attention tasks"},
+    # -- Trial phases: once-per-trial/run segments around the main stimulation --------------
+    baseline: BaselineParams = Field(
+        default_factory=BaselineParams,
+        description="Add a base-only reference segment (no oddballs) before and/or after the oddball stream.",
+        json_schema_extra={"section": "Trial phases"},
     )
-    distractor: DistractorParams = Field(
-        default_factory=DistractorParams,
-        description="Orthogonal attention-control task at fixation (the recommended behavioural check).",
-        json_schema_extra={"section": "Responses & attention tasks"},
-    )
-    go_nogo: GoNoGoParams = Field(
-        default_factory=GoNoGoParams,
-        description="Spatial go/no-go attention task using fixation-position markers.",
-        json_schema_extra={"section": "Responses & attention tasks"},
+    familiarization: FamiliarizationParams = Field(
+        default_factory=FamiliarizationParams,
+        description="A one-off warm-up stream shown once at the start of the Run, before the first trial.",
+        json_schema_extra={"section": "Trial phases"},
     )
 
-    # -- Multiple streams -------------------------------------------------------------------
-    stream_position_pix: tuple[float, float] = Field(
-        default=(0.0, 0.0),
-        description="Main stream's screen position (px from center); only applies when second_stream "
-        "is set (dual bilateral streams). (0,0) = centre = the single-stream default.",
-        json_schema_extra={"section": "Multiple streams"},
+    # -- Streams: how many, and each one's own settings --------------------------------------
+    main_stream: StreamParams = Field(
+        default_factory=lambda: StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 0.0),
+        ),
+        description="The main (always-active) stream -- same shape as every other stream.",
+        json_schema_extra={"section": "Streams", "title": "Stream 1 (main)"},
     )
     second_stream: StreamParams = Field(
         default_factory=StreamParams,
         description="Second simultaneous bilateral image stream (its own 'enabled' flag; off = one central stream).",
-        json_schema_extra={"section": "Multiple streams"},
+        json_schema_extra={"section": "Streams", "title": "Stream 2"},
     )
     additional_streams: list[StreamParams] = Field(
         default_factory=list,
         description="Extra simultaneous streams beyond the main stream (and the legacy second_stream). "
         "Each has its own position, frequency, pools, and oddball_enabled toggle. Frequency-domain "
         "analysis; up to two streams total may use per-stream EEG triggers.",
-        json_schema_extra={"section": "Multiple streams"},
+        json_schema_extra={"section": "Streams", "item_label": "Stream", "item_start_index": 3},
     )
     coincidence_codes: CoincidenceCodes = Field(
         default_factory=CoincidenceCodes,
         description="Reserved 8-bit codes for coincident dual-stream onsets (only used when both "
         "streams are triggered; see CoincidenceCodes).",
-        json_schema_extra={"section": "Multiple streams"},
+        json_schema_extra={"section": "Streams"},
     )
 
-    @model_validator(mode="after")
-    def _check_oddball_below_base_frequency(self) -> "FPVSConditionParams":
-        # Previously only enforced deep inside oddball_period_stimuli() (paradigm_oddball.py),
-        # which only runs mid-trial, well after the GUI has already saved the Condition and a
-        # researcher has clicked Launch -- a plausible base/oddball value swap crashed the run
-        # instead of being rejected at save time with a clear message. Strict "<", not "<=":
-        # oddball_freq_hz == base_freq_hz makes oddball_period_stimuli return period=1, which
-        # makes *every* stimulus (including the first) an oddball -- degenerate, and
-        # contradicts run_base_oddball_sequence's own documented "position 1 is never an
-        # oddball" behavior.
-        # A pattern overrides oddball_freq_hz (the field is ignored), and a pattern of length >= 2
-        # always yields an oddball rate < base -- so the frequency constraint doesn't apply then.
-        if self.oddball.pattern is not None:
-            return self
-        if self.oddball.oddball_freq_hz >= self.base.base_freq_hz:
-            raise ValueError(
-                f"oddball.oddball_freq_hz ({self.oddball.oddball_freq_hz!r}) must be strictly "
-                f"less than base.base_freq_hz ({self.base.base_freq_hz!r}) -- the oddball is a "
-                "less-frequent subset of the base stream, not an equal or faster one."
-            )
-        return self
+    # -- Attention tasks ------------------------------------------------------------------------
+    distractor: DistractorParams = Field(
+        default_factory=DistractorParams,
+        description="Orthogonal attention-control task at fixation (the recommended behavioural check).",
+        json_schema_extra={"section": "Attention tasks"},
+    )
+    go_nogo: GoNoGoParams = Field(
+        default_factory=GoNoGoParams,
+        description="Spatial go/no-go attention task using fixation-position markers.",
+        json_schema_extra={"section": "Attention tasks"},
+    )
+
+    # NOTE: there used to be a Condition-level ``_check_oddball_below_base_frequency`` validator
+    # here (oddball.oddball_freq_hz must be strictly < base.base_freq_hz -- see the "position 1 is
+    # never an oddball" degenerate-case comment history). Now that the main stream is a
+    # ``StreamParams`` like every other stream, ``StreamParams._check_oddball_below_base`` already
+    # enforces exactly this for ``main_stream`` (and every other stream) as part of nested-model
+    # validation -- a Condition-level duplicate would be redundant.
 
     @model_validator(mode="after")
     def _check_behavioural_tasks_dont_share_keys(self) -> "FPVSConditionParams":
         # All key presses come from ONE keyboard and are routed to a task by key name (see
-        # task.py run_trial). If two *enabled* behavioural tasks share a key, the same press is
-        # scored by both -- an unrecoverable ambiguity, so reject it at save/freeze time rather than
-        # silently double-counting. (A single enabled task, or disabled ones, are always fine.)
+        # task.py run_trial). If the two *enabled* behavioural tasks (distractor, go_nogo) share a
+        # key, the same press is scored by both -- an unrecoverable ambiguity, so reject it at
+        # save/freeze time rather than silently double-counting. (A single enabled task, or both
+        # disabled, is always fine.)
         enabled: list[tuple[str, set[str]]] = []
-        if self.response.enabled:
-            enabled.append(("response", set(self.response.keys)))
         if self.distractor.enabled:
             enabled.append(("distractor", set(self.distractor.keys)))
         if self.go_nogo.enabled:
@@ -543,9 +504,13 @@ class FPVSConditionParams(BaseModel):
     def _check_multi_stream(self) -> "FPVSConditionParams":
         # Generalises the old dual-stream check to N simultaneous streams. The runtime set of ACTIVE
         # streams is [main] + [second_stream if enabled] + [s in additional_streams if s.enabled].
-        # Analysis is frequency-domain, so base frequencies are NO LONGER required to be spectrally
-        # separable (researcher decision: all frequencies must be possible); harmonic/IM collisions are
-        # surfaced as advisories elsewhere (check_triggers), not rejected here. What IS enforced at
+        # Base frequencies are NOT required to be pairwise-distinct in general -- a base-only filler
+        # stream may freely share a base rate with any other stream (it contributes zero energy at any
+        # oddball frequency, so nothing it shares a rate with becomes ambiguous). What genuinely can't
+        # be analysed, and IS rejected below, is an oddball-carrying stream's own measured frequency
+        # colliding with another active stream's driving frequency -- see the dedicated check further
+        # down. Everything softer (higher-order harmonic/intermodulation collisions, which depend on
+        # trial length) stays an advisory in check_triggers, not a hard error here. Also enforced at
         # save/freeze time: pairwise-distinct positions across all active streams, and the 2-stream
         # ceilings on frequency sweeps and per-stream EEG triggers (the 8-bit trigger combiner and the
         # shared-sweep-timeline machinery only handle two streams).
@@ -560,16 +525,51 @@ class FPVSConditionParams(BaseModel):
             return self
 
         # HARD: every active stream position (main + each active extra) must be pairwise-distinct.
-        positions = [tuple(self.stream_position_pix)] + [tuple(s.position_pix) for s in active_extra]
+        positions = [tuple(self.main_stream.position_pix)] + [tuple(s.position_pix) for s in active_extra]
         if len(set(positions)) != len(positions):
             raise ValueError(
-                "all active streams must be at distinct positions -- set stream_position_pix and each "
-                "stream's position_pix apart (e.g. (-200, 0), (200, 0), (0, 200))."
+                "all active streams must be at distinct positions -- set each stream's position_pix "
+                "apart (e.g. (-200, 0), (200, 0), (0, 200))."
             )
+
+        # HARD: an oddball-carrying stream's own measured (oddball) frequency must not EXACTLY equal
+        # any OTHER active stream's driving frequency (that stream's base, and its oddball too if it
+        # carries one) -- the one genuinely unambiguous, no-judgment-call case: identical frequencies
+        # land on the same FFT bin with no way to attribute the response to either stream. This is
+        # deliberately equality, NOT the broader "harmonically related" test `bases_harmonically_related`
+        # uses for base-vs-base pairs: an oddball frequency is routinely derived as base_freq / N (e.g.
+        # the 1.2 Hz default is base 6.0 Hz / 5), so it is ALREADY, normally, a harmonic sub-multiple of
+        # its OWN stream's base -- and, incidentally, of any OTHER stream sharing that same base rate.
+        # Rejecting that would block the completely standard case (and the exact design this check was
+        # motivated by: several base-only streams sharing one base rate with the one oddball-carrying
+        # stream, to test whether oddball POSITION modulates the response). Whether a harmonic-but-not-
+        # equal relationship matters in practice depends on how many harmonics get analysed and the
+        # trial length (FFT bin width) -- that softer judgment call stays with check_triggers' advisory
+        # (multi_stream_separability_warnings), not a hard block here. Pattern-based oddballs have no
+        # single numeric rate to compare and are skipped, matching StreamParams._check_oddball_below_base.
+        _tol = 1e-3
+        all_active = [self.main_stream] + active_extra
+        for i, s in enumerate(all_active):
+            if not (s.oddball_enabled and s.oddball.pattern is None):
+                continue
+            for j, t in enumerate(all_active):
+                if i == j:
+                    continue
+                candidates: list[tuple[str, float]] = [("base", t.base.base_freq_hz)]
+                if t.oddball_enabled and t.oddball.pattern is None:
+                    candidates.append(("oddball", t.oddball.oddball_freq_hz))
+                for label, freq in candidates:
+                    if abs(s.oddball.oddball_freq_hz - freq) <= _tol:
+                        raise ValueError(
+                            f"stream {i}'s oddball frequency ({s.oddball.oddball_freq_hz:g} Hz) "
+                            f"exactly equals stream {j}'s {label} frequency ({freq:g} Hz) -- their "
+                            "responses would land on the same FFT bin with no way to tell them apart. "
+                            "Give one of them a different rate."
+                        )
 
         # HARD: sweep x N (>2 streams) is out of scope -- only the legacy main+second pair may sweep.
         if active_additional and (
-            self.sweep.enabled
+            self.main_stream.sweep.enabled
             or self.second_stream.sweep.enabled
             or any(s.sweep.enabled for s in self.additional_streams)
         ):
@@ -583,11 +583,11 @@ class FPVSConditionParams(BaseModel):
         # stream may carry a trigger code (use frequency-domain separation instead).
         if 1 + len(active_extra) > 2:
             main_triggered = (
-                self.base.base_trigger_code is not None
-                or self.oddball.oddball_trigger_code is not None
+                self.main_stream.base.base_trigger_code is not None
+                or self.main_stream.oddball.oddball_trigger_code is not None
             )
             extra_triggered = any(
-                s.base_trigger_code is not None or s.oddball_trigger_code is not None
+                s.base.base_trigger_code is not None or s.oddball.oddball_trigger_code is not None
                 for s in active_extra
             )
             if main_triggered or extra_triggered:
@@ -603,14 +603,14 @@ class FPVSConditionParams(BaseModel):
         # frequencies differ. Independent per-stream sweeps (different step counts / durations) are
         # still rejected -- they can't be presented on one continuous frame timeline.
         legacy_pair = self.second_stream.enabled and not active_additional
-        if legacy_pair and (self.sweep.enabled or self.second_stream.sweep.enabled):
-            if not (self.sweep.enabled and self.second_stream.sweep.enabled):
+        if legacy_pair and (self.main_stream.sweep.enabled or self.second_stream.sweep.enabled):
+            if not (self.main_stream.sweep.enabled and self.second_stream.sweep.enabled):
                 raise ValueError(
-                    "a sweep x dual-stream needs BOTH the main sweep and second_stream.sweep "
+                    "a sweep x dual-stream needs BOTH the main stream's sweep and second_stream.sweep "
                     "enabled on a shared timeline -- enable both, or neither. (One stream sweeping "
                     "while the other holds a fixed frequency is not supported.)"
                 )
-            main_durations = [s.duration_seconds for s in self.sweep.steps]
+            main_durations = [s.duration_seconds for s in self.main_stream.sweep.steps]
             second_durations = [s.duration_seconds for s in self.second_stream.sweep.steps]
             if main_durations != second_durations:
                 raise ValueError(
@@ -622,7 +622,7 @@ class FPVSConditionParams(BaseModel):
             # Each step's paired base frequencies must be spectrally separable so the shared-timeline
             # sweep stays analysable per step (this specific per-step use of bases_harmonically_related
             # is retained; only the top-level base-pair reject is dropped).
-            for i, (a, b) in enumerate(zip(self.sweep.steps, self.second_stream.sweep.steps)):
+            for i, (a, b) in enumerate(zip(self.main_stream.sweep.steps, self.second_stream.sweep.steps)):
                 if bases_harmonically_related(a.base_freq_hz, b.base_freq_hz):
                     raise ValueError(
                         f"sweep step {i}: the two stream base frequencies ({a.base_freq_hz}, "
@@ -630,6 +630,19 @@ class FPVSConditionParams(BaseModel):
                         "responses can't be separated. Use non-harmonic frequencies per step "
                         "(e.g. 6 & 7 Hz)."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _check_main_stream_always_active(self) -> "FPVSConditionParams":
+        # main_stream is a StreamParams like every other stream (uniform shape), but unlike
+        # second_stream/additional_streams it isn't optional -- a Condition always needs at least
+        # one active stream. Reject rather than silently ignoring a disabled main stream.
+        if not self.main_stream.enabled:
+            raise ValueError(
+                "main_stream.enabled must be True -- the main stream is always active (there must "
+                "be at least one active stream); disable second_stream/additional_streams entries "
+                "instead if you only want one stream."
+            )
         return self
 
     @model_validator(mode="after")
@@ -641,10 +654,10 @@ class FPVSConditionParams(BaseModel):
         # mistaken for a coincidence in the recording. All checks are skipped when the second stream is
         # disabled, so a plain single-stream Condition is completely unaffected.
         stream_codes = [
-            self.base.base_trigger_code,
-            self.oddball.oddball_trigger_code,
-            self.second_stream.base_trigger_code,
-            self.second_stream.oddball_trigger_code,
+            self.main_stream.base.base_trigger_code,
+            self.main_stream.oddball.oddball_trigger_code,
+            self.second_stream.base.base_trigger_code,
+            self.second_stream.oddball.oddball_trigger_code,
         ]
         codes = self.coincidence_codes
         if not self.second_stream.enabled:
@@ -654,10 +667,11 @@ class FPVSConditionParams(BaseModel):
             return self
 
         both_triggered = (
-            self.base.base_trigger_code is not None or self.oddball.oddball_trigger_code is not None
+            self.main_stream.base.base_trigger_code is not None
+            or self.main_stream.oddball.oddball_trigger_code is not None
         ) and (
-            self.second_stream.base_trigger_code is not None
-            or self.second_stream.oddball_trigger_code is not None
+            self.second_stream.base.base_trigger_code is not None
+            or self.second_stream.oddball.oddball_trigger_code is not None
         )
         if not both_triggered:
             # At most one stream sends triggers -> no coincidence is ever ambiguous (only one code can
@@ -721,11 +735,14 @@ class FPVSConditionParams(BaseModel):
             if code is not None:
                 labeled.append((label, code))
 
-        add("base.base_trigger_code", self.base.base_trigger_code)
-        add("oddball.oddball_trigger_code", self.oddball.oddball_trigger_code)
+        add("main_stream.base.base_trigger_code", self.main_stream.base.base_trigger_code)
+        add("main_stream.oddball.oddball_trigger_code", self.main_stream.oddball.oddball_trigger_code)
         if self.second_stream.enabled:
-            add("second_stream.base_trigger_code", self.second_stream.base_trigger_code)
-            add("second_stream.oddball_trigger_code", self.second_stream.oddball_trigger_code)
+            add("second_stream.base.base_trigger_code", self.second_stream.base.base_trigger_code)
+            add(
+                "second_stream.oddball.oddball_trigger_code",
+                self.second_stream.oddball.oddball_trigger_code,
+            )
             if self.coincidence_codes.any_set():
                 codes = self.coincidence_codes
                 add("coincidence_codes.both_base", codes.both_base)
@@ -734,8 +751,11 @@ class FPVSConditionParams(BaseModel):
                 add("coincidence_codes.both_oddball", codes.both_oddball)
         for i, stream in enumerate(self.additional_streams):
             if stream.enabled:
-                add(f"additional_streams[{i}].base_trigger_code", stream.base_trigger_code)
-                add(f"additional_streams[{i}].oddball_trigger_code", stream.oddball_trigger_code)
+                add(f"additional_streams[{i}].base.base_trigger_code", stream.base.base_trigger_code)
+                add(
+                    f"additional_streams[{i}].oddball.oddball_trigger_code",
+                    stream.oddball.oddball_trigger_code,
+                )
         if self.distractor.enabled:
             add("distractor.trigger_code", self.distractor.trigger_code)
         if self.go_nogo.enabled:
@@ -770,10 +790,15 @@ class FPVSSchema:
     #: streams to N with ``additional_streams`` and a per-stream ``oddball_enabled`` toggle (base-only
     #: filler streams); v8 adds ``equalization`` (luminance/contrast equalization across every pool a
     #: Condition presents) -- all additive, default off/None (``additional_streams=[]``,
-    #: ``oddball_enabled=True``, ``equalization.enabled=False``). v4 was the one breaking bump (old
-    #: SepStim selector keys are dropped on validation -- re-freeze such dev-only Instances); every
-    #: other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "8"
+    #: ``oddball_enabled=True``, ``equalization.enabled=False``). v9 is the second breaking bump: it
+    #: drops the ``response`` (active oddball key-press) task entirely -- it risked contaminating the
+    #: oddball-frequency EEG signal with motor/decision potentials, was never wired to a warning, and
+    #: is unused; ``distractor``/``go_nogo`` remain as the orthogonal behavioural checks -- and it
+    #: replaces the main stream's scattered top-level fields (``base``/``oddball``/``base_selector``/
+    #: ``oddball_selector``/``modulation``/``sweep``/``stream_position_pix``) with one ``main_stream``
+    #: field of the same ``StreamParams`` shape every other stream already uses (re-freeze such
+    #: dev-only Instances, same as v4). Every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "9"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -802,7 +827,7 @@ class FPVSSchema:
         # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4", "5", "6", "7"):
+        if old_version not in ("1", "2", "3", "4", "5", "6", "7", "8"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
         # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8 are additive (position_jitter, distractor,
         # oddball pattern + go_nogo, sweep, additional_streams + per-stream oddball_enabled,
@@ -816,4 +841,48 @@ class FPVSSchema:
                 migrated[selector_key] = {
                     k: v for k, v in selector.items() if k not in self._LEGACY_SELECTOR_KEYS
                 }
+
+        # v8->v9 (the second breaking bump): drop the removed 'response' key outright, then collapse
+        # the old flat main-stream fields into one 'main_stream' dict of the same shape every other
+        # stream already used, and move second_stream/additional_streams' old flat base_freq_hz/
+        # base_trigger_code/oddball_trigger_code into their nested base/oddball sub-dicts (StreamParams'
+        # own shape change). No-ops for data that's already past v8 in the relevant respect.
+        migrated.pop("response", None)
+
+        main_stream_keys = ("base", "oddball", "base_selector", "oddball_selector", "modulation", "sweep")
+        if any(key in migrated for key in main_stream_keys) or "stream_position_pix" in migrated:
+            main_stream: dict = {"enabled": True, "oddball_enabled": True}
+            for key in main_stream_keys:
+                if key in migrated:
+                    main_stream[key] = migrated.pop(key)
+            if "stream_position_pix" in migrated:
+                main_stream["position_pix"] = migrated.pop("stream_position_pix")
+            migrated["main_stream"] = main_stream
+
+        def _migrate_stream_dict(stream: dict) -> dict:
+            stream = dict(stream)
+            base_freq = stream.pop("base_freq_hz", None)
+            base_trigger = stream.pop("base_trigger_code", None)
+            oddball_trigger = stream.pop("oddball_trigger_code", None)
+            if base_freq is not None or base_trigger is not None:
+                base = dict(stream.get("base") or {})
+                if base_freq is not None:
+                    base["base_freq_hz"] = base_freq
+                if base_trigger is not None:
+                    base["base_trigger_code"] = base_trigger
+                stream["base"] = base
+            if oddball_trigger is not None:
+                oddball = dict(stream.get("oddball") or {})
+                oddball["oddball_trigger_code"] = oddball_trigger
+                stream["oddball"] = oddball
+            return stream
+
+        if isinstance(migrated.get("second_stream"), dict):
+            migrated["second_stream"] = _migrate_stream_dict(migrated["second_stream"])
+        if isinstance(migrated.get("additional_streams"), list):
+            migrated["additional_streams"] = [
+                _migrate_stream_dict(s) if isinstance(s, dict) else s
+                for s in migrated["additional_streams"]
+            ]
+
         return self.SCHEMA_VERSION, migrated

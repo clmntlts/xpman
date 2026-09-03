@@ -61,8 +61,8 @@ class TimelineMark:
 
 @dataclass(frozen=True)
 class TrialTimeline:
-    """One stimulation stream: its onsets, the triggers that fired, and any scored responses, on
-    a shared per-trial axis (0 == the stream's first stimulation frame).
+    """One stimulation stream: its onsets and the triggers that fired, on a shared per-trial axis
+    (0 == the stream's first stimulation frame).
 
     ``kind`` is ``"trial"`` for a base+oddball trial or ``"familiarization"`` for the base-only
     familiarization stream (which has onsets but no per-stimulus triggers -- so it's expected to
@@ -77,7 +77,6 @@ class TrialTimeline:
     triggers: list[TimelineMark]
     kind: str = "trial"
     label: str = ""
-    responses: list[TimelineMark] = field(default_factory=list)
     #: Distractor (attention-control) event onsets in this stream, if the distractor task ran.
     #: ``code`` carries the optional distractor trigger code (None when behaviour-only).
     distractors: list[TimelineMark] = field(default_factory=list)
@@ -103,15 +102,13 @@ def _mark_index(payload: dict, fallback: int) -> int:
 
 def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
     """Split a run's events into one :class:`TrialTimeline` per stimulation stream -- its stimulus
-    onsets, ``trigger_sent`` marks, and scored responses, at times relative to that stream's start.
+    onsets and ``trigger_sent`` marks, at times relative to that stream's start.
 
     Streams are delimited by the sequence start/end events (the same segmentation the flip-interval
     stats use), so onsets/triggers are never mixed across trials. A base-only stream
     (``base_sequence_*``) is tagged ``kind="familiarization"`` and labelled as such; base+oddball
-    streams are numbered ``"Trial N"`` among themselves. Responses are matched to their stream in a
-    second pass by their (post-sequence-logged) ``response_time`` payload, and placed at the
-    ``reference_stim_index`` they responded to. A stream that started but logged no end (a crash
-    mid-trial) is still emitted."""
+    streams are numbered ``"Trial N"`` among themselves. A stream that started but logged no end (a
+    crash mid-trial) is still emitted."""
     events_sorted = sorted(events, key=lambda e: e["timestamp"])
 
     # First pass: raw windows with their time bounds and marks.
@@ -144,7 +141,7 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
             pending = None
             cur = {
                 "start": ts, "last": ts, "end": None, "onsets": [], "triggers": [],
-                "responses": [], "distractors": [], "go_nogo": [], "segments": [],
+                "distractors": [], "go_nogo": [], "segments": [],
                 "kind": kind, "phase": phase,
             }
         elif event_type in _SEQUENCE_END_EVENTS:
@@ -203,22 +200,6 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
         cur["end"] = cur["last"]
         windows.append(cur)
 
-    # Second pass: place scored responses into the stream their keypress fell within. response_scored
-    # is logged after the sequence ends, so it can't be captured inline -- match by response_time.
-    for e in events_sorted:
-        if e["event_type"] != "response_scored":
-            continue
-        payload = e.get("payload") or {}
-        rt = payload.get("response_time")
-        if rt is None:
-            continue
-        for w in windows:
-            if w["start"] <= rt <= (w["end"] if w["end"] is not None else w["last"]):
-                w["responses"].append(
-                    TimelineMark(rt - w["start"], None, None, payload.get("reference_stim_index"))
-                )
-                break
-
     timelines: list[TrialTimeline] = []
     trial_n = 0
     fam_n = 0
@@ -243,7 +224,6 @@ def build_trial_timelines(events: list[dict[str, Any]]) -> list[TrialTimeline]:
                 triggers=w["triggers"],
                 kind=w["kind"],
                 label=label,
-                responses=w["responses"],
                 distractors=w["distractors"],
                 go_nogo=w["go_nogo"],
                 segments=w["segments"],
