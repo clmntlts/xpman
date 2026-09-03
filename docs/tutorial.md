@@ -345,13 +345,13 @@ exported results.
    `Faces 6Hz`.
 6. **Configure the Condition's parameters.** Click the Condition node to open its form. At
    minimum, set:
-   - `base.base_freq_hz` — e.g. `6.0`.
-   - `oddball.oddball_freq_hz` — e.g. `1.2` (must not exceed the base frequency).
-   - `base_selector.subdirectory` — e.g. `objects` (base stream draws from the `objects/` folder).
-   - `oddball_selector.subdirectory` — e.g. `faces` (oddball stream draws from the `faces/` folder).
+   - `main_stream.base.base_freq_hz` — e.g. `6.0`.
+   - `main_stream.oddball.oddball_freq_hz` — e.g. `1.2` (must not exceed the base frequency).
+   - `main_stream.base_selector.subdirectory` — e.g. `objects` (base stream draws from the `objects/` folder).
+   - `main_stream.oddball_selector.subdirectory` — e.g. `faces` (oddball stream draws from the `faces/` folder).
    - Leave everything else at its default to start (fixation cross, photodiode on every
-     stimulus onset, response key = space) — see [6.2](#62-fpvs-task) for what every field
-     means if you want to customize further.
+     stimulus onset) — see [6.2](#62-fpvs-task) for what every field means if you want to
+     customize further.
    - Click **Save**.
 7. **Create a Block.** Right-click the Experiment → New Block... → name it, set a repeat count
    (e.g. 1 for a first test). Leave randomization unchecked for now — or check **Randomize
@@ -473,7 +473,8 @@ right folder.
 
 Leaving both unset uses the entire image pool for that stream. Typical FPVS setup: put base and
 oddball images in separate folders (e.g. `objects/` and `faces/`) and set
-`base_selector.subdirectory = objects`, `oddball_selector.subdirectory = faces`. Use
+`main_stream.base_selector.subdirectory = objects`, `main_stream.oddball_selector.subdirectory =
+faces` (each stream card has its own pair of these). Use
 `filename_pattern` to narrow within a folder (e.g. a subset of items). The **"Preview Stimuli…"**
 button lists the available subfolder names and shows how many images each selector matches, so you
 can confirm before freezing.
@@ -511,33 +512,15 @@ hardware timing verification (e.g. taping a photodiode sensor to it):
 (flips every N screen frames regardless of stimulus), `oddball_onset_only` (flips only on
 oddball images — useful for marking just the oddball events on an EEG channel).
 
-**Response collection** (`response`) — the *explicit* oddball-response task ("press when you see the
-oddball"). **Off by default**, and for most FPVS work you should leave it off: standard FPVS is a
-**passive** paradigm — asking for a response to every oddball at these rates is unreliable, and it
-pulls attention onto the tagged dimension, contaminating the signal. Use an **orthogonal** fixation
-task (`distractor` or `go_nogo`) as your behavioural measure instead. Enable this only for a
-deliberately *active/behavioural* FPVS variant.
-
-| Field | Type | Default | Constraints | Meaning |
-|---|---|---|---|---|
-| `enabled` | checkbox | **off** | — | Collect keyboard responses to oddballs. |
-| `keys` | comma-separated list | `space` | — | Which key(s) count as a response, e.g. `space, left`. |
-| `rt_reference` | dropdown | `most_recent_oddball_onset` | see below | What a response's reaction time is measured against. |
-| `max_rt_seconds` | number, optional | not set | > 0 if set | Responses slower than this (relative to their reference onset) are marked invalid. Unset = no limit. |
-
-`rt_reference` options: `most_recent_oddball_onset` (the default — RT from the oddball being
-responded to), `most_recent_stimulus_onset` (whichever image, base or oddball, was shown last — near
-meaningless at a fast base rate), `trial_start` (from the very start of the trial).
-
-> **Note:** all behavioural tasks (`response`, `distractor`, `go_nogo`) share one keyboard, routed
-> by key. Two *enabled* tasks that share a key are **rejected** at save/freeze time (a press can't be
+> **Note:** the two behavioural tasks (`distractor`, `go_nogo`) share one keyboard, routed
+> by key. Both *enabled* with a shared key is **rejected** at save/freeze time (a press can't be
 > attributed to both) — give each enabled task its own key(s), or enable only one.
 
 **Distractor task** (`distractor`) — an optional *attention-control* task: at pseudo-random
 moments during the stimulation, a brief change appears **at the fixation point** and the subject
 presses a key when they detect it. This keeps attention on fixation (orthogonal to the category
-being frequency-tagged) and gives a behavioural vigilance measure. Off by default; when on, you
-typically turn the oddball-**response** task off (or give the two tasks different keys).
+being frequency-tagged) and gives a behavioural vigilance measure. Off by default; when on, and
+`go_nogo` is also on, give the two tasks different keys.
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
@@ -615,33 +598,39 @@ oddball frequency in it is the pure measurement floor. It runs at the Condition'
 ⚠️ A `before` baseline is measured on an **un-adapted** visual system, an `after` baseline
 **post-adaptation** — they are not interchangeable. Keep `position` consistent within a study.
 
-**Dual bilateral streams** (`second_stream` + `stream_position_pix`) — present **two** image streams
-at once (e.g. left and right of the shared central fixation), each frequency-tagged at its own base +
-oddball rate. Both are drawn every frame at their own position; the two tagged responses are recovered
-by FFT at their distinct frequencies. Each stream's onsets are logged separately (with a `stream`
-index), and the photodiode tracks the **first** stream.
+**Multiple simultaneous streams** (`second_stream`, `additional_streams`) — present more than one
+image stream at once (e.g. left and right of the shared central fixation), each with its own
+frequency, image pools, position, and modulation. Every stream — the main one (`main_stream`),
+`second_stream`, and each `additional_streams` entry — is the **same shape**, shown in the GUI as
+uniform "Stream 1 (main)", "Stream 2", "Stream 3", ... cards. All active streams are drawn every
+frame at their own position; frequency-domain analysis recovers each stream's tagged response by
+FFT. Each stream's onsets are logged separately (with a `stream` index), and the photodiode tracks
+the **main** stream only.
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `stream_position_pix` | x,y (px) | (0,0) | The **main** stream's position; only applies when a second stream is on (e.g. set to (−200, 0)). |
-| `second_stream.enabled` | checkbox | off | Turn on the second bilateral stream. |
-| `second_stream.base_freq_hz` | number | 7.0 | Its base frequency — must differ **non-harmonically** from the main stream (e.g. 6 & 7 Hz, not 3 & 6). |
-| `second_stream.oddball` | group | 1.2 Hz | Its oddball placement (frequency or B/O pattern). |
-| `second_stream.position_pix` | x,y (px) | (200,0) | Its screen position (must differ from the main stream's). |
-| `second_stream.base_selector` / `oddball_selector` | group | whole set | Its own image pools. |
-| `second_stream.modulation` | group | sinusoidal | Its own contrast modulation. |
-| `second_stream.base_trigger_code` / `oddball_trigger_code` | integer, optional | not set | Optional 8-bit EEG triggers on **this** stream's base/oddball onsets (1–255). Leave unset for pure frequency-tag analysis. |
-| `second_stream.sweep` | group | off | Sweep this stream too (only valid alongside the main sweep, on a **shared timeline** — same step count + durations, only the per-step frequencies differ). |
-| `coincidence_codes` | group | not set | Reserved codes for frames where **both** streams onset together (there's one port, one pulse): the 2×2 of (base/oddball)×(base/oddball). Required once **both** streams have trigger codes. |
+| Field (on each stream's card) | Type | Meaning |
+|---|---|---|
+| `enabled` | checkbox | Present this stream (the main stream is always on). |
+| `oddball_enabled` | checkbox | Off = base-only "filler" stream (flickers, but carries no oddball and produces no oddball-frequency response). |
+| `base.base_freq_hz` | number | This stream's base frequency. |
+| `base.trial_duration_seconds` | number | Only meaningful on **Stream 1 (main)** — every stream shares one trial timeline, taken from there. |
+| `oddball` | group | Its oddball placement (frequency or B/O pattern). |
+| `position_pix` | x,y (px) | Its screen position — every active stream needs a distinct position. |
+| `base_selector` / `oddball_selector` | group | Its own image pools. |
+| `modulation` | group | Its own contrast modulation. |
+| `base.base_trigger_code` / `oddball.oddball_trigger_code` | integer, optional | Optional 8-bit EEG triggers on **this** stream's base/oddball onsets (1–255). Leave unset for pure frequency-tag analysis; only up to **two** streams total may use per-stream triggers. |
+| `sweep` | group | Sweep this stream too (only valid for exactly two active streams, both sweeping on a **shared timeline** — same step count + durations, only the per-step frequencies differ). |
+| `coincidence_codes` | group | Reserved codes for frames where the main and second streams onset together (there's one port, one pulse): the 2×2 of (base/oddball)×(base/oddball). Required once **both** have trigger codes. |
 
-Saving is **blocked** if the two base frequencies are equal or harmonically related (their responses
-couldn't be separated), if the two positions are identical, or if only one stream sweeps / the two
-sweeps don't share a timeline. A dual-stream **sweep** is fine when both streams sweep on the shared
-timeline. "Check Triggers…" additionally warns about **intermodulation** collisions (`|n·f1 ± m·f2|`
-landing on a tagged frequency) and midline-crossover / photodiode-overlap from large position jitter.
-Per-stream EEG triggers are **optional** (set the codes above; coincident onsets resolve to one
-reserved `coincidence_codes` value); with none set, the frequency tags are the whole signal — pick
-distinct, non-harmonic frequencies with a clear spectral gap.
+Saving is **blocked** if any two active streams share a position, if an oddball-carrying stream's
+own oddball frequency exactly equals another active stream's base or oddball frequency (their
+responses would land on the same FFT bin — no way to tell them apart), or if sweep/per-stream-trigger
+rules above are violated. Sharing a plain **base** rate across streams is otherwise fine — e.g. three
+base-only streams and one oddball-carrying stream all at the same base rate, to test whether the
+oddball's *position* (not frequency) modulates the response; base-only streams contribute no energy
+at any oddball frequency, so nothing becomes ambiguous. "Check Triggers…" additionally warns about
+softer **harmonic/intermodulation** collisions (`|n·f1 ± m·f2|` landing on a tagged frequency — these
+depend on trial length, so they're advisory, not blocking) and midline-crossover / photodiode-overlap
+from large position jitter.
 
 ## 7. Troubleshooting
 
@@ -721,20 +710,19 @@ error above the button — it silently refuses to save invalid data rather than 
 A Trial must point at a Condition. If the parent Experiment has zero Conditions yet, the New
 Trial dialog tells you this and disables Ok — create a Condition on that Experiment first.
 
-### 7.7 Key responses (oddball task or distractor) aren't recorded
+### 7.7 Key responses (distractor or go/no-go) aren't recorded
 
 Open the Run's **Trigger / Event Log… → Summary** tab and read the **Keyboard capture** line (the
-diagnostic added for exactly this). It reports, independently of scoring:
-- **`total_presses=0`** → the keyboard isn't being read at all. Make sure the fullscreen stimulus
-  window has focus (click it / don't alt-tab away), and that the response keys are pressed *during*
-  a trial's stimulation (not during the "Press SPACE to start" gate between trials). xpman captures
-  via two keyboard backends and falls back automatically, so 0 here usually means a focus problem.
-- **presses captured but `n_responses=0`** → the keys you pressed don't match the Condition's
-  configured keys. The line lists the actual `distinct_keys` seen; set `response.keys` (and/or
-  `distractor.keys`) to match, or press the configured key.
+diagnostic added for exactly this): **`total_presses=0`** means the keyboard isn't being read at
+all. Make sure the fullscreen stimulus window has focus (click it / don't alt-tab away), and that
+the keys are pressed *during* a trial's stimulation (not during the "Press SPACE to start" gate
+between trials). xpman captures via two keyboard backends and falls back automatically, so 0 here
+usually means a focus problem. If presses were captured but the task's scored-event count is still
+0, the keys you pressed don't match the Condition's configured `distractor.keys`/`go_nogo.keys` --
+the line lists the actual `distinct_keys` seen.
 
-Both the oddball-**response** task and the **distractor** task can be answered from the same
-keyboard; if they share a key, a press counts for both (`Check Triggers…` warns about that).
+The `distractor` and `go_nogo` tasks can both be answered from the same keyboard; if they share a
+key, a press counts for both (`Check Triggers…` warns about that).
 
 ## 8. FAQ
 

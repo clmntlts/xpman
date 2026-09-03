@@ -19,9 +19,15 @@ Supported field shapes (see :mod:`xpman.gui.forms.widgets` for the concrete widg
 
 Layout: one ``QFormLayout`` per model level, each row a prettified label (with a tooltip built
 from the field's ``description`` plus any numeric constraints) next to its widget. Nested models
-get their own ``QGroupBox`` (visually distinct from the parent's own fields) containing a nested
-``SchemaForm`` recursively built the same way -- this is what keeps a deeply-nested model like
-``FPVSConditionParams`` from becoming "a flat, ungrouped wall of fields."
+get their own titled, collapsible ``CollapsibleGroupBox`` (visually distinct from the parent's
+own fields, and still a real ``QGroupBox`` underneath) containing a nested ``SchemaForm``
+recursively built the same way -- this is what keeps a deeply-nested model like
+``FPVSConditionParams`` from becoming "a flat, ungrouped wall of fields." A group starts
+collapsed iff its model has an ``enabled`` field defaulting to ``False`` (an off-by-default
+optional feature), corrected once real data loads so an already-enabled feature never starts
+hidden -- see ``SchemaForm._default_collapsed``/``_sync_collapse_states``. Top-level ``section``
+groups use the same collapsible box but always start expanded; see
+``Field(json_schema_extra={"section": ...})``.
 """
 
 from __future__ import annotations
@@ -32,7 +38,15 @@ from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFormLayout,
+    QGroupBox,
+    QLabel,
+    QPushButton,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from xpman.gui.forms.widgets import (
     BoolFieldWidget,
@@ -159,6 +173,58 @@ def _list_item_model(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
+class CollapsibleGroupBox(QGroupBox):
+    """A titled ``QGroupBox`` whose body can be collapsed via a toggle button -- a decluttering
+    affordance for a form with many optional sub-sections (most start disabled/off). Still a
+    real ``QGroupBox`` (title, ``findChildren(QGroupBox)``, etc. all behave exactly as a plain
+    one), just with an extra Show/Hide toggle above its content. Deliberately NOT a checkable
+    ``QGroupBox`` (Qt's built-in checkbox-in-title style): several wrapped models already render
+    their own "Enabled" checkbox field inside, and a second checkbox at the box level would read
+    as controlling the same thing -- this toggle is visually and semantically just "show/hide",
+    independent of whatever the wrapped form's own fields say.
+    """
+
+    def __init__(
+        self, title: str = "", *, collapsed: bool = False, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(title, parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        self._toggle = QToolButton()
+        self._toggle.setCheckable(True)
+        self._toggle.setChecked(not collapsed)
+        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle.setStyleSheet("QToolButton { border: none; }")
+        self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle.clicked.connect(self._on_toggle)
+        outer.addWidget(self._toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self._body = QWidget()
+        #: Callers build their real content into this layout (``.addWidget``/``.addLayout``),
+        #: matching how a plain ``QVBoxLayout(some_groupbox)`` is used at every existing call site.
+        self.content_layout = QVBoxLayout(self._body)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._body)
+
+        self._apply_state(not collapsed)
+
+    def _on_toggle(self, checked: bool) -> None:
+        self._apply_state(checked)
+
+    def _apply_state(self, expanded: bool) -> None:
+        self._body.setVisible(expanded)
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._toggle.setText("Hide" if expanded else "Show")
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._toggle.setChecked(expanded)
+        self._apply_state(expanded)
+
+    def is_expanded(self) -> bool:
+        return self._toggle.isChecked()
+
+
 class SchemaForm(QWidget):
     """Auto-generates an editable Qt form from a Pydantic ``BaseModel`` subclass.
 
@@ -185,15 +251,20 @@ class SchemaForm(QWidget):
         self._hidden_fields: set[str] = set()
         self._hidden_values: dict[str, Any] = {}
         self._last_errors: list[str] = []
+        #: Nested single-BaseModel groups (see ``_build_nested_group``) that have an ``enabled``
+        #: field, keyed by field name -- ``_sync_collapse_states`` expands/collapses these to match
+        #: the loaded value every time ``set_values`` runs, so opening an existing Condition shows
+        #: its actually-active optional features instead of always starting collapsed.
+        self._collapsible_groups: dict[str, CollapsibleGroupBox] = {}
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(4, 4, 4, 4)
         outer_layout.setSpacing(10)
 
         # A field may declare a GUI section via ``Field(json_schema_extra={"section": "..."})``. When
-        # any field does, this level's fields are grouped into titled section boxes (in first-appearance
-        # order); otherwise the whole model renders as one flat form -- byte-for-byte the prior behaviour,
-        # so models that don't opt in (and every nested sub-form) are unaffected.
+        # any field does, this level's fields are grouped into titled, collapsible section boxes (in
+        # first-appearance order); otherwise the whole model renders as one flat form -- byte-for-byte
+        # the prior behaviour, so models that don't opt in (and every nested sub-form) are unaffected.
         sections = self._field_sections(model_cls)
         if any(section_name is not None for section_name, _ in sections):
             for section_name, field_names in sections:
@@ -202,15 +273,16 @@ class SchemaForm(QWidget):
                     outer_layout.addLayout(target_form)
                     target_container = outer_layout
                 else:
-                    section_box = QGroupBox(section_name)
+                    section_box = CollapsibleGroupBox(section_name, collapsed=False)
                     section_box.setObjectName("formSection")
-                    target_container = QVBoxLayout(section_box)
-                    target_container.setContentsMargins(8, 8, 8, 8)
+                    target_container = section_box.content_layout
                     target_form = self._new_form_layout()
                     target_container.addLayout(target_form)
                     outer_layout.addWidget(section_box)
                 for name in field_names:
-                    self._place(self._render_field(name, model_cls.model_fields[name]), target_form, target_container)
+                    self._place(
+                        self._render_field(name, model_cls.model_fields[name]), target_form, target_container
+                    )
         else:
             form_layout = self._new_form_layout()
             outer_layout.addLayout(form_layout)
@@ -269,23 +341,33 @@ class SchemaForm(QWidget):
 
         item_model = _list_item_model(inner_annotation)
         if item_model is not None:
-            # list[BaseModel] (e.g. go/no-go markers): an add/remove list of inline sub-forms.
+            # list[BaseModel] (e.g. go/no-go markers, or FPVS's additional_streams): an add/remove
+            # list of inline sub-forms. A field may override the per-item label/starting number via
+            # json_schema_extra (e.g. additional_streams continues the "Stream N" numbering started
+            # by the main/second stream cards) -- default is the singularized field name, 1-based.
             min_items = int(extra.get("min_items", 0)) if isinstance(extra, dict) else 0
             pretty = prettify_field_name(name)
-            item_label = pretty[:-1] if pretty.endswith("s") else pretty
-            widget = _ModelListWidget(item_model, min_items=min_items, item_label=item_label)
+            default_item_label = pretty[:-1] if pretty.endswith("s") else pretty
+            item_label = extra.get("item_label", default_item_label) if isinstance(extra, dict) else default_item_label
+            start_index = int(extra.get("item_start_index", 1)) if isinstance(extra, dict) else 1
+            widget = _ModelListWidget(
+                item_model, min_items=min_items, item_label=item_label, start_index=start_index
+            )
             widget.valueEdited.connect(self.valuesChanged.emit)
             self._field_widgets[name] = widget
-            group = QGroupBox(pretty)
+            group = CollapsibleGroupBox(pretty, collapsed=False)
             if field_info.description:
                 group.setToolTip(field_info.description)
-            QVBoxLayout(group).addWidget(widget)
+            group.content_layout.addWidget(widget)
             return ("group", group)
 
         if _is_model(inner_annotation):
             # Nested BaseModel: its own titled QGroupBox with a recursively-built SchemaForm inside,
-            # so it reads as a visually distinct sub-section, not a flat wall of fields.
-            group = self._build_nested_group(name, inner_annotation, field_info.description)
+            # so it reads as a visually distinct sub-section, not a flat wall of fields. A field may
+            # override the box's title via json_schema_extra (e.g. second_stream -> "Stream 2", to
+            # read as one of a uniform set of stream cards) -- default is the prettified field name.
+            title = extra.get("title") if isinstance(extra, dict) else None
+            group = self._build_nested_group(name, inner_annotation, field_info.description, title)
             return ("group", group)
 
         widget = self._build_leaf_widget(inner_annotation, field_info)
@@ -335,18 +417,34 @@ class SchemaForm(QWidget):
         except ValidationError:
             return {}
 
+    @staticmethod
+    def _default_collapsed(model_cls: type[BaseModel]) -> bool:
+        """Start a nested model's group collapsed iff it has an ``enabled`` field that defaults to
+        ``False`` (an off-by-default optional feature -- e.g. distractor, baseline, second_stream).
+        Always-relevant nested models (no ``enabled`` field, e.g. base/oddball/modulation) and
+        on-by-default ones (e.g. photodiode) start expanded. This is only the CONSTRUCTION-time
+        default -- ``_sync_collapse_states`` corrects it to the actually-loaded value once real data
+        arrives, so opening an existing enabled feature never starts hidden."""
+        enabled_field = model_cls.model_fields.get("enabled")
+        return enabled_field is not None and enabled_field.default is False
+
     def _build_nested_group(
-        self, field_name: str, nested_model_cls: type[BaseModel], description: str | None
+        self,
+        field_name: str,
+        nested_model_cls: type[BaseModel],
+        description: str | None,
+        title: str | None = None,
     ) -> QGroupBox:
-        title = prettify_field_name(field_name)
-        group = QGroupBox(title)
+        title = title or prettify_field_name(field_name)
+        group = CollapsibleGroupBox(title, collapsed=self._default_collapsed(nested_model_cls))
         if description:
             group.setToolTip(description)
-        group_layout = QVBoxLayout(group)
         nested_form = SchemaForm(nested_model_cls, parent=group)
         nested_form.valuesChanged.connect(self.valuesChanged.emit)
-        group_layout.addWidget(nested_form)
+        group.content_layout.addWidget(nested_form)
         self._nested_forms[field_name] = nested_form
+        if "enabled" in nested_model_cls.model_fields:
+            self._collapsible_groups[field_name] = group
         return group
 
     def _build_leaf_widget(self, annotation: Any, field_info: Any) -> Any:
@@ -405,6 +503,17 @@ class SchemaForm(QWidget):
         for name, nested_form in self._nested_forms.items():
             if name in values and values[name] is not None:
                 nested_form.set_values(values[name])
+        self._sync_collapse_states()
+
+    def _sync_collapse_states(self) -> None:
+        """Expand/collapse each tracked nested-model group to match its current ``enabled`` value.
+        Runs at the end of every ``set_values`` (including the implicit one in ``__init__``), so an
+        already-active optional feature (e.g. editing a Condition with the distractor task on) always
+        shows expanded, regardless of that model's own class-level collapse default."""
+        for name, box in self._collapsible_groups.items():
+            nested_form = self._nested_forms.get(name)
+            if nested_form is not None and "enabled" in nested_form._field_widgets:
+                box.set_expanded(bool(nested_form.get_values().get("enabled")))
 
     def get_validated_model(self) -> BaseModel:
         """Validate current values against ``model_cls`` (``pydantic.model_validate``).
@@ -474,12 +583,16 @@ class _ModelListWidget(_ErrorLabelMixin):
         *,
         min_items: int = 0,
         item_label: str = "Item",
+        start_index: int = 1,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._item_model_cls = item_model_cls
         self._min_items = min_items
         self._item_label = item_label
+        #: First item's display number -- lets a field continue an external numbering scheme (e.g.
+        #: FPVS's additional_streams picks up at "Stream 3", after the main/second stream cards).
+        self._start_index = start_index
         #: (group box, its SchemaForm, its Remove button) per item, in display order.
         self._entries: list[tuple[QGroupBox, "SchemaForm", QPushButton]] = []
         self._items_layout = QVBoxLayout()
@@ -518,7 +631,7 @@ class _ModelListWidget(_ErrorLabelMixin):
     def _relabel(self) -> None:
         can_remove = len(self._entries) > self._min_items
         for i, (box, _form, remove) in enumerate(self._entries):
-            box.setTitle(f"{self._item_label} {i + 1}")
+            box.setTitle(f"{self._item_label} {i + self._start_index}")
             remove.setEnabled(can_remove)
 
     def get_value(self) -> list[dict]:

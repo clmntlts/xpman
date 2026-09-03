@@ -223,29 +223,6 @@ def test_frequency_check_empty_with_no_sequence_start_event():
 
 
 # ---------------------------------------------------------------------------
-# Response summary
-# ---------------------------------------------------------------------------
-
-
-def test_response_summary_counts_valid_and_computes_mean_rt():
-    events = [
-        _event("response_scored", 0.0, {"is_valid": True, "rt_seconds": 0.4}),
-        _event("response_scored", 0.1, {"is_valid": True, "rt_seconds": 0.6}),
-        _event("response_scored", 0.2, {"is_valid": False, "rt_seconds": None}),
-    ]
-    report = build_verification_report(events, nominal_frame_period_s=0.1)
-
-    assert report.response_summary.n_responses == 3
-    assert report.response_summary.n_valid == 2
-    assert report.response_summary.mean_rt_s == pytest.approx(0.5)
-
-
-def test_response_summary_none_with_no_response_events():
-    report = build_verification_report([], nominal_frame_period_s=0.1)
-    assert report.response_summary is None
-
-
-# ---------------------------------------------------------------------------
 # format() -- smoke tests, not exact-string assertions (the text is meant for humans)
 # ---------------------------------------------------------------------------
 
@@ -263,18 +240,16 @@ def test_format_does_not_crash_and_mentions_all_sections_with_full_data():
                 "requested_oddball_freq_hz": 1.2, "achieved_oddball_freq_hz": 1.2,
             },
         ),
-        _event("response_scored", 0.15, {"is_valid": True, "rt_seconds": 0.3}),
     ]
     text = build_verification_report(events, nominal_frame_period_s=0.1).format()
 
-    for expected in ("Inter-flip interval", "Trigger-vs-onset log delta", "Trigger codes sent", "Frequency check", "Response/RT summary"):
+    for expected in ("Inter-flip interval", "Trigger-vs-onset log delta", "Trigger codes sent", "Frequency check"):
         assert expected in text
 
 
 def test_format_does_not_crash_with_zero_events():
     text = build_verification_report([], nominal_frame_period_s=0.1).format()
     assert "No trigger_sent events found" in text
-    assert "No response_scored events found" in text
 
 
 def test_keyboard_capture_summary_counts_presses_and_keys():
@@ -289,20 +264,6 @@ def test_keyboard_capture_summary_counts_presses_and_keys():
     assert kc.total_presses == 3
     assert set(kc.distinct_keys) == {"space", "f"}
     assert kc.sources == {"keyboard": 1, "event": 1}
-
-
-def test_format_explains_no_responses_when_keys_captured_but_unmatched():
-    """The user's exact case: presses WERE captured but none scored -> the report must say the
-    pressed keys didn't match the configured keys, not just 'no responses'."""
-    events = [
-        _event("keyboard_captured", 1.0, {"n": 1, "source": "keyboard", "backend": "ptb",
-                                          "keys": [{"name": "f", "time": 0.5}]}),
-        # no response_scored events
-    ]
-    text = build_verification_report(events, nominal_frame_period_s=0.1).format()
-    assert "Keyboard capture" in text
-    assert "total_presses=1" in text
-    assert "none were scored" in text  # the actionable hint
 
 
 def test_format_flags_zero_keyboard_captures():

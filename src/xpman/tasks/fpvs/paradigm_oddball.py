@@ -103,13 +103,19 @@ class Drawable(Protocol):
 
 
 class BaseSequenceParams(BaseModel):
-    """Timing parameters for the base periodic stream. All overridable per Condition."""
+    """One stream's base-frequency timing. All overridable per Condition. ``trial_duration_seconds``
+    is only meaningful on the main stream (Stream 1) -- every active stream shares ONE trial
+    timeline, taken from there; the same field on a second/additional stream is present for a
+    uniform per-stream shape but has no effect."""
 
     base_freq_hz: float = Field(
         default=6.0, gt=0, description="Target base stimulation frequency, in Hz."
     )
     trial_duration_seconds: float = Field(
-        default=10.0, gt=0, description="How long the base stream runs for this trial."
+        default=10.0,
+        gt=0,
+        description="How long the base stream runs for this trial. Only meaningful on the main "
+        "stream (Stream 1) -- every active stream shares its trial timeline.",
     )
     base_trigger_code: int | None = Field(
         default=None,
@@ -228,9 +234,8 @@ def achieved_oddball_frequency_hz(achieved_base_freq_hz: float, period_stimuli: 
 @dataclass(frozen=True)
 class OnsetRecord:
     """One stimulus onset: when it happened and what it was. Produced by both sequence
-    functions and consumed by ``response.score_responses`` to compute RTs -- this is the only
-    thing ``response.py`` needs to know about ``paradigm_oddball.py``, keeping the dependency
-    one-directional (timing module knows nothing about response scoring)."""
+    functions and returned as part of their result for callers to consume (e.g. building the
+    per-trial onset timeline in ``task.py``)."""
 
     time: float
     is_oddball: bool

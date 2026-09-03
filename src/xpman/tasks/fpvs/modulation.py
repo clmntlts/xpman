@@ -8,7 +8,7 @@ fixation-only pre/post intervals. This module owns *only the numbers*: given a f
 what opacity should the image have. Applying it to a real PsychoPy stimulus, and the frame loop
 itself, live in ``paradigm_oddball.py``; the pre/post intervals and background live in
 ``task.py``. Splitting the math out keeps it pure and unit-testable with no PsychoPy, exactly
-like ``photodiode.should_toggle`` and ``response.score_responses``.
+like ``photodiode.should_toggle`` and ``distractor.score_distractor_responses``.
 
 Performance note (why this is cheap enough to run every frame -- the concern the legacy Java app
 also had to solve): contrast modulation changes a single alpha *scalar* per frame
@@ -82,7 +82,7 @@ class TimingParams(BaseModel):
     fade-in/fade-out that ramp the whole stimulation's contrast up and down.
 
     A trial runs: pre-interval (fixation only) -> fade-in -> plateau -> fade-out -> post-interval
-    (fixation only). The plateau duration is the base stream's ``trial_duration_seconds``. Each
+    (fixation only). The plateau duration is the main stream's ``trial_duration_seconds``. Each
     interval is a random duration drawn (per trial) uniformly between its min and max, matching
     the legacy app's random pre/post intervals; set min == max for a fixed duration. All default
     to 0, so a Condition that doesn't set them behaves like a plain plateau-only stimulation.

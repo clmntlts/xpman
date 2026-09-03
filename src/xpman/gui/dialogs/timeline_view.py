@@ -6,9 +6,9 @@ no DB. The x-axis is **stimulus position within the trial**, not measured time, 
 stimulus lands at the same x in every trial: trials stack into an aligned raster you can compare
 column-for-column (the periodic oddballs form clean vertical lines; a deviating trial jumps out).
 Onsets are ticks (oddballs taller + accented); triggers are marks on the row just below, so
-vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious; scored
-responses (blue) sit below the triggers. Distractor (attention-control) and go/no-go events, when
-present, are drawn as time-placed marker lines across the strip; a frequency sweep's segment
+vertical alignment makes "every onset fired a trigger" -- or a missing one -- obvious. Distractor
+(attention-control) and go/no-go events, when present, are drawn as time-placed marker lines
+across the strip; a frequency sweep's segment
 boundaries are sky-blue dashed dividers tagged with each step's base frequency. Base-only streams are
 labelled as their phase -- "Familiarization" or "Baseline (before/after)" -- not miscounted as trials
 (base ticks, no per-stimulus triggers). Dual-stream onsets carry their stream index in the tooltip.
@@ -38,7 +38,6 @@ _BASE = QColor("#6b7280")  # gray
 _ODDBALL = QColor("#e0662b")  # orange accent
 _TRIGGER = QColor("#2f855a")  # green
 _TRIGGER_ODDBALL = QColor("#c0392b")  # red
-_RESPONSE = QColor("#3b82f6")  # blue
 _DISTRACTOR = QColor("#a855f7")  # purple
 _GONOGO_GO = QColor("#22c55e")  # green (go = respond)
 _GONOGO_NOGO = QColor("#f59e0b")  # amber (no-go = withhold)
@@ -68,12 +67,7 @@ class TimelineView(QGraphicsView):
         # every trial -- trials line up column-for-column for direct visual comparison (measured
         # time jitters by a frame or two). All trials share one grid = the widest trial's index.
         max_index = max(
-            (
-                m.index
-                for t in timelines
-                for m in (*t.onsets, *t.triggers, *t.responses)
-                if m.index is not None
-            ),
+            (m.index for t in timelines for m in (*t.onsets, *t.triggers) if m.index is not None),
             default=0,
         )
         denom = max_index or 1
@@ -112,12 +106,9 @@ class TimelineView(QGraphicsView):
                 dot = scene.addEllipse(x - 1.5, trig_y - 1.5, 3, 3, QPen(color), QBrush(color))
                 dot.setToolTip(f"trigger code {trig.code} · stimulus #{trig.index} @ {trig.time_s:.3f}s")
 
-            resp_y = y + _TRIGGER_GAP + 7
-            for resp in trial.responses:
-                x = x_at(resp.index)
-                mark = scene.addRect(x - 2, resp_y - 2, 4, 4, QPen(_RESPONSE), QBrush(_RESPONSE))
-                where = f"stimulus #{resp.index}" if resp.index is not None else "no matched stimulus"
-                mark.setToolTip(f"response · {where} @ {resp.time_s:.3f}s")
+            # Bottom-of-row anchor the time-placed marker lines (distractor/go-no-go/sweep-segment)
+            # drop down to, below the onset/trigger rows.
+            row_bottom_y = y + _TRIGGER_GAP + 7
 
             # Distractor events are TIME-based (not tied to a stimulus position), so they're placed
             # by time proportion of the trial. Because the base rate is constant, time-proportion and
@@ -127,7 +118,7 @@ class TimelineView(QGraphicsView):
                 x = _LABEL_W + (dist.time_s / trial.duration_s) * _PLOT_W if trial.duration_s > 0 else _LABEL_W
                 pen = QPen(_DISTRACTOR)
                 pen.setWidth(1)
-                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, resp_y, pen)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, row_bottom_y, pen)
                 line.setZValue(-0.5)
                 code = f" · code {dist.code}" if dist.code is not None else ""
                 line.setToolTip(f"distractor #{dist.index}{code} @ {dist.time_s:.3f}s")
@@ -139,7 +130,7 @@ class TimelineView(QGraphicsView):
                 color = _GONOGO_GO if gn.label == "go" else _GONOGO_NOGO
                 pen = QPen(color)
                 pen.setWidth(2)
-                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, resp_y, pen)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H, x, row_bottom_y, pen)
                 line.setZValue(-0.4)
                 code = f" · code {gn.code}" if gn.code is not None else ""
                 line.setToolTip(f"go/no-go [{gn.label}] #{gn.index}{code} @ {gn.time_s:.3f}s")
@@ -150,7 +141,7 @@ class TimelineView(QGraphicsView):
                 x = _LABEL_W + (seg.time_s / trial.duration_s) * _PLOT_W if trial.duration_s > 0 else _LABEL_W
                 pen = QPen(_SEGMENT)
                 pen.setStyle(Qt.DashLine)
-                line = scene.addLine(x, y - _ONSET_ODDBALL_H - 4, x, resp_y, pen)
+                line = scene.addLine(x, y - _ONSET_ODDBALL_H - 4, x, row_bottom_y, pen)
                 line.setZValue(-0.3)
                 if seg.label:
                     tag = scene.addText(seg.label)
@@ -168,7 +159,6 @@ class TimelineView(QGraphicsView):
             ("base onset", _BASE),
             ("oddball onset", _ODDBALL),
             ("trigger", _TRIGGER),
-            ("response", _RESPONSE),
             ("distractor", _DISTRACTOR),
             ("go/no-go go", _GONOGO_GO),
             ("go/no-go no-go", _GONOGO_NOGO),

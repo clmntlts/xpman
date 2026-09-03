@@ -21,7 +21,6 @@ from xpman.tasks.dummy.schema import DummyConditionParams
 from xpman.tasks.fpvs.fixation import FixationParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams
 from xpman.tasks.fpvs.photodiode import Corner, PhotodiodeParams, ToggleStrategy
-from xpman.tasks.fpvs.response import ResponseKeyParams
 from xpman.tasks.fpvs.schema import FPVSConditionParams
 
 SCREENSHOT_PATH = Path(__file__).parent / "schema_form_fpvs_screenshot.png"
@@ -37,7 +36,6 @@ SCREENSHOT_PATH = Path(__file__).parent / "schema_form_fpvs_screenshot.png"
         FPVSConditionParams,
         PhotodiodeParams,
         FixationParams,
-        ResponseKeyParams,
         BaseSequenceParams,
     ],
 )
@@ -51,21 +49,48 @@ def test_constructs_without_error_for_every_real_model(qtbot, model_cls):
 
 def test_fpvs_condition_params_renders_labelled_sections(qtbot):
     """FPVSConditionParams declares GUI sections (Field(json_schema_extra={"section": ...})); the form
-    renders them as titled section boxes in declaration order, so its ~19 nested groups read as five
-    logical sections instead of a flat wall. Round-trip is unaffected (keyed by field name)."""
+    renders them as titled section boxes in declaration order, so its nested groups read as four
+    logical sections (general settings, once-per-trial phases, per-stream settings, then attention
+    tasks) instead of a flat wall. Round-trip is unaffected (keyed by field name)."""
     form = SchemaForm(FPVSConditionParams, initial_values=FPVSConditionParams().model_dump())
     qtbot.addWidget(form)
     titles = [b.title() for b in form.findChildren(QGroupBox, "formSection")]
     assert titles == [
-        "Stimulation",
-        "Trial timing & phases",
-        "Fixation & display",
-        "Responses & attention tasks",
-        "Multiple streams",
+        "General",
+        "Trial phases",
+        "Streams",
+        "Attention tasks",
     ]
     out = form.get_validated_model()
-    assert out.base.base_freq_hz == FPVSConditionParams().base.base_freq_hz
+    assert out.main_stream.base.base_freq_hz == FPVSConditionParams().main_stream.base.base_freq_hz
     assert out.second_stream.enabled is False
+
+
+def test_fpvs_streams_section_presents_uniform_stream_cards(qtbot):
+    """The main stream is now literally a StreamParams field (main_stream), so it renders as one
+    "Stream 1 (main)" nested-group card via the SAME mechanism as second_stream ("Stream 2") and
+    additional_streams (numbered "Stream 3", "Stream 4", ... via item_label/item_start_index) --
+    all streams read uniformly, both in shape and in how the GUI groups them (issue: illogical
+    Condition layout)."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    values = FPVSConditionParams(additional_streams=[StreamParams(), StreamParams()]).model_dump(
+        mode="python"
+    )
+    form = SchemaForm(FPVSConditionParams, initial_values=values)
+    qtbot.addWidget(form)
+
+    all_titles = [b.title() for b in form.findChildren(QGroupBox)]
+    assert "Stream 1 (main)" in all_titles  # main_stream's overridden title
+    assert "Main stream" not in all_titles  # not the default prettified field name
+    assert "Stream 2" in all_titles  # second_stream's overridden title
+    assert "Second stream" not in all_titles  # not the default prettified field name
+
+    additional_widget = form._field_widgets["additional_streams"]
+    assert [box.title() for box, _form, _remove in additional_widget._entries] == [
+        "Stream 3",
+        "Stream 4",
+    ]
 
 
 def test_model_without_sections_stays_flat(qtbot):
@@ -102,7 +127,7 @@ def test_stored_values_preserved_while_missing_fields_get_defaults(qtbot):
     qtbot.addWidget(form)
     values = form.get_values()
     assert values["background_gray"] == 0.2  # stored value wins
-    assert values["base"]["base_freq_hz"] == 6.0  # missing nested field -> its pydantic default
+    assert values["main_stream"]["base"]["base_freq_hz"] == 6.0  # missing nested field -> its pydantic default
 
 
 # -- 2. round trip: set_values then get_values recovers the same dict -------------------------
@@ -131,11 +156,15 @@ def test_round_trip_set_then_get_values_nested_fpvs(qtbot):
     form = SchemaForm(FPVSConditionParams)
     qtbot.addWidget(form)
 
+    from xpman.tasks.fpvs.schema import StreamParams
+
     values = FPVSConditionParams(
-        base=BaseSequenceParams(base_freq_hz=7.5, trial_duration_seconds=12.0, base_trigger_code=5),
+        main_stream=StreamParams(
+            enabled=True,
+            base=BaseSequenceParams(base_freq_hz=7.5, trial_duration_seconds=12.0, base_trigger_code=5),
+        ),
         fixation=FixationParams(size_pix=30.0, color="blue"),
         photodiode=PhotodiodeParams(enabled=False, corner=Corner.TOP_LEFT),
-        response=ResponseKeyParams(keys=["space", "enter"], max_rt_seconds=1.5),
     ).model_dump(mode="python")
 
     form.set_values(values)
@@ -157,8 +186,13 @@ def test_new_fpvs_modulation_timing_familiarization_fields_render_and_round_trip
     form = SchemaForm(FPVSConditionParams)
     qtbot.addWidget(form)
 
+    from xpman.tasks.fpvs.schema import StreamParams
+
     values = FPVSConditionParams(
-        modulation=ModulationParams(waveform=Waveform.SQUARE, contrast_min=0.1, contrast_max=0.9),
+        main_stream=StreamParams(
+            enabled=True,
+            modulation=ModulationParams(waveform=Waveform.SQUARE, contrast_min=0.1, contrast_max=0.9)
+        ),
         timing=TimingParams(pre_interval_seconds=(1.0, 3.0), fade_in_seconds=2.0, fade_out_seconds=1.0),
         background_gray=0.4,
     ).model_dump(mode="python")
@@ -166,7 +200,7 @@ def test_new_fpvs_modulation_timing_familiarization_fields_render_and_round_trip
 
     form.set_values(values)
     restored = FPVSConditionParams.model_validate(form.get_values())
-    assert restored.modulation.waveform is Waveform.SQUARE
+    assert restored.main_stream.modulation.waveform is Waveform.SQUARE
     assert restored.timing.fade_in_seconds == 2.0
     assert restored.background_gray == 0.4
     assert restored.familiarization.enabled is True
@@ -294,52 +328,59 @@ def test_sweep_steps_nested_list_renders_and_round_trips(qtbot):
     Enable it with 3 differing steps and confirm it renders as a _ModelListWidget and every step's
     values survive a set/get round-trip (issue #9 -- the new Phase-2 editors)."""
     from xpman.gui.forms.schema_form import _ModelListWidget
-    from xpman.tasks.fpvs.schema import OddballParams
+    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     values = FPVSConditionParams(
-        sweep=FrequencySweepParams(
+        main_stream=StreamParams(
             enabled=True,
-            steps=[
-                SweepStep(base_freq_hz=6.0, duration_seconds=20.0, oddball=OddballParams(oddball_freq_hz=1.2)),
-                SweepStep(base_freq_hz=4.8, duration_seconds=18.0, oddball=OddballParams(oddball_freq_hz=1.0)),
-                SweepStep(base_freq_hz=3.0, duration_seconds=15.0, oddball=OddballParams(oddball_freq_hz=0.75)),
-            ],
+            sweep=FrequencySweepParams(
+                enabled=True,
+                steps=[
+                    SweepStep(base_freq_hz=6.0, duration_seconds=20.0, oddball=OddballParams(oddball_freq_hz=1.2)),
+                    SweepStep(base_freq_hz=4.8, duration_seconds=18.0, oddball=OddballParams(oddball_freq_hz=1.0)),
+                    SweepStep(base_freq_hz=3.0, duration_seconds=15.0, oddball=OddballParams(oddball_freq_hz=0.75)),
+                ],
+            )
         )
     ).model_dump(mode="python")
 
     form = SchemaForm(FPVSConditionParams, initial_values=values)
     qtbot.addWidget(form)
 
-    steps_widget = form._nested_forms["sweep"]._field_widgets["steps"]
+    steps_widget = form._nested_forms["main_stream"]._nested_forms["sweep"]._field_widgets["steps"]
     assert isinstance(steps_widget, _ModelListWidget)
     assert len(steps_widget.get_value()) == 3
 
     restored = FPVSConditionParams.model_validate(form.get_values())
-    assert restored.sweep.enabled is True
-    assert [s.base_freq_hz for s in restored.sweep.steps] == [6.0, 4.8, 3.0]
-    assert restored.sweep.steps[1].duration_seconds == 18.0
-    assert restored.sweep.steps[2].oddball.oddball_freq_hz == 0.75
+    assert restored.main_stream.sweep.enabled is True
+    assert [s.base_freq_hz for s in restored.main_stream.sweep.steps] == [6.0, 4.8, 3.0]
+    assert restored.main_stream.sweep.steps[1].duration_seconds == 18.0
+    assert restored.main_stream.sweep.steps[2].oddball.oddball_freq_hz == 0.75
 
 
 def test_sweep_steps_add_remove_respects_min_items(qtbot):
     """The nested sweep.steps list must add/remove and honour its min_items=2 (a sweep needs >= 2
     steps), the same contract go_nogo.markers has but one level deeper."""
+    from xpman.tasks.fpvs.schema import StreamParams
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
 
     values = FPVSConditionParams(
-        sweep=FrequencySweepParams(
+        main_stream=StreamParams(
             enabled=True,
-            steps=[
-                SweepStep(base_freq_hz=6.0, duration_seconds=20.0),
-                SweepStep(base_freq_hz=5.0, duration_seconds=20.0),
-            ],
+            sweep=FrequencySweepParams(
+                enabled=True,
+                steps=[
+                    SweepStep(base_freq_hz=6.0, duration_seconds=20.0),
+                    SweepStep(base_freq_hz=5.0, duration_seconds=20.0),
+                ],
+            )
         )
     ).model_dump(mode="python")
 
     form = SchemaForm(FPVSConditionParams, initial_values=values)
     qtbot.addWidget(form)
-    steps = form._nested_forms["sweep"]._field_widgets["steps"]
+    steps = form._nested_forms["main_stream"]._nested_forms["sweep"]._field_widgets["steps"]
     steps._on_add()  # 2 -> 3
     assert len(steps.get_value()) == 3
     steps._remove(steps._entries[-1][0])  # 3 -> 2
@@ -352,28 +393,29 @@ def test_second_stream_group_and_position_round_trip_when_enabled(qtbot):
     """second_stream (a required StreamParams gated by its own 'enabled') renders as a nested group;
     with it enabled plus a non-central stream_position_pix (a tuple[float,float] widget), the stream's
     fields AND the main stream's position must survive the round-trip (issue #9)."""
-    from xpman.tasks.fpvs.schema import OddballParams, StreamParams
+    from xpman.tasks.fpvs.schema import BaseSequenceParams, OddballParams, StreamParams
 
     values = FPVSConditionParams(
         second_stream=StreamParams(
             enabled=True,
-            base_freq_hz=7.0,
+            base=BaseSequenceParams(base_freq_hz=7.0),
             position_pix=(200.0, 0.0),
             oddball=OddballParams(oddball_freq_hz=1.4),
         ),
-        stream_position_pix=(-200.0, 0.0),
+        main_stream=StreamParams(enabled=True, position_pix=(-200.0, 0.0)),
     ).model_dump(mode="python")
 
     form = SchemaForm(FPVSConditionParams, initial_values=values)
     qtbot.addWidget(form)
     assert "second_stream" in form._nested_forms
-    assert form._field_widgets["stream_position_pix"].__class__.__name__ == "FloatPairFieldWidget"
+    position_widget = form._nested_forms["main_stream"]._field_widgets["position_pix"]
+    assert position_widget.__class__.__name__ == "FloatPairFieldWidget"
 
     restored = FPVSConditionParams.model_validate(form.get_values())
     assert restored.second_stream.enabled is True
-    assert restored.second_stream.base_freq_hz == 7.0
+    assert restored.second_stream.base.base_freq_hz == 7.0
     assert tuple(restored.second_stream.position_pix) == (200.0, 0.0)
-    assert tuple(restored.stream_position_pix) == (-200.0, 0.0)
+    assert tuple(restored.main_stream.position_pix) == (-200.0, 0.0)
     assert restored.second_stream.oddball.oddball_freq_hz == 1.4
 
 
@@ -503,14 +545,14 @@ def test_invalid_nested_field_reports_dotted_path_and_marks_nested_widget(qtbot)
     qtbot.addWidget(form)
 
     values = form.get_values()
-    values["base"]["base_freq_hz"] = -1.0
+    values["main_stream"]["base"]["base_freq_hz"] = -1.0
     form.set_values(values)
 
     errors = form.validation_errors()
     assert len(errors) == 1
     assert "base.base_freq_hz" in errors[0]
 
-    nested_widget = form._nested_forms["base"]._field_widgets["base_freq_hz"]
+    nested_widget = form._nested_forms["main_stream"]._nested_forms["base"]._field_widgets["base_freq_hz"]
     assert nested_widget._spin.styleSheet() != ""
 
 
@@ -531,7 +573,6 @@ def test_nested_model_fields_produce_groupboxes_with_expected_titles(qtbot):
     assert "Oddball selector" in titles
     assert "Fixation" in titles
     assert "Photodiode" in titles
-    assert "Response" in titles
 
 
 def test_nested_groupbox_contains_a_recursively_built_schema_form(qtbot):
@@ -565,7 +606,9 @@ def test_optional_tuple_field_none_by_default_and_toggleable(qtbot):
 
 
 def test_list_str_field_round_trips_comma_separated(qtbot):
-    form = SchemaForm(ResponseKeyParams)
+    from xpman.tasks.fpvs.distractor import DistractorParams
+
+    form = SchemaForm(DistractorParams)
     qtbot.addWidget(form)
 
     assert form.get_values()["keys"] == ["space"]
@@ -576,6 +619,84 @@ def test_list_str_field_round_trips_comma_separated(qtbot):
 
     assert form.get_values()["keys"] == ["space", "enter", "escape"]
     assert form.get_validated_model().keys == ["space", "enter", "escape"]
+
+
+# -- 6b. collapsible groups: default state + sync to loaded values ------------------------------
+
+
+def test_off_by_default_nested_group_starts_collapsed(qtbot):
+    """DistractorParams.enabled defaults False -- an unconfigured Condition's distractor card
+    should start collapsed so the form isn't a wall of off-by-default optional features."""
+    form = SchemaForm(FPVSConditionParams)
+    qtbot.addWidget(form)
+
+    from xpman.gui.forms.schema_form import CollapsibleGroupBox
+
+    box = form._collapsible_groups["distractor"]
+    assert isinstance(box, CollapsibleGroupBox)
+    assert box.is_expanded() is False
+
+
+def test_on_by_default_nested_group_starts_expanded(qtbot):
+    """PhotodiodeParams.enabled defaults True -- its card should start expanded."""
+    form = SchemaForm(FPVSConditionParams)
+    qtbot.addWidget(form)
+
+    box = form._collapsible_groups["photodiode"]
+    assert box.is_expanded() is True
+
+
+def test_nested_group_without_enabled_field_always_starts_expanded(qtbot):
+    """A nested model with no 'enabled' field (e.g. base/oddball/modulation) is always relevant,
+    not an optional feature to hide -- it must never start collapsed and isn't tracked for sync."""
+    from xpman.gui.forms.schema_form import CollapsibleGroupBox
+
+    form = SchemaForm(FPVSConditionParams)
+    qtbot.addWidget(form)
+
+    assert "base" not in form._collapsible_groups
+    fixation_group = next(
+        b for b in form.findChildren(CollapsibleGroupBox) if b.title() == "Fixation"
+    )
+    assert fixation_group.is_expanded() is True
+
+
+def test_loading_an_enabled_optional_feature_expands_its_group(qtbot):
+    """Editing an existing Condition that already has the distractor task on must show it
+    expanded, even though the class default (used at construction) is collapsed."""
+    from xpman.tasks.fpvs.distractor import DistractorParams
+
+    values = FPVSConditionParams(distractor=DistractorParams(enabled=True)).model_dump(mode="python")
+    form = SchemaForm(FPVSConditionParams, initial_values=values)
+    qtbot.addWidget(form)
+
+    assert form._collapsible_groups["distractor"].is_expanded() is True
+
+
+def test_toggling_the_collapse_button_hides_and_shows_the_body(qtbot):
+    """isHidden() (not isVisible(), which needs a shown top-level window) reflects the body's own
+    explicit show/hide state -- see the isVisible()/isHidden() note on the invalid-marker tests
+    below for why."""
+    from xpman.gui.forms.schema_form import CollapsibleGroupBox
+
+    box = CollapsibleGroupBox("Test section", collapsed=False)
+    qtbot.addWidget(box)
+    assert box.is_expanded() is True
+    assert box._body.isHidden() is False
+
+    box.set_expanded(False)
+    assert box.is_expanded() is False
+    assert box._body.isHidden() is True
+
+
+def test_top_level_sections_always_start_expanded_even_when_all_children_disabled(qtbot):
+    """Section-level boxes ("Streams", "Trial phases", ...) are primary navigation, not a single
+    optional feature -- they must always start expanded regardless of what's enabled inside."""
+    form = SchemaForm(FPVSConditionParams)
+    qtbot.addWidget(form)
+
+    for box in form.findChildren(QGroupBox, "formSection"):
+        assert box.is_expanded() is True
 
 
 # -- tooltips: description + numeric constraint hints -------------------------------------------

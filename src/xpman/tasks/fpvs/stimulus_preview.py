@@ -139,8 +139,8 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
         active_extra.append(params.second_stream)
     active_extra += [s for s in params.additional_streams if s.enabled]
     multi = bool(active_extra)
-    # Single stream sits at centre (stream_position_pix only applies once another stream exists).
-    main_x, main_y = (params.stream_position_pix if multi else (0.0, 0.0))
+    # Single stream sits at centre (main_stream.position_pix only applies once another stream exists).
+    main_x, main_y = (params.main_stream.position_pix if multi else (0.0, 0.0))
     elements.append(
         SpatialElement(
             kind="stream",
@@ -150,14 +150,14 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
             width=_STIM_BOX_PX,
             height=_STIM_BOX_PX,
             color="#7f77dd",
-            detail=f"base {params.base.base_freq_hz:g} Hz",
+            detail=f"base {params.main_stream.base.base_freq_hz:g} Hz",
         )
     )
     # Distinct colours for the extra streams (cycled if there are many). "#1d9e75" first keeps the
     # legacy two-stream preview's Stream-2 colour unchanged.
     _stream_colors = ["#1d9e75", "#d98a1d", "#c0518a", "#5a9bd4", "#8a8a3a"]
     for idx, s in enumerate(active_extra):
-        detail = f"base {s.base_freq_hz:g} Hz" + ("" if s.oddball_enabled else ", base-only")
+        detail = f"base {s.base.base_freq_hz:g} Hz" + ("" if s.oddball_enabled else ", base-only")
         elements.append(
             SpatialElement(
                 kind="stream",
@@ -247,9 +247,9 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
 def _stimulation_segments(params: FPVSConditionParams) -> tuple[Segment, ...]:
     """The constant-frequency segments of the oddball stream: the sweep steps if a sweep is enabled,
     else a single segment from the Condition's base/oddball + trial duration."""
-    if params.sweep.enabled and params.sweep.steps:
+    if params.main_stream.sweep.enabled and params.main_stream.sweep.steps:
         segments = []
-        for i, step in enumerate(params.sweep.steps):
+        for i, step in enumerate(params.main_stream.sweep.steps):
             segments.append(
                 Segment(
                     label=f"Step {i + 1}",
@@ -263,10 +263,10 @@ def _stimulation_segments(params: FPVSConditionParams) -> tuple[Segment, ...]:
     return (
         Segment(
             label="Stimulation",
-            duration_s=params.base.trial_duration_seconds,
-            base_freq_hz=params.base.base_freq_hz,
-            oddball_freq_hz=None if params.oddball.pattern else params.oddball.oddball_freq_hz,
-            oddball_pattern=params.oddball.pattern,
+            duration_s=params.main_stream.base.trial_duration_seconds,
+            base_freq_hz=params.main_stream.base.base_freq_hz,
+            oddball_freq_hz=None if params.main_stream.oddball.pattern else params.main_stream.oddball.oddball_freq_hz,
+            oddball_pattern=params.main_stream.oddball.pattern,
         ),
     )
 
@@ -336,8 +336,5 @@ def build_trial_schematic(params: FPVSConditionParams) -> TrialSchematic:
             f"Go/no-go markers: every {g.min_interval_seconds:g}-{g.max_interval_seconds:g} s, "
             f"go p={g.go_probability:g}, aperiodic"
         )
-    if params.response.enabled:
-        overlays.append("Active oddball-response task (key press per oddball)")
-
     total = sum(p.duration_s for p in phases)
     return TrialSchematic(phases=tuple(phases), total_seconds=total, overlays=tuple(overlays), notes=tuple(notes))

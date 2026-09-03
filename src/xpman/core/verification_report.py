@@ -85,18 +85,10 @@ class FrequencyCheck:
 
 
 @dataclass(frozen=True)
-class ResponseSummary:
-    n_responses: int
-    n_valid: int
-    mean_rt_s: float | None
-
-
-@dataclass(frozen=True)
 class KeyboardCaptureSummary:
     """What the keyboard actually captured across the Run, from ``keyboard_captured`` events --
-    independent of whether any press matched a configured response key. Lets "no responses" be
-    diagnosed as either "no keys captured at all" (keyboard/focus/backend problem) or "keys
-    captured but none matched the configured response/distractor keys" (a config/key mismatch)."""
+    independent of whether any press matched a configured distractor/go-no-go key. Lets "no
+    scored events" be diagnosed as "no keys captured at all" (keyboard/focus/backend problem)."""
 
     total_presses: int
     distinct_keys: list[str]  # the key names actually captured, e.g. ["space", "f"]
@@ -111,7 +103,6 @@ class VerificationReport:
     trigger_latency: TriggerLatencyStats
     trigger_codes: list[TriggerCodeCount]
     frequency_checks: list[FrequencyCheck]
-    response_summary: ResponseSummary | None
     keyboard_capture: "KeyboardCaptureSummary | None" = None
 
     def format(self) -> str:
@@ -184,16 +175,10 @@ class VerificationReport:
             for fc in self.frequency_checks:
                 lines.append(f"  {fc.label}: requested={fc.requested_hz:.3f}Hz  achieved={fc.achieved_hz:.3f}Hz")
 
-        lines += ["", "Response/RT summary (item 5 -- compare mean_rt_s against your known-true injected delay):"]
-        if self.response_summary is None:
-            lines.append("  No response_scored events found (response collection may be disabled for this Condition).")
-        else:
-            rs = self.response_summary
-            mean_str = f"{rs.mean_rt_s * 1000:.2f}ms" if rs.mean_rt_s is not None else "n/a"
-            lines.append(f"  n_responses={rs.n_responses}  n_valid={rs.n_valid}  mean_rt={mean_str}")
-
         # Keyboard capture diagnostic: what the keyboard actually saw, regardless of scoring. This
-        # is what tells you WHY there are no scored responses -- nothing captured vs. wrong key.
+        # is what tells you WHY the distractor/go-no-go tasks scored nothing -- nothing captured vs.
+        # a keyboard/focus problem (a wrong-key mismatch shows up in the distractor/go_nogo scored
+        # event counts logged by task.py itself, not summarized here).
         kc = self.keyboard_capture
         if kc is not None:
             lines += ["", "Keyboard capture (diagnostic -- what was pressed, before key matching):"]
@@ -208,11 +193,6 @@ class VerificationReport:
                     "  -> 0 presses captured: the keyboard isn't being read (window not focused, or "
                     "the keyboard backend can't capture on this machine). Check the fullscreen window "
                     "has focus; the 'event' fallback source count above should be >0 if any path worked."
-                )
-            elif self.response_summary is None:
-                lines.append(
-                    "  -> presses WERE captured but none were scored: the pressed key(s) above don't "
-                    "match this Condition's response/distractor keys. Fix the configured keys."
                 )
 
         return "\n".join(lines)
@@ -342,22 +322,6 @@ def _extract_frequency_checks(events_sorted: list[dict[str, Any]]) -> list[Frequ
     return checks
 
 
-def _summarize_responses(events_sorted: list[dict[str, Any]]) -> ResponseSummary | None:
-    scored = [e for e in events_sorted if e["event_type"] == "response_scored"]
-    if not scored:
-        return None
-    valid_rts = [
-        e["payload"]["rt_seconds"]
-        for e in scored
-        if e.get("payload", {}).get("is_valid") and e["payload"].get("rt_seconds") is not None
-    ]
-    return ResponseSummary(
-        n_responses=len(scored),
-        n_valid=len(valid_rts),
-        mean_rt_s=statistics.fmean(valid_rts) if valid_rts else None,
-    )
-
-
 def _summarize_keyboard_capture(events_sorted: list[dict[str, Any]]) -> "KeyboardCaptureSummary | None":
     captured = [e for e in events_sorted if e["event_type"] == "keyboard_captured"]
     if not captured:
@@ -409,6 +373,5 @@ def build_verification_report(events: list[dict[str, Any]], *, nominal_frame_per
         trigger_latency=_compute_trigger_latency(events_sorted),
         trigger_codes=_summarize_trigger_codes(events_sorted),
         frequency_checks=_extract_frequency_checks(events_sorted),
-        response_summary=_summarize_responses(events_sorted),
         keyboard_capture=_summarize_keyboard_capture(events_sorted),
     )

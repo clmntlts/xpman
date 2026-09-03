@@ -153,9 +153,12 @@ and compare:
 4. Actual integer codes read off the parallel port data pins during a scripted sequence of
    known events (one base image, one oddball image, one response) — confirms xpman emits the
    same codes for the same semantic events (closes open_questions.md #4).
-5. RT calibration: inject "responses" at a precisely known true delay (solenoid/mechanical
-   key-presser, or a photodiode-triggered relay) on both apps; compare each app's *recorded*
-   RT against the known true value.
+5. RT calibration: inject key presses at a precisely known true delay (solenoid/mechanical
+   key-presser, or a photodiode-triggered relay) against a `distractor`- or `go_nogo`-enabled
+   Condition on both apps (xpman's dedicated active oddball key-press task was removed -- it
+   risked contaminating the oddball-frequency EEG signal it measured, and `distractor`/`go_nogo`
+   already report `mean_rt_seconds`); compare each app's *recorded* RT against the known true
+   value.
 6. **Contrast modulation (added 2026-07-04, with the sinusoidal-modulation work).** With a
    Condition using the default sinusoidal `modulation`, capture the photodiode trace over
    several base cycles and confirm: (a) no dropped frames with modulation on — the inter-flip

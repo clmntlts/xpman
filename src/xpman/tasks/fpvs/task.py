@@ -1,8 +1,9 @@
 """``FPVSTask``: the real Fast Periodic Visual Stimulation ``TaskModule``.
 
 Assembles ``image_set`` (stimulus discovery), ``fixation``, ``photodiode``,
-``paradigm_oddball`` (the base+oddball timing engine), and ``response`` (RT scoring) into one
-runnable task, per the ``tasks.base.TaskModule`` contract. This is the "does it all actually
+``paradigm_oddball`` (the base+oddball timing engine), and ``distractor``/``go_nogo`` (the
+orthogonal behavioural attention checks) into one runnable task, per the ``tasks.base.TaskModule``
+contract. This is the "does it all actually
 work together" integration point -- everything it calls has already been independently,
 headlessly tested; this file's own tests focus on the wiring itself (pool selection,
 refresh-rate measurement, trial outcome assembly), not re-testing timing/trigger/photodiode
@@ -69,7 +70,7 @@ from xpman.tasks.fpvs.equalization_cache import resolve_equalized_pool
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 from xpman.tasks.fpvs.position import sample_position
-from xpman.tasks.fpvs.response import ResponseCollector, score_responses
+from xpman.tasks.fpvs.response import ResponseCollector
 from xpman.tasks.fpvs.schema import (
     BaselineParams,
     FamiliarizationParams,
@@ -231,15 +232,15 @@ def _interval_frames(rng, interval_seconds: tuple[float, float], refresh_rate_hz
 
 def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str, float]]:
     """Every base frequency this Condition will ACTUALLY present, each with a human label -- so the
-    frames-per-cycle floor/ceiling checks can cover them all, not just ``params.base``. A sweep's
-    steps SUPERSEDE ``params.base``; a second stream (and its own sweep) and familiarization each add
+    frames-per-cycle floor/ceiling checks can cover them all, not just ``params.main_stream.base``. A sweep's
+    steps SUPERSEDE ``params.main_stream.base``; a second stream (and its own sweep) and familiarization each add
     their own presented frequency. Missing any of these is how a too-high sweep-step / second-stream
     frequency used to slip past the < 2 frames/cycle hard floor."""
     freqs: list[tuple[str, float]] = []
-    if params.sweep.enabled and params.sweep.steps:
-        freqs += [(f"sweep step {i + 1} base_freq_hz", s.base_freq_hz) for i, s in enumerate(params.sweep.steps)]
+    if params.main_stream.sweep.enabled and params.main_stream.sweep.steps:
+        freqs += [(f"sweep step {i + 1} base_freq_hz", s.base_freq_hz) for i, s in enumerate(params.main_stream.sweep.steps)]
     else:
-        freqs.append(("base_freq_hz", params.base.base_freq_hz))
+        freqs.append(("base_freq_hz", params.main_stream.base.base_freq_hz))
     if params.second_stream.enabled:
         s2 = params.second_stream
         if s2.sweep.enabled and s2.sweep.steps:
@@ -248,10 +249,10 @@ def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str
                 for i, s in enumerate(s2.sweep.steps)
             ]
         else:
-            freqs.append(("second_stream.base_freq_hz", s2.base_freq_hz))
+            freqs.append(("second_stream.base_freq_hz", s2.base.base_freq_hz))
     for i, s in enumerate(params.additional_streams):
         if s.enabled:
-            freqs.append((f"additional_streams[{i}].base_freq_hz", s.base_freq_hz))
+            freqs.append((f"additional_streams[{i}].base_freq_hz", s.base.base_freq_hz))
     if params.familiarization.enabled:
         freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
     return freqs
@@ -589,16 +590,16 @@ class FPVSTask(TaskModule):
         # what a genuinely breaking (non-additive) change would require.
         params = FPVSConditionParams.model_validate(trial_params)
 
-        base_entries = _select_pool(self._image_entries, params.base_selector)
-        oddball_entries = _select_pool(self._image_entries, params.oddball_selector)
+        base_entries = _select_pool(self._image_entries, params.main_stream.base_selector)
+        oddball_entries = _select_pool(self._image_entries, params.main_stream.oddball_selector)
         if not base_entries:
             raise ValueError(
-                f"trial {trial_index}: base_selector {params.base_selector!r} matched no "
+                f"trial {trial_index}: base_selector {params.main_stream.base_selector!r} matched no "
                 f"images (out of {len(self._image_entries)} found in resource directory)"
             )
         if not oddball_entries:
             raise ValueError(
-                f"trial {trial_index}: oddball_selector {params.oddball_selector!r} matched no "
+                f"trial {trial_index}: oddball_selector {params.main_stream.oddball_selector!r} matched no "
                 f"images (out of {len(self._image_entries)} found in resource directory)"
             )
 
@@ -682,8 +683,8 @@ class FPVSTask(TaskModule):
         # loudly here, before presenting anything, rather than recording a full run of
         # scientifically meaningless data (the classic mistyped 60-for-6-Hz case on a 60 Hz rig).
         # Check EVERY frequency actually presented -- the main base OR each sweep step (a sweep
-        # supersedes params.base), the second stream (+ its sweep steps), and familiarization -- so a
-        # too-high sweep-step / second-stream frequency can't slip through with only params.base
+        # supersedes params.main_stream.base), the second stream (+ its sweep steps), and familiarization -- so a
+        # too-high sweep-step / second-stream frequency can't slip through with only params.main_stream.base
         # guarded. Also prevents the overlay scheduler's off-onset nudge from being handed a
         # 1-frame/cycle cadence (which would otherwise loop forever) for a triggered overlay.
         for label, freq in _presented_base_frequencies(params):
@@ -742,7 +743,7 @@ class FPVSTask(TaskModule):
                     },
                 )
 
-        base_frames_per_cycle = frames_per_cycle(refresh, params.base.base_freq_hz)
+        base_frames_per_cycle = frames_per_cycle(refresh, params.main_stream.base.base_freq_hz)
         pre_frames = _interval_frames(ctx.rng, params.timing.pre_interval_seconds, refresh)
         post_frames = _interval_frames(ctx.rng, params.timing.post_interval_seconds, refresh)
         n_fade_in_frames = round(params.timing.fade_in_seconds * refresh)
@@ -766,9 +767,9 @@ class FPVSTask(TaskModule):
         # Distractor (attention-control) task. Same decoupled-RNG discipline as position jitter: a
         # dedicated ctx.rng.spawn(1) sub-stream so the event schedule is reproducible per
         # (Instance, Subject) yet enabling the distractor never perturbs the stimulus order. Built
-        # only when enabled -> disabled path is byte-for-byte unchanged. Its keys are collected by a
-        # SEPARATE keyboard collector (distinct from the oddball-response collector) scored against
-        # distractor events, not stimulus onsets. See distractor.py.
+        # only when enabled -> disabled path is byte-for-byte unchanged. Its keys are partitioned out
+        # of the ONE shared keyboard collector (see ResponseCollector) and scored against distractor
+        # events, not stimulus onsets. See distractor.py.
         # Frames the main sequence will actually present (used to schedule the overlay tasks over the
         # same span). Matches the engine's own per-segment n_stimuli_to_show * frames_per_stim sum
         # (design invariants #4/#6). A sweep sums over its steps (fades only on the first/last step,
@@ -780,9 +781,9 @@ class FPVSTask(TaskModule):
         # draw order). ``_effective_frames`` (the total presented frames) still drives the untriggered
         # single-segment path and stays exactly the pre-#4 sweep accounting.
         overlay_segments = None
-        if params.sweep.enabled:
+        if params.main_stream.sweep.enabled:
             overlay_segments = plan_sweep_overlay_windows(
-                params.sweep,
+                params.main_stream.sweep,
                 refresh_hz=refresh,
                 n_fade_in_frames=n_fade_in_frames,
                 n_fade_out_frames=n_fade_out_frames,
@@ -807,7 +808,7 @@ class FPVSTask(TaskModule):
                     for i, window in enumerate(overlay_segments)
                 ]
         else:
-            _n_plateau_frames = round(params.base.trial_duration_seconds * refresh)
+            _n_plateau_frames = round(params.main_stream.base.trial_duration_seconds * refresh)
             _total_seq_frames = n_fade_in_frames + _n_plateau_frames + n_fade_out_frames
             _effective_frames = max(_total_seq_frames // base_frames_per_cycle, 1) * base_frames_per_cycle
 
@@ -821,12 +822,12 @@ class FPVSTask(TaskModule):
         ) + [s for s in params.additional_streams if s.enabled]
         if (
             _active_extra_streams
-            and not params.sweep.enabled
+            and not params.main_stream.sweep.enabled
             and not params.second_stream.sweep.enabled
         ):
             _overlay_cadence = tuple(
                 [base_frames_per_cycle]
-                + [frames_per_cycle(refresh, s.base_freq_hz) for s in _active_extra_streams]
+                + [frames_per_cycle(refresh, s.base.base_freq_hz) for s in _active_extra_streams]
             )
 
         distractor_controller = None
@@ -865,16 +866,14 @@ class FPVSTask(TaskModule):
 
         # ONE keyboard collector for the whole Run (created on the first trial, reused after --
         # PsychoPy's key buffer attaches more reliably than a fresh Keyboard per trial). It captures
-        # EVERY key; the oddball-response and distractor tasks are then scored by partitioning the
-        # presses by key name below (two Keyboard instances would fight over PsychoPy's single shared
-        # device buffer, silently losing one task's presses). See ResponseCollector.
-        response_keys = list(params.response.keys) if params.response.enabled else []
+        # EVERY key; the distractor/go-no-go tasks are then scored by partitioning the presses by
+        # key name below (two Keyboard instances would fight over PsychoPy's single shared device
+        # buffer, silently losing one task's presses). See ResponseCollector.
         distractor_keys = list(params.distractor.keys) if params.distractor.enabled else []
         if self._response_collector is None:
             self._response_collector = ResponseCollector(enabled=True)
             ctx.event_sink.log("keyboard_ready", {"backend": self._response_collector.backend})
         self._response_collector.clear()
-        trial_start_time = ctx.clock.get_time()
 
         # Fixation-only pre-stimulus interval.
         present_fixation_only(
@@ -908,8 +907,8 @@ class FPVSTask(TaskModule):
                 base_stims,
                 fixation_stim,
                 refresh,
-                params.base.base_freq_hz,
-                params.modulation,
+                params.main_stream.base.base_freq_hz,
+                params.main_stream.modulation,
                 position_provider,
             )
 
@@ -927,21 +926,21 @@ class FPVSTask(TaskModule):
 
         if extra_stream_params:
             n_streams_total = 1 + len(extra_stream_params)
-            _duration = params.base.trial_duration_seconds
+            _duration = params.main_stream.base.trial_duration_seconds
 
             # Main (central) stream = stream 0. It always carries the Condition's oddball.
             streams_list = [
                 Stream(
                     base_stimuli=base_stims,
                     oddball_stimuli=oddball_stims,
-                    position_pix=tuple(params.stream_position_pix),
-                    base_trigger_code=params.base.base_trigger_code,
-                    oddball_trigger_code=params.oddball.oddball_trigger_code,
-                    modulation=params.modulation,
+                    position_pix=tuple(params.main_stream.position_pix),
+                    base_trigger_code=params.main_stream.base.base_trigger_code,
+                    oddball_trigger_code=params.main_stream.oddball.oddball_trigger_code,
+                    modulation=params.main_stream.modulation,
                 )
             ]
             stream_segments_list = [
-                Segment(base_freq_hz=params.base.base_freq_hz, duration_seconds=_duration, oddball=params.oddball)
+                Segment(base_freq_hz=params.main_stream.base.base_freq_hz, duration_seconds=_duration, oddball=params.main_stream.oddball)
             ]
 
             # Build each extra stream's own image pools. The base/oddball permutations are drawn from
@@ -990,13 +989,13 @@ class FPVSTask(TaskModule):
                         base_stimuli=s_base_stims,
                         oddball_stimuli=s_oddball_stims,
                         position_pix=tuple(s.position_pix),
-                        base_trigger_code=s.base_trigger_code,
-                        oddball_trigger_code=s.oddball_trigger_code,
+                        base_trigger_code=s.base.base_trigger_code,
+                        oddball_trigger_code=s.oddball.oddball_trigger_code,
                         modulation=s.modulation,
                     )
                 )
                 stream_segments_list.append(
-                    Segment(base_freq_hz=s.base_freq_hz, duration_seconds=_duration, oddball=s_segment_oddball)
+                    Segment(base_freq_hz=s.base.base_freq_hz, duration_seconds=_duration, oddball=s_segment_oddball)
                 )
 
             # Reserved coincidence table (v2, #2): meaningful ONLY for exactly TWO streams that BOTH
@@ -1007,10 +1006,10 @@ class FPVSTask(TaskModule):
             if n_streams_total == 2:
                 s2 = extra_stream_params[0]
                 s1_triggered = (
-                    params.base.base_trigger_code is not None
-                    or params.oddball.oddball_trigger_code is not None
+                    params.main_stream.base.base_trigger_code is not None
+                    or params.main_stream.oddball.oddball_trigger_code is not None
                 )
-                s2_triggered = s2.base_trigger_code is not None or s2.oddball_trigger_code is not None
+                s2_triggered = s2.base.base_trigger_code is not None or s2.oddball.oddball_trigger_code is not None
                 if s1_triggered and s2_triggered:
                     reserved_codes = params.coincidence_codes.as_reserved_table()
 
@@ -1032,14 +1031,14 @@ class FPVSTask(TaskModule):
             # each main step with the second stream's step. No sweep -> None, so _run_dual_stream presents
             # the single time-segment (stream_segments) exactly as in v1.
             multi_timeline = None
-            if params.sweep.enabled and n_streams_total == 2:
+            if params.main_stream.sweep.enabled and n_streams_total == 2:
                 s2 = extra_stream_params[0]
                 multi_timeline = [
                     [
                         Segment(base_freq_hz=main_step.base_freq_hz, duration_seconds=main_step.duration_seconds, oddball=main_step.oddball),
                         Segment(base_freq_hz=second_step.base_freq_hz, duration_seconds=second_step.duration_seconds, oddball=second_step.oddball),
                     ]
-                    for main_step, second_step in zip(params.sweep.steps, s2.sweep.steps)
+                    for main_step, second_step in zip(params.main_stream.sweep.steps, s2.sweep.steps)
                 ]
             sequence_result = _run_dual_stream(
                 window=ctx.window,
@@ -1063,7 +1062,7 @@ class FPVSTask(TaskModule):
                 position_providers=multi_position_providers,
                 stream_segment_timeline=multi_timeline,
             )
-        elif params.sweep.enabled:
+        elif params.main_stream.sweep.enabled:
             # Stepped frequency sweep: present the steps as back-to-back constant-frequency segments
             # of one central stream (the segments x streams engine). The base/oddball trigger codes +
             # contrast modulation come from the Condition (all steps share them); each step supplies
@@ -1073,13 +1072,13 @@ class FPVSTask(TaskModule):
                 base_stimuli=base_stims,
                 oddball_stimuli=oddball_stims,
                 position_pix=(0.0, 0.0),
-                base_trigger_code=params.base.base_trigger_code,
-                oddball_trigger_code=params.oddball.oddball_trigger_code,
-                modulation=params.modulation,
+                base_trigger_code=params.main_stream.base.base_trigger_code,
+                oddball_trigger_code=params.main_stream.oddball.oddball_trigger_code,
+                modulation=params.main_stream.modulation,
             )
             sequence_result = _run_oddball_segments(
                 window=ctx.window,
-                segments=plan_sweep_segments(params.sweep),
+                segments=plan_sweep_segments(params.main_stream.sweep),
                 stream=sweep_stream,
                 refresh_rate_hz=self._refresh_rate_hz,
                 trigger=ctx.trigger,
@@ -1101,8 +1100,8 @@ class FPVSTask(TaskModule):
                 window=ctx.window,
                 base_stimuli=base_stims,
                 oddball_stimuli=oddball_stims,
-                base_params=params.base,
-                oddball_params=params.oddball,
+                base_params=params.main_stream.base,
+                oddball_params=params.main_stream.oddball,
                 refresh_rate_hz=self._refresh_rate_hz,
                 trigger=ctx.trigger,
                 clock=ctx.clock,
@@ -1110,7 +1109,7 @@ class FPVSTask(TaskModule):
                 photodiode=photodiode,
                 photodiode_params=params.photodiode,
                 abort_check=ctx.abort_check,
-                modulation=params.modulation,
+                modulation=params.main_stream.modulation,
                 n_fade_in_frames=n_fade_in_frames,
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
@@ -1130,8 +1129,8 @@ class FPVSTask(TaskModule):
                 base_stims,
                 fixation_stim,
                 refresh,
-                params.base.base_freq_hz,
-                params.modulation,
+                params.main_stream.base.base_freq_hz,
+                params.main_stream.modulation,
                 position_provider,
             )
 
@@ -1160,29 +1159,6 @@ class FPVSTask(TaskModule):
                 "keys": [{"name": r.key_name, "time": r.time} for r in all_presses],
             },
         )
-        responses = (
-            [r for r in all_presses if r.key_name in set(response_keys)]
-            if params.response.enabled
-            else []
-        )
-        scored_responses = score_responses(
-            responses, sequence_result.onsets, params=params.response, trial_start_time=trial_start_time
-        )
-        for scored in scored_responses:
-            ctx.event_sink.log(
-                "response_scored",
-                {
-                    "key_name": scored.key_name,
-                    "response_time": scored.response_time,
-                    "reference_time": scored.reference_time,
-                    "reference_stim_index": scored.reference_stim_index,
-                    "rt_seconds": scored.rt_seconds,
-                    "is_valid": scored.is_valid,
-                },
-            )
-
-        valid_rts = [s.rt_seconds for s in scored_responses if s.is_valid and s.rt_seconds is not None]
-
         # Bound overlay (distractor / go-no-go) responses to the MAIN oddball sequence's own time span
         # (#19): the keyboard is cleared once at trial start and read once at the end, so a press during
         # familiarization, a baseline segment, or the pre/post fixation intervals -- phases with no
@@ -1281,8 +1257,8 @@ class FPVSTask(TaskModule):
         #   - Base pool vs oddball pool: if their means differ, every oddball onset is also a luminance
         #     STEP recurring at exactly the oddball frequency -- a low-level luminance transient
         #     masquerading as the high-level categorization response, the confound that matters most.
-        base_pool_luminance = self._pool_mean_luminance_for(base_entries, params.base_selector)
-        oddball_pool_luminance = self._pool_mean_luminance_for(oddball_entries, params.oddball_selector)
+        base_pool_luminance = self._pool_mean_luminance_for(base_entries, params.main_stream.base_selector)
+        oddball_pool_luminance = self._pool_mean_luminance_for(oddball_entries, params.main_stream.oddball_selector)
 
         def _diverges_from_background(value: float | None) -> bool:
             return (
@@ -1371,9 +1347,6 @@ class FPVSTask(TaskModule):
                 "familiarization": ran_familiarization,
                 "baseline": params.baseline.position if params.baseline.enabled else None,
                 "aborted": sequence_result.aborted,
-                "n_responses": len(scored_responses),
-                "n_valid_responses": len(valid_rts),
-                "mean_rt_seconds": (sum(valid_rts) / len(valid_rts)) if valid_rts else None,
                 "distractor_enabled": params.distractor.enabled,
                 "distractor_n_events": distractor_score.n_events if distractor_score else None,
                 "distractor_n_hits": distractor_score.n_hits if distractor_score else None,
@@ -1474,7 +1447,7 @@ class FPVSTask(TaskModule):
         # oddball, plus each active extra stream (legacy second_stream, then enabled additional_streams).
         # A base-only (oddball_enabled=False) stream draws no oddball pool, so only its base is previewed.
         # This makes the "0 MATCHES -> will FAIL" safety net cover the extra streams too, not just main.
-        selector_previews = [("Base", params.base_selector), ("Oddball", params.oddball_selector)]
+        selector_previews = [("Base", params.main_stream.base_selector), ("Oddball", params.main_stream.oddball_selector)]
         _extra = ([params.second_stream] if params.second_stream.enabled else []) + [
             s for s in params.additional_streams if s.enabled
         ]
@@ -1531,8 +1504,8 @@ class FPVSTask(TaskModule):
 
         warnings: list[str] = []
 
-        base_code = params.base.base_trigger_code
-        oddball_code = params.oddball.oddball_trigger_code
+        base_code = params.main_stream.base.base_trigger_code
+        oddball_code = params.main_stream.oddball.oddball_trigger_code
         # Any trigger-code collision (base/oddball vs each other, vs a stream, vs distractor/
         # go_nogo/baseline/familiarization) is now a hard error raised by
         # FPVSConditionParams._check_all_trigger_codes_disjoint -- model_validate() above already
@@ -1541,9 +1514,9 @@ class FPVSTask(TaskModule):
         # Oddball ordering pattern: it overrides oddball_freq_hz, so surface the resulting oddball
         # frequency (never let the override be silent) and flag an entered frequency that disagrees
         # or an uneven O spacing (which smears the oddball response across the spectrum).
-        pattern = params.oddball.pattern
+        pattern = params.main_stream.oddball.pattern
         if pattern is not None:
-            base_freq = params.base.base_freq_hz
+            base_freq = params.main_stream.base.base_freq_hz
             derived = derived_oddball_freq_hz(base_freq, pattern)
             warnings.append(
                 f"oddball pattern '{pattern}' sets the oddball frequency to {derived:g} Hz "
@@ -1584,7 +1557,7 @@ class FPVSTask(TaskModule):
         # amplitude, so every frame shows the image at the same opacity -- there is no per-cycle
         # contrast change to tag at the base frequency. (waveform='none' is exempt: it intentionally
         # shows full opacity and tags via the image appearing/disappearing, not via a contrast fade.)
-        modulation = params.modulation
+        modulation = params.main_stream.modulation
         if modulation.waveform != Waveform.NONE and modulation.contrast_min == modulation.contrast_max:
             warnings.append(
                 f"modulation.contrast_min == contrast_max ({modulation.contrast_min:g}) with "
@@ -1597,7 +1570,7 @@ class FPVSTask(TaskModule):
         # Base-frequency ceiling: the real refresh rate isn't known until run time, so warn
         # against a nominal 60 Hz monitor, using the same frames-per-cycle threshold the runtime
         # check applies -- coarse/degenerate (a mistyped 60 instead of 6 lands here).
-        base_freq = params.base.base_freq_hz
+        base_freq = params.main_stream.base.base_freq_hz
         frames_at_nominal = max(round(NOMINAL_REFRESH_HZ / base_freq), 1)
         if frames_at_nominal < MIN_FRAMES_PER_CYCLE_WARN:
             warnings.append(
@@ -1650,7 +1623,7 @@ class FPVSTask(TaskModule):
             # can get to the patch, allowing a nominal image half-extent + the patch's own half-size.
             pd = params.photodiode
             if pd.enabled and pd.position_pix is not None and not jitter.has_zero_extent():
-                centres = [tuple(params.stream_position_pix)]
+                centres = [tuple(params.main_stream.position_pix)]
                 if params.second_stream.enabled:
                     centres.append(tuple(params.second_stream.position_pix))
                 centres += [
@@ -1684,10 +1657,10 @@ class FPVSTask(TaskModule):
             # (Shared keys across enabled behavioural tasks are a HARD error at the Condition level --
             # see FPVSConditionParams._check_behavioural_tasks_dont_share_keys -- so no advisory here.)
             # Guard bands consume the whole plateau: no event can be placed.
-            if 2 * distractor.guard_seconds >= params.base.trial_duration_seconds:
+            if 2 * distractor.guard_seconds >= params.main_stream.base.trial_duration_seconds:
                 warnings.append(
                     f"distractor guard bands (2 x {distractor.guard_seconds:g}s) span the whole "
-                    f"trial ({params.base.trial_duration_seconds:g}s) -- no distractor event can be "
+                    f"trial ({params.main_stream.base.trial_duration_seconds:g}s) -- no distractor event can be "
                     "scheduled. Reduce guard_seconds or lengthen the trial."
                 )
             # (A distractor trigger code colliding with base/oddball is a HARD error -- see
@@ -1702,10 +1675,10 @@ class FPVSTask(TaskModule):
                     f"min_interval_seconds ({go_nogo.min_interval_seconds:g}) -- a response could fall "
                     "in two events' windows, making attribution ambiguous."
                 )
-            if 2 * go_nogo.guard_seconds >= params.base.trial_duration_seconds:
+            if 2 * go_nogo.guard_seconds >= params.main_stream.base.trial_duration_seconds:
                 warnings.append(
                     f"go_nogo guard bands (2 x {go_nogo.guard_seconds:g}s) span the whole trial "
-                    f"({params.base.trial_duration_seconds:g}s) -- no go/no-go event can be scheduled."
+                    f"({params.main_stream.base.trial_duration_seconds:g}s) -- no go/no-go event can be scheduled."
                 )
             # (Shared keys are a hard error -- see the Condition-level validator above.)
             if distractor.enabled:
@@ -1716,13 +1689,13 @@ class FPVSTask(TaskModule):
             # (A go_nogo trigger code colliding with base/oddball is a HARD error -- see
             # FPVSConditionParams._check_all_trigger_codes_disjoint -- so no advisory needed here.)
 
-        if params.sweep.enabled:
+        if params.main_stream.sweep.enabled:
             warnings.append(
-                f"a frequency sweep is enabled ({len(params.sweep.steps)} steps) -- it SUPERSEDES the "
+                f"a frequency sweep is enabled ({len(params.main_stream.sweep.steps)} steps) -- it SUPERSEDES the "
                 "single base/oddball frequency and trial_duration for the main sequence. Analyse each "
                 "step on its own (per-segment FFT over its sweep_segment_start/end frame range)."
             )
-            for i, step in enumerate(params.sweep.steps):
+            for i, step in enumerate(params.main_stream.sweep.steps):
                 # A step's FFT resolution is 1/duration Hz; to resolve its oddball it must run for a
                 # few bins below that frequency (sweep.min_recommended_step_seconds). A pattern step
                 # derives its oddball rate from base * (#O / len).
@@ -1746,16 +1719,16 @@ class FPVSTask(TaskModule):
         active_additional = [s for s in params.additional_streams if s.enabled]
         if active_additional:
             all_streams_desc = [
-                ("main", params.base.base_freq_hz, params.oddball, True, tuple(params.stream_position_pix))
+                ("main", params.main_stream.base.base_freq_hz, params.main_stream.oddball, True, tuple(params.main_stream.position_pix))
             ]
             if params.second_stream.enabled:
                 s2 = params.second_stream
                 all_streams_desc.append(
-                    ("second", s2.base_freq_hz, s2.oddball, s2.oddball_enabled, tuple(s2.position_pix))
+                    ("second", s2.base.base_freq_hz, s2.oddball, s2.oddball_enabled, tuple(s2.position_pix))
                 )
             for i, s in enumerate(active_additional):
                 all_streams_desc.append(
-                    (f"additional[{i}]", s.base_freq_hz, s.oddball, s.oddball_enabled, tuple(s.position_pix))
+                    (f"additional[{i}]", s.base.base_freq_hz, s.oddball, s.oddball_enabled, tuple(s.position_pix))
                 )
             desc = ", ".join(
                 f"{name} {base:g} Hz{'' if odd_on else ' (base-only)'} at {pos} px"
@@ -1783,23 +1756,23 @@ class FPVSTask(TaskModule):
         if params.second_stream.enabled:
             s2 = params.second_stream
             warnings.append(
-                f"dual bilateral streams: main {params.base.base_freq_hz:g} Hz at "
-                f"{tuple(params.stream_position_pix)} px, second {s2.base_freq_hz:g} Hz at "
+                f"dual bilateral streams: main {params.main_stream.base.base_freq_hz:g} Hz at "
+                f"{tuple(params.main_stream.position_pix)} px, second {s2.base.base_freq_hz:g} Hz at "
                 f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
                 "photodiode tracks the MAIN stream only. Per-stream stimulus triggers are optional "
                 "(set each stream's base/oddball codes; coincident onsets use coincidence_codes)."
             )
             odd1 = (
-                derived_oddball_freq_hz(params.base.base_freq_hz, params.oddball.pattern)
-                if params.oddball.pattern is not None
-                else params.oddball.oddball_freq_hz
+                derived_oddball_freq_hz(params.main_stream.base.base_freq_hz, params.main_stream.oddball.pattern)
+                if params.main_stream.oddball.pattern is not None
+                else params.main_stream.oddball.oddball_freq_hz
             )
             odd2 = (
-                derived_oddball_freq_hz(s2.base_freq_hz, s2.oddball.pattern)
+                derived_oddball_freq_hz(s2.base.base_freq_hz, s2.oddball.pattern)
                 if s2.oddball.pattern is not None
                 else s2.oddball.oddball_freq_hz
             )
-            for problem in stream_separability_warnings(params.base.base_freq_hz, odd1, s2.base_freq_hz, odd2):
+            for problem in stream_separability_warnings(params.main_stream.base.base_freq_hz, odd1, s2.base.base_freq_hz, odd2):
                 warnings.append(f"stream separability: {problem} -- the two responses may overlap in the spectrum.")
             # (Position jitter is now supported per stream for dual streams -- #3 -- so the former
             # "jitter ignored" advisory no longer applies. Each stream jitters around its OWN centre.)
@@ -1809,7 +1782,7 @@ class FPVSTask(TaskModule):
             # stream across the midline onto the other stream's side (separability only checks the fixed
             # centres). Warn when the max displacement reaches half the distance between the two centres.
             if jitter.enabled and not jitter.has_zero_extent():
-                ax, ay = tuple(params.stream_position_pix)
+                ax, ay = tuple(params.main_stream.position_pix)
                 bx, by = tuple(s2.position_pix)
                 separation = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
                 max_jitter = _jitter_max_offset_pix(jitter)
@@ -1828,8 +1801,8 @@ class FPVSTask(TaskModule):
             # step timeline (the Condition validator enforces equal step durations), so we pair steps
             # by index and check at the nominal refresh (the real one isn't known here, matching the
             # base-frequency ceiling check above).
-            if params.sweep.enabled and s2.sweep.enabled:
-                for i, (main_step, s2_step) in enumerate(zip(params.sweep.steps, s2.sweep.steps)):
+            if params.main_stream.sweep.enabled and s2.sweep.enabled:
+                for i, (main_step, s2_step) in enumerate(zip(params.main_stream.sweep.steps, s2.sweep.steps)):
                     main_fpc = max(round(NOMINAL_REFRESH_HZ / main_step.base_freq_hz), 1)
                     s2_fpc = max(round(NOMINAL_REFRESH_HZ / s2_step.base_freq_hz), 1)
                     floored_span = max(round(main_step.duration_seconds * NOMINAL_REFRESH_HZ) // main_fpc, 1) * main_fpc

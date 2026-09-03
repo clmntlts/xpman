@@ -151,24 +151,6 @@ def test_build_trial_timelines_labels_familiarization_distinctly():
     assert [t.label for t in timelines] == ["Trial 1", "Familiarization", "Trial 2"]
 
 
-def test_build_trial_timelines_places_responses_in_their_stream():
-    """response_scored is logged after the sequence ends, so it's matched to its stream by
-    response_time and placed at the reference_stim_index it responded to."""
-    events = [
-        _ev("base_oddball_sequence_start", 10.0),
-        _ev("oddball_onset", 10.83, {"is_oddball": True, "stim_index": 5}),
-        _ev("base_oddball_sequence_end", 11.0),
-        # logged AFTER the sequence end, but response_time is during it:
-        _ev("response_scored", 11.2, {"response_time": 10.9, "reference_stim_index": 5, "is_valid": True}),
-    ]
-    timelines = build_trial_timelines(events)
-
-    assert len(timelines[0].responses) == 1
-    resp = timelines[0].responses[0]
-    assert resp.index == 5  # aligned under the stimulus it responded to
-    assert resp.time_s == pytest.approx(0.9)  # 10.9 - 10.0
-
-
 def test_build_trial_timelines_captures_distractor_onsets():
     """distractor_onset events are logged inline during the stream and land on the timeline's
     ``distractors`` layer, carrying their index and optional trigger code."""

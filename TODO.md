@@ -8,6 +8,50 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## FPVS stream/attention-task schema cleanup (2026-09-03)
+
+Follow-up to a scientific-coherence review of the FPVS Condition parameter schema (issue #33's
+review lineage) plus a design discussion clarifying counterbalancing needs. Schema version bumped
+`8` → `9` (the second genuinely breaking bump, alongside v4's SepStim-selector-key drop) — no
+running Instances existed yet, so no live-Instance migration was needed; `migrate()` still got a
+v8→v9 step for design-time forward-migration and to keep the version lineage documented.
+
+- [x] **Removed the active oddball key-press task (`response`).** It risked contaminating the
+      oddball-frequency EEG signal it measured with motor/decision potentials, was never wired to
+      a warning, and was unused; `distractor`/`go_nogo` remain as the orthogonal, non-confounding
+      behavioural checks. Deleted `ResponseKeyParams`/`RTReference`/`score_responses` etc. from
+      `tasks/fpvs/response.py` (kept `ResponseCollector`/`ResponseRecord`, shared by
+      distractor/go_nogo); removed all wiring in `task.py`, `stimulus_preview.py`,
+      `core/events_log.py` (`TrialTimeline.responses`), `gui/dialogs/timeline_view.py`, and
+      `core/verification_report.py` (`ResponseSummary`).
+- [x] **Unified every FPVS stream to one `StreamParams` shape.** The main stream previously lived
+      in 7 scattered top-level `Condition` fields (`base`/`oddball`/`base_selector`/
+      `oddball_selector`/`modulation`/`sweep`/`stream_position_pix`) while `second_stream`/
+      `additional_streams` were `StreamParams` instances — now `main_stream: StreamParams` is the
+      SAME shape as every other stream (`json_schema_extra={"title": "Stream 1 (main)"}`), so the
+      GUI's "Stream 1/2/3+" cards are uniform both visually and structurally, and the four
+      Condition-level multi-stream validators simplify to one `[main_stream] + active_extra` list
+      instead of hand-coding the main stream separately. Also fixed a real latent bug found during
+      the audit: `StreamParams.oddball_trigger_code` (a flat field) was never read at runtime for
+      extra streams (only `s.oddball.oddball_trigger_code`, nested, is read) — now there's only one
+      place a stream's trigger codes live. The now-unused GUI "subsection" grouping mechanism
+      (added earlier this session solely to fake this uniformity) was removed from
+      `gui/forms/schema_form.py`.
+- [x] **Narrowed the multi-stream frequency-collision validator.** It previously only *advised*
+      (never blocked) on colliding/harmonic base frequencies between streams. The real constraint
+      is narrower than "all streams need distinct/non-harmonic base frequencies": an oddball-
+      carrying stream's own oddball frequency exactly equaling another active stream's driving
+      frequency is now a hard error (the one case with zero ambiguity — same FFT bin, no way to
+      attribute the response); a plain shared **base** rate stays fine, including the design that
+      prompted this — several base-only ("filler") streams and one oddball-carrying stream all at
+      the same base rate, to test whether oddball *position* (not frequency) modulates the
+      response. Deliberately **not** a broad "harmonically related" test (`bases_harmonically_related`,
+      still used for the sweep-step pair check): an oddball frequency is routinely derived as
+      `base_freq / N` (the 1.2 Hz default is 6.0 Hz / 5), so it is *already*, normally, a harmonic
+      sub-multiple of its own stream's base and of any other stream sharing that base rate --
+      rejecting that would have blocked the motivating design. Softer harmonic/intermodulation
+      collisions stay advisory-only in `check_triggers`.
+
 ## Senior-EEG-review corrections (2026-07-04)
 
 Ran the reusable [senior-EEG review prompt](docs/eeg_review_prompt.md) as a panel and fixed every
