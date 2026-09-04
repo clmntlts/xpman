@@ -445,7 +445,16 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
 - [ ] Smoke-test the PyInstaller build with `scripts/install_parallel_port_driver.ps1` on a
       machine that isn't this dev box, per the plan's Windows-11 parallel-port driver
       placement risk. (The build itself is verified working; only the parallel-port driver
-      interaction on a genuinely clean machine remains untested.)
+      interaction on a genuinely clean machine remains untested.) **Update (2026-09-04):**
+      confirmed against the pinned `psychopy==2026.1.3` install in this repo's own `.venv`
+      that psychopy does NOT bundle `inpoutx64.dll` anywhere under its package dir (it
+      resolves the DLL via `ctypes.windll.inpoutx64` at call time, i.e. expects it already on
+      the system) — the script's two site-packages candidate paths are a dead end on every
+      psychopy install, not just an unverified guess. `scripts/vendor/inpoutx64.dll` (manually
+      downloaded from https://www.highrez.co.uk/downloads/inpout32/) is the path that actually
+      matters; the script, `installer/xpman.iss`, and `docs/tutorial.md` §7.2 already handle/
+      document that correctly (a lab member downloads it manually if the script can't find it)
+      — this was a stale code comment, not a behavior gap.
 - [x] **Windows installer** — `scripts/build_installer.ps1` + `installer/xpman.iss` (Inno
       Setup) wrap `dist\xpman\` into a single `xpman-setup-<version>.exe`: license page,
       optional desktop shortcut, Start Menu entry, "Apps & Features" uninstall entry.
