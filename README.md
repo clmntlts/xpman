@@ -41,10 +41,16 @@ py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .[dev]
 pytest
+ruff check src tests
 ```
 
 Once installed, `xpman` is also available as a plain console command (from
 `[project.scripts]` in `pyproject.toml`) as an alternative to `python -m xpman.gui.app`.
+
+CI (`.github/workflows/ci.yml`) runs both of the above (`ruff check src tests`, `pytest`) on
+every push/PR on a `windows-latest` runner. It cannot run the hardware-dependent verification
+protocol (`docs/verification_protocol.md`) — that needs a physical parallel port,
+oscilloscope/logic analyzer, and photodiode, and stays a manual lab step.
 
 If you use a parallel port for EEG triggers, also run
 `scripts\install_parallel_port_driver.ps1` (as Administrator) — see that script and
@@ -81,9 +87,9 @@ here.
 
 ## Project layout
 
-See `docs/architecture.md` (or the plan file above) for the full package layout and the
-reasoning behind each technology choice (PsychoPy for stimulus/timing, PySide6 for the GUI,
-SQLite+SQLAlchemy for structured data, Parquet+CSV for per-trial event logs).
+See `docs/architecture.md` for the full package layout and the reasoning behind each technology
+choice (PsychoPy for stimulus/timing, PySide6 for the GUI, SQLite+SQLAlchemy for structured
+data, Parquet+CSV for per-trial event logs).
 
 ## Adding a new task type (paradigm)
 

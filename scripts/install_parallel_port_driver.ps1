@@ -8,13 +8,16 @@
     Must be run as Administrator (writing to System32 requires elevation).
 
 .NOTES
-    This script assumes psychopy's own install already carries a copy of inpoutx64.dll
-    somewhere under its package directory. That assumption has NOT yet been verified against
-    a real psychopy install on this machine — TODO (Phase 2): confirm the actual bundled path
-    once psychopy is installed, and update $CandidatePaths below accordingly. If psychopy does
-    NOT bundle it, download inpoutx64.dll from the official source
-    (https://www.highrez.co.uk/downloads/inpout32/) and place it in this repo under
-    scripts/vendor/inpoutx64.dll, then re-run this script.
+    Verified (2026-09-04) against the pinned psychopy==2026.1.3 install in this repo's own
+    .venv: psychopy does NOT bundle inpoutx64.dll anywhere under its package directory.
+    psychopy.parallel._inpout resolves it via `ctypes.windll.inpoutx64` -- i.e. it expects the
+    DLL to already be discoverable on the system (System32/SysWOW64 or PATH), not shipped
+    inside the psychopy wheel. The two site-packages candidate paths below are therefore a
+    dead end on every psychopy install, not just this machine; they're kept only as a cheap
+    first check in case a future psychopy version changes this. In practice this script
+    always needs scripts/vendor/inpoutx64.dll populated by hand: download it from the
+    official source (https://www.highrez.co.uk/downloads/inpout32/) and place it there, then
+    re-run this script.
 #>
 
 #Requires -RunAsAdministrator
@@ -23,6 +26,8 @@ $ErrorActionPreference = "Stop"
 
 $CandidatePaths = @(
     "$PSScriptRoot\vendor\inpoutx64.dll",
+    # Kept as a cheap fallback check only -- confirmed absent from the pinned psychopy version
+    # (see .NOTES above); scripts/vendor/inpoutx64.dll above is the path that actually matters.
     "$PSScriptRoot\..\.venv\Lib\site-packages\psychopy\hardware\inpoutx64.dll",
     "$PSScriptRoot\..\.venv\Lib\site-packages\psychopy\parallel\inpoutx64.dll"
 )
