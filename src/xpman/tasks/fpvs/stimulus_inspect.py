@@ -50,7 +50,9 @@ class PoolInspection:
         return len(self.distinct_sizes) <= 1
 
 
-def inspect_pool(paths: list[Path], *, sample_size: int | None = None) -> PoolInspection:
+def inspect_pool(
+    paths: list[Path], *, sample_size: int | None = None, background_gray: float | None = None
+) -> PoolInspection:
     """Open a sample of ``paths`` and report mean luminance + the set of pixel dimensions seen.
 
     ``sample_size`` caps how many images are actually opened (the first N), so this stays cheap
@@ -58,6 +60,13 @@ def inspect_pool(paths: list[Path], *, sample_size: int | None = None) -> PoolIn
     beyond the cap, acceptable for an advisory. PIL/NumPy are imported lazily so importing this
     module (and thus ``task.py``) never requires them until an inspection actually runs. Any
     per-image failure is counted in ``n_failed`` and skipped, never raised.
+
+    ``background_gray``: when given (the Condition's ``FPVSConditionParams.background_gray`` --
+    unknown to the whole-directory, pre-Condition inspection ``FPVSTask.prepare()`` runs), a
+    transparent-background image is alpha-composited over it before measuring luminance, matching
+    what a subject actually sees (``visual.ImageStim`` alpha-composites the same way). Omitted
+    (``None``, the default): converts straight to RGB, discarding alpha -- correct only when every
+    image is fully opaque, kept as the default for the caller that doesn't yet know the background.
     """
     from PIL import Image  # lazy: PsychoPy already pulls in Pillow; keep module import light
     import numpy as np
@@ -78,7 +87,12 @@ def inspect_pool(paths: list[Path], *, sample_size: int | None = None) -> PoolIn
                 # BT.709 luma (tasks.fpvs.luminance_contrast), matching the equalization feature's
                 # definition of "luminance" -- previously PIL's convert("L") ITU-R 601 coefficients
                 # (0.299/0.587/0.114), a different (also common, but here inconsistent) standard.
-                rgb = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
+                if background_gray is None:
+                    rgb = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
+                else:
+                    rgba = np.asarray(img.convert("RGBA"), dtype=np.float64) / 255.0
+                    alpha = rgba[..., 3:4]
+                    rgb = rgba[..., :3] * alpha + background_gray * (1.0 - alpha)
                 gray = bt709_luminance(rgb)
         except Exception:  # noqa: BLE001 - advisory only: a bad image is skipped, never fatal
             n_failed += 1

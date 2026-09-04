@@ -230,10 +230,19 @@ class EnumFieldWidget(_ErrorLabelMixin):
         return self._members[index].value
 
     def set_value(self, value: Any) -> None:
+        # Unknown/legacy values simply leave the selection unchanged rather than raising, matching
+        # SchemaForm.set_values' lenient "ignore what we can't place" contract -- same rule
+        # ChoiceFieldWidget.set_value (below) already follows. Without this, a Condition/Program
+        # saved under an enum member the schema has since removed (tasks.base's ParameterSchema
+        # contract only asks that this never happen, it doesn't enforce it) raised straight out of
+        # SchemaForm.__init__ -> crashed tree-node selection for every pre-existing row using it.
         if isinstance(value, self._enum_cls):
             member = value
         else:
-            member = self._enum_cls(value)
+            try:
+                member = self._enum_cls(value)
+            except ValueError:
+                return
         index = self._members.index(member)
         self._combo.setCurrentIndex(index)
 

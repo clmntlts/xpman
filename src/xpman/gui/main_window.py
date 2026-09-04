@@ -69,7 +69,7 @@ from xpman.gui.dialogs.subject_edit_dialog import SubjectEditDialog
 from xpman.gui.experiment_overview import ExperimentOverviewWidget
 from xpman.gui.forms.schema_form import SchemaForm
 from xpman.gui.tree_view import ExperimentTreeView, TreeNode
-from xpman.tasks.registry import TaskRegistry
+from xpman.tasks.registry import TaskRegistry, UnknownTaskError
 
 #: Node kinds whose parameters_json is edited via a SchemaForm resolved from the owning
 #: Program's task schema. "experiment" is deliberately absent: Experiment nodes get the
@@ -176,22 +176,31 @@ class MainWindow(QMainWindow):
         self._current_node = node
         self._error_label.hide()
 
-        if node.kind == "experiment" and node.id is not None:
-            self._show_experiment_overview(node)
-        elif node.kind in _PARAM_EDITABLE_KINDS and node.id is not None:
-            self._show_param_form(node)
-        elif node.kind == "subject" and node.id is not None:
-            self._show_subject_info(node.id)
-        elif node.kind == "instance" and node.id is not None:
-            self._show_instance_info(node.id)
-        elif node.kind == "block" and node.id is not None:
-            self._show_block_info(node.id)
-        elif node.kind == "trial" and node.id is not None:
-            self._show_trial_info(node.id)
-        elif node.kind == "run" and node.id is not None:
-            self._show_run_info(node.id)
-        else:
-            self._show_placeholder(f'"{node.name}" has no editable details.')
+        try:
+            if node.kind == "experiment" and node.id is not None:
+                self._show_experiment_overview(node)
+            elif node.kind in _PARAM_EDITABLE_KINDS and node.id is not None:
+                self._show_param_form(node)
+            elif node.kind == "subject" and node.id is not None:
+                self._show_subject_info(node.id)
+            elif node.kind == "instance" and node.id is not None:
+                self._show_instance_info(node.id)
+            elif node.kind == "block" and node.id is not None:
+                self._show_block_info(node.id)
+            elif node.kind == "trial" and node.id is not None:
+                self._show_trial_info(node.id)
+            elif node.kind == "run" and node.id is not None:
+                self._show_run_info(node.id)
+            else:
+                self._show_placeholder(f'"{node.name}" has no editable details.')
+        except UnknownTaskError as exc:
+            # A Program/Experiment/Condition references a task plugin that isn't installed (or
+            # was uninstalled since this row was saved) -- degrade to a clear inline message
+            # instead of crashing node selection outright, matching core/validation.py's
+            # freeze-time path, which already handles this identical case.
+            self._show_placeholder(f'"{node.name}" could not be shown -- {exc}')
+            self._error_label.setText(f'Could not load "{node.name}": {exc}')
+            self._error_label.show()
 
     def _show_param_form(self, node: TreeNode) -> None:
         model_cls = {
@@ -722,28 +731,44 @@ class MainWindow(QMainWindow):
     # "<name> (copy)" isn't wanted.
 
     def _duplicate_condition(self, node: TreeNode) -> None:
-        new = clone.clone_condition(self._session, node.id)
+        try:
+            new = clone.clone_condition(self._session, node.id)
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not duplicate the condition.\n\n{exc}")
+            return
         if not safe_commit(self._session, self, action="duplicate the condition"):
             return
         self.refresh(select_node=("condition", new.id))
         self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
 
     def _duplicate_block(self, node: TreeNode) -> None:
-        new = clone.clone_block(self._session, node.id)
+        try:
+            new = clone.clone_block(self._session, node.id)
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not duplicate the block.\n\n{exc}")
+            return
         if not safe_commit(self._session, self, action="duplicate the block"):
             return
         self.refresh(select_node=("block", new.id))
         self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
 
     def _duplicate_experiment(self, node: TreeNode) -> None:
-        new = clone.clone_experiment(self._session, node.id)
+        try:
+            new = clone.clone_experiment(self._session, node.id)
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not duplicate the experiment.\n\n{exc}")
+            return
         if not safe_commit(self._session, self, action="duplicate the experiment"):
             return
         self.refresh(select_node=("experiment", new.id))
         self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
 
     def _duplicate_program(self, node: TreeNode) -> None:
-        new = clone.clone_program(self._session, node.id)
+        try:
+            new = clone.clone_program(self._session, node.id)
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not duplicate the program.\n\n{exc}")
+            return
         if not safe_commit(self._session, self, action="duplicate the program"):
             return
         self.refresh(select_node=("program", new.id))
@@ -810,7 +835,11 @@ class MainWindow(QMainWindow):
         condition = repo.get_condition(self._session, node.id)
         experiment = repo.get_experiment(self._session, condition.experiment_id)
         program = repo.get_program(self._session, experiment.program_id)
-        task = self._registry.get(program.task_name)
+        try:
+            task = self._registry.get(program.task_name)
+        except UnknownTaskError as exc:
+            QMessageBox.critical(self, "Check Triggers", f"Could not check triggers.\n\n{exc}")
+            return
         warnings = task.check_triggers(condition.parameters_json, resource_dir=program.resource_main_directory)
         if warnings:
             message = "Potential trigger conflicts:\n\n" + "\n".join(f"- {w}" for w in warnings)
@@ -832,7 +861,11 @@ class MainWindow(QMainWindow):
         condition = repo.get_condition(self._session, node.id)
         experiment = repo.get_experiment(self._session, condition.experiment_id)
         program = repo.get_program(self._session, experiment.program_id)
-        task = self._registry.get(program.task_name)
+        try:
+            task = self._registry.get(program.task_name)
+        except UnknownTaskError as exc:
+            QMessageBox.critical(self, "Preview Stimuli", f"Could not preview stimuli.\n\n{exc}")
+            return
 
         if (
             self._current_form is not None

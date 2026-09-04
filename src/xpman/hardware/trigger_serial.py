@@ -135,8 +135,23 @@ class SerialTrigger(TriggerSender):
         -- it propagates, so the engine marks the Run CRASHED and the experimenter learns
         immediately. Silently continuing would leave the EEG with missing/wrong trigger markers,
         invisible until analysis, which is far worse for the science than a loud, timestamped stop.
+
+        That guarantee needs an explicit return-value check, not just letting ``write()`` raise:
+        with ``write_timeout=0`` (this class's actual port setting -- a write must never stall the
+        frame-locked presentation loop), pyserial's Windows backend does NOT wait for the OS write
+        to complete and can return ``0`` (bytes written) on a transient USB/driver hiccup
+        (``ERROR_INVALID_USER_BUFFER``/``ERROR_NOT_ENOUGH_MEMORY``/``ERROR_OPERATION_ABORTED``)
+        with **no exception at all** -- confirmed against ``serial.serialwin32.Serial.write``'s
+        source. Discarding that return value (as this method used to) let exactly the silent
+        failure mode the docstring above claims can't happen actually happen.
         """
-        self._serial.write(bytes([self._validate_code(code)]))
+        written = self._serial.write(bytes([self._validate_code(code)]))
+        if written != 1:
+            raise RuntimeError(
+                f"Serial trigger write to {self._port!r} reported {written} byte(s) written, "
+                "expected 1 -- the trigger byte was likely dropped (a transient USB/driver "
+                "hiccup). Check the cable/hub and retry."
+            )
 
     def clear_code(self) -> None:
         """Return the trigger lines to 0.
@@ -144,9 +159,17 @@ class SerialTrigger(TriggerSender):
         No-op when ``auto_pulse`` (the device's own hardware pulse already returned to 0 -- writing
         another byte would be a spurious extra event). When ``auto_pulse=False`` (a latching
         device), actively write ``bytes([0])`` to reset the lines, mirroring the parallel path.
+        Same explicit return-value check as ``set_code`` -- see its docstring for why the OS write
+        call can silently return short with ``write_timeout=0``.
         """
         if not self._auto_pulse:
-            self._serial.write(bytes([0]))
+            written = self._serial.write(bytes([0]))
+            if written != 1:
+                raise RuntimeError(
+                    f"Serial trigger clear write to {self._port!r} reported {written} byte(s) "
+                    "written, expected 1 -- the clear was likely dropped (a transient USB/driver "
+                    "hiccup). Check the cable/hub and retry."
+                )
 
     def pulse_width_seconds(self) -> float | None:
         """The device's fixed hardware pulse width when ``auto_pulse`` (the BioSemi ~8 ms), else

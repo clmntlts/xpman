@@ -232,3 +232,69 @@ def test_clone_program_deep_copies_everything_except_instances(session, fixture)
         session.scalars(select(Instance).where(Instance.program_id == new.id))
     )
     assert new_instances == []
+
+
+# ---------------------------------------------------------------------------
+# Atomicity: a failure mid-clone must not leave orphaned flushed-but-uncommitted
+# rows sitting in the session for a LATER, unrelated commit to silently pick up.
+# ---------------------------------------------------------------------------
+
+
+def test_clone_experiment_failure_rolls_back_partial_writes(session, fixture):
+    """Regression: repo.create_* flush()es but never commits -- clone_* used to leave whatever
+    it had already flushed sitting in the session's open transaction on failure, with nothing
+    rolling it back. Simulate a failure partway through (after the first Condition/Block are
+    already flushed) and confirm the session ends up clean, not carrying orphaned pending rows."""
+    from unittest.mock import patch
+
+    original_create_trial = repo.create_trial
+    calls = {"n": 0}
+
+    def _fail_on_second_trial(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # after block_1's first trial (and both Conditions) already flushed
+            raise RuntimeError("simulated SQLite lock contention mid-clone")
+        return original_create_trial(*args, **kwargs)
+
+    with patch("xpman.core.clone.repo.create_trial", side_effect=_fail_on_second_trial):
+        with pytest.raises(RuntimeError, match="simulated SQLite lock contention"):
+            clone.clone_experiment(session, fixture["experiment"].id)
+
+    # The failure must not leave anything pending in the session -- rollback() clears both the
+    # "new" (flushed-but-uncommitted) and "dirty" sets.
+    assert not session.new
+    assert not session.dirty
+
+    # And a later, UNRELATED commit must not silently persist any orphan from the failed clone:
+    # only the original fixture's single Experiment/2 Conditions/2 Blocks exist afterward.
+    repo.create_profile(session, name="Unrelated Later Write")
+    session.commit()
+    assert len(repo.list_experiments(session, program_id=fixture["program"].id)) == 1
+    assert len(repo.list_conditions(session, experiment_id=fixture["experiment"].id)) == 2
+    assert len(repo.list_blocks(session, experiment_id=fixture["experiment"].id)) == 2
+
+
+def test_clone_program_failure_rolls_back_partial_writes(session, fixture):
+    """Same guarantee at the outermost entry point (clone_program), which loops over multiple
+    experiments via the shared _clone_experiment_into helper -- only the PUBLIC entry point
+    should roll back, not that internal helper, so this proves the decorator is on the right
+    (outermost) function."""
+    from unittest.mock import patch
+
+    with patch("xpman.core.clone.repo.create_condition", side_effect=RuntimeError("simulated failure")):
+        with pytest.raises(RuntimeError, match="simulated failure"):
+            clone.clone_program(session, fixture["program"].id)
+
+    assert not session.new
+    assert not session.dirty
+    # Only the original fixture Program exists -- no orphaned partial-clone Program row.
+    assert len(repo.list_programs(session, profile_id=fixture["profile"].id)) == 1
+
+
+def test_clone_condition_not_found_still_leaves_a_clean_session(session, fixture):
+    """The decorator's rollback() must be harmless (a safe no-op) for the ordinary
+    not-found case too -- _require raises LookupError before any write happens."""
+    with pytest.raises(LookupError):
+        clone.clone_condition(session, 999999)
+    assert not session.new
+    assert not session.dirty

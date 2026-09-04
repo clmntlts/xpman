@@ -377,6 +377,29 @@ def test_duplicate_condition_creates_copy_and_selects_it(qtbot, session, registr
     assert selected.id == copy_row.id
 
 
+def test_duplicate_condition_failure_shows_error_dialog_not_a_crash(qtbot, session, registry):
+    """Regression: clone.clone_condition used to be called with no try/except at all -- a mid-clone
+    failure (e.g. simulated SQLite lock contention) would propagate as an uncaught exception
+    instead of the same clean QMessageBox.critical every other DB-write failure path shows."""
+    from unittest.mock import patch
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    index = _find_index(window, "condition", fixture["condition"].id)
+    node = window._tree.model_.node_at(index)
+
+    with patch(
+        "xpman.gui.main_window.clone.clone_condition", side_effect=RuntimeError("simulated failure")
+    ), patch("xpman.gui.main_window.QMessageBox.critical") as mock_critical:
+        window._duplicate_condition(node)  # must not raise
+
+    mock_critical.assert_called_once()
+    # No new Condition was created -- the failed clone left the DB exactly as it was.
+    assert len(repo.list_conditions(session, experiment_id=fixture["experiment"].id)) == 1
+
+
 def test_duplicate_block_copies_trials(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)

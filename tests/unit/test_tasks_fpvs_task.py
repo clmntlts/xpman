@@ -555,8 +555,9 @@ def test_run_trial_no_extra_stream_luminance_warning_when_pools_match(
 
 
 def test_pool_luminance_inspected_once_per_selector(mock_window, split_stim_root, event_sink):
-    """The per-pool pixel decode is cached by selector: after a trial, exactly two entries exist
-    (base + oddball selectors), so repeated trials do not re-decode the pools every time."""
+    """The per-pool pixel decode is cached by (selector, background_gray): after a trial, exactly
+    two entries exist (base + oddball selectors), so repeated trials do not re-decode the pools
+    every time."""
     task = FPVSTask()
     ctx = _make_ctx(mock_window, split_stim_root, event_sink)
     task.prepare(ctx)
@@ -566,7 +567,7 @@ def test_pool_luminance_inspected_once_per_selector(mock_window, split_stim_root
     params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
     params.main_stream.base.trial_duration_seconds = 0.5
     _run_trial_outcome(task, ctx, params)
-    assert set(task._pool_luminance_cache) == {("dark", None), ("light", None)}
+    assert set(task._pool_luminance_cache) == {("dark", None, params.background_gray), ("light", None, params.background_gray)}
 
 
 def test_image_stims_cached_across_trials(mock_window, real_stim_root, event_sink):
@@ -1731,6 +1732,61 @@ def test_check_triggers_skips_pool_size_check_for_base_only_filler_stream(stim_r
 
     warnings = task.check_triggers(params.model_dump(), resource_dir=str(stim_root))
     assert not any("base pool has only" in w for w in warnings)
+
+
+def test_run_trial_re_checks_pool_size_vs_oddball_period_live(mock_window, stim_root, event_sink):
+    """Regression: check_triggers only ever runs at freeze time (or a manual click) against
+    whatever the resource folder looked like THEN. If it's edited afterward (routine curation
+    shrinking a pool), nothing re-checked the safeguard again -- until now. run_trial must
+    re-run it live, every Run, and surface it both as an event and in outcome_summary."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = _clean_condition()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.2
+    # Default 6.0/1.2 Hz -> period 5, pool of 3 -> too small, exactly like the freeze-time check.
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["pool_size_vs_period_warning"] is True
+
+    import json
+
+    rows = _read_events(event_sink)
+    warning_row = next(r for r in rows if r["event_type"] == "pool_size_vs_oddball_period_stale_warning")
+    payload = json.loads(warning_row["payload_json"])
+    assert payload["stream"] == "Stream 1 (main)"
+    assert payload["pool_size"] == 3
+    assert payload["oddball_period_stimuli"] == 5
+
+
+def test_run_trial_no_pool_size_warning_when_pool_large_enough(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = _clean_condition()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.2
+    params.main_stream.oddball.oddball_freq_hz = 3.0  # 6.0/3.0 -> period 2, pool of 3 is enough
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        result = task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    assert result.outcome_summary["pool_size_vs_period_warning"] is False
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "pool_size_vs_oddball_period_stale_warning" for r in rows)
 
 
 def test_check_triggers_warns_on_high_base_frequency():
