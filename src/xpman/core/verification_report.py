@@ -319,6 +319,18 @@ def _extract_frequency_checks(events_sorted: list[dict[str, Any]]) -> list[Frequ
             checks.append(FrequencyCheck("base", payload["requested_base_freq_hz"], payload["achieved_base_freq_hz"]))
         if "requested_oddball_freq_hz" in payload and "achieved_oddball_freq_hz" in payload:
             checks.append(FrequencyCheck("oddball", payload["requested_oddball_freq_hz"], payload["achieved_oddball_freq_hz"]))
+        # Dual/multi-stream runs (docs/verification_protocol.md item 6): the top-level fields
+        # above only ever echo stream 0 -- "streams" (when present) carries every active stream's
+        # own requested/achieved frequencies, so a second/additional stream's tagging gets the
+        # same self-reported cross-check, not just the diode/FFT measurement.
+        for stream in payload.get("streams") or []:
+            idx = stream.get("stream")
+            if idx == 0:
+                continue  # already covered by the top-level "base"/"oddball" entries above
+            if "requested_base_freq_hz" in stream and "achieved_base_freq_hz" in stream:
+                checks.append(FrequencyCheck(f"stream {idx} base", stream["requested_base_freq_hz"], stream["achieved_base_freq_hz"]))
+            if stream.get("requested_oddball_freq_hz") is not None and stream.get("achieved_oddball_freq_hz") is not None:
+                checks.append(FrequencyCheck(f"stream {idx} oddball", stream["requested_oddball_freq_hz"], stream["achieved_oddball_freq_hz"]))
     return checks
 
 

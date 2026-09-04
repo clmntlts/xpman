@@ -1837,6 +1837,10 @@ def test_dual_stream_coincidence_emits_single_reserved_code_and_provenance_decod
     # Per-stream trigger codes are recorded too, so the whole scheme is invertible from the log.
     assert [s["base_trigger_code"] for s in start["streams"]] == [1, 3]
     assert [s["oddball_trigger_code"] for s in start["streams"]] == [2, 4]
+    # Each stream's OWN requested frequency is recorded too (not just stream 0's, at the payload's
+    # top level) -- verification_report.py's per-stream frequency check depends on this.
+    assert [s["requested_base_freq_hz"] for s in start["streams"]] == [6.0, 12.0]
+    assert [s["requested_oddball_freq_hz"] for s in start["streams"]] == [1.2, 2.4]
 
 
 def test_dual_stream_per_stream_jitter_offsets_each_stream_own_center(

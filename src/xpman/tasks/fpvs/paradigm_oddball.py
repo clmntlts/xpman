@@ -1419,7 +1419,16 @@ def _run_dual_stream(
             "streams": [
                 {
                     "stream": rt.stream_index,
+                    # Requested (not just achieved) per stream, so a verification report can echo
+                    # a full requested-vs-achieved check for EVERY stream, not just stream 0 (see
+                    # docs/verification_protocol.md item 6, dual/multi-stream verification).
+                    "requested_base_freq_hz": first_seg_list[rt.stream_index].base_freq_hz,
                     "achieved_base_freq_hz": rt.plan.achieved_base_hz,
+                    "requested_oddball_freq_hz": (
+                        first_seg_list[rt.stream_index].oddball.oddball_freq_hz
+                        if first_seg_list[rt.stream_index].oddball
+                        else None
+                    ),
                     "achieved_oddball_freq_hz": rt.plan.achieved_oddball_hz,
                     "frames_per_stimulus": rt.plan.n_frames_per_stim,
                     "position_pix": [rt.stream.position_pix[0], rt.stream.position_pix[1]],
