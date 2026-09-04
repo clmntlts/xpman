@@ -49,6 +49,66 @@ def test_jitter_region_drawn_per_stream_when_enabled():
     assert not any(e.kind == "jitter" for e in build_spatial_layout(FPVSConditionParams()).elements)
 
 
+def test_no_degree_readout_without_program_params():
+    """Omitting program_params (the default) must be byte-for-byte the same output as before
+    the visual-angle feature existed."""
+    without = build_spatial_layout(FPVSConditionParams())
+    explicit_none = build_spatial_layout(FPVSConditionParams(), None)
+    assert without == explicit_none
+    assert not any("deg" in note for note in without.notes)
+    assert not any("deg" in e.detail for e in without.elements)
+
+
+def test_no_degree_readout_when_geometry_partially_set():
+    from xpman.tasks.fpvs.schema import FPVSProgramParams
+
+    # Only 2 of 3 geometry fields set -> conversion unavailable, output unchanged.
+    program = FPVSProgramParams(screen_width_cm=53.0, screen_width_px=1920)
+    layout = build_spatial_layout(FPVSConditionParams(), program)
+    assert not any("deg" in note for note in layout.notes)
+    assert not any("deg" in e.detail for e in layout.elements)
+
+
+def test_degree_readout_appears_when_geometry_fully_set():
+    from xpman.tasks.fpvs.schema import FPVSProgramParams
+
+    program = FPVSProgramParams(screen_width_cm=53.0, screen_width_px=1920, screen_distance_cm=57.0)
+    params = FPVSConditionParams(position_jitter=PositionJitterParams(enabled=True, region="disk", radius_pix=40.0))
+    layout = build_spatial_layout(params, program)
+
+    assert any("1deg" in note for note in layout.notes)
+    jitter = next(e for e in layout.elements if e.kind == "jitter")
+    assert "deg" in jitter.detail
+    fixation = next(e for e in layout.elements if e.kind == "fixation")
+    assert "deg" in fixation.detail
+
+
+def test_degree_readout_on_stream_eccentricity_for_multi_stream_only():
+    """Eccentricity-in-degrees is only meaningful once a second stream exists (a single centred
+    stream has zero eccentricity) -- matches the existing px behaviour of showing position only
+    in the multi-stream case."""
+    from xpman.tasks.fpvs.schema import FPVSProgramParams
+
+    program = FPVSProgramParams(screen_width_cm=53.0, screen_width_px=1920, screen_distance_cm=57.0)
+
+    single = build_spatial_layout(FPVSConditionParams(), program)
+    single_stream = next(e for e in single.elements if e.kind == "stream")
+    assert "deg" not in single_stream.detail
+
+    params = FPVSConditionParams(
+        second_stream=StreamParams(
+            base=BaseSequenceParams(base_freq_hz=7.5),
+            oddball=OddballParams(oddball_freq_hz=1.1),
+            enabled=True,
+            position_pix=(300.0, 0.0),
+        )
+    )
+    params.main_stream.position_pix = (-300.0, 0.0)
+    dual = build_spatial_layout(params, program)
+    streams = [e for e in dual.elements if e.kind == "stream"]
+    assert all("deg from centre" in s.detail for s in streams)
+
+
 def test_go_nogo_markers_appear_in_layout():
     params = FPVSConditionParams(go_nogo=GoNoGoParams(enabled=True, keys=["a"]))
     markers = [e for e in build_spatial_layout(params).elements if e.kind == "marker"]

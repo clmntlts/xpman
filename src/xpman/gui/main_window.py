@@ -811,7 +811,7 @@ class MainWindow(QMainWindow):
         experiment = repo.get_experiment(self._session, condition.experiment_id)
         program = repo.get_program(self._session, experiment.program_id)
         task = self._registry.get(program.task_name)
-        warnings = task.check_triggers(condition.parameters_json)
+        warnings = task.check_triggers(condition.parameters_json, resource_dir=program.resource_main_directory)
         if warnings:
             message = "Potential trigger conflicts:\n\n" + "\n".join(f"- {w}" for w in warnings)
             QMessageBox.warning(self, "Check Triggers", message)
@@ -848,7 +848,7 @@ class MainWindow(QMainWindow):
 
         # A task may offer a schematic (spatial layout + trial timeline) preview; render it when
         # available, otherwise fall back to the plain text resource summary.
-        preview = task.build_condition_preview(params)
+        preview = task.build_condition_preview(params, program_params=program.parameters_json)
         if preview is not None:
             from xpman.gui.dialogs.stimulus_preview_dialog import StimulusPreviewDialog
 

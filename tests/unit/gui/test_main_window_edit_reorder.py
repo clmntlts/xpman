@@ -52,7 +52,7 @@ class _CheckableTask(TaskModule):
     def cleanup(self, ctx: TaskContext) -> None:
         pass
 
-    def check_triggers(self, condition_params: dict) -> list[str]:
+    def check_triggers(self, condition_params: dict, *, resource_dir: str | None = None) -> list[str]:
         return self._warnings
 
 
@@ -375,7 +375,7 @@ def test_preview_stimuli_uses_live_form_values_when_condition_form_open(qtbot, s
 class _SchematicPreviewTask(_PreviewRecordingTask):
     """A task that offers a schematic preview, exercising the StimulusPreviewDialog code path."""
 
-    def build_condition_preview(self, condition_params: dict):
+    def build_condition_preview(self, condition_params: dict, *, program_params: dict | None = None):
         from xpman.tasks.fpvs.schema import FPVSConditionParams
         from xpman.tasks.fpvs.stimulus_preview import build_spatial_layout, build_trial_schematic
 

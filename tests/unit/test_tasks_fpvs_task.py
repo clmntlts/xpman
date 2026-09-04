@@ -391,6 +391,79 @@ def test_run_trial_no_pool_mismatch_when_pools_match(mock_window, real_stim_root
     assert not any(r["event_type"] == "pool_luminance_divergence" for r in rows)
 
 
+def test_run_trial_flags_second_stream_pool_luminance_divergence(
+    mock_window, split_stim_root, event_sink
+):
+    """The luminance-vs-background_gray check must cover every active stream, not just main
+    (issue: background_gray is one shared value but each stream's pool is independent). Main
+    stream matches the background; second_stream draws from the OTHER (light) pool, which
+    diverges both from background_gray and from main's own (dark) pool."""
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=False,  # base-only filler is enough to exercise the base-pool check
+            base_selector=StimulusSelector(subdirectory="light"),
+            position_pix=(200.0, 0.0),
+        )
+    )
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 0.5
+    params.background_gray = 64 / 255  # matches the dark pool (main), not the light pool (second)
+
+    outcome = _run_trial_outcome(task, ctx, params)
+    assert outcome["extra_stream_luminance_warning"] is True
+    # Main stream's own checks stay clean -- this is specifically a SECOND-stream divergence.
+    assert outcome["base_pool_luminance_warning"] is False
+    assert outcome["oddball_pool_luminance_warning"] is False
+
+    rows = _read_events(event_sink)
+    divergence_rows = [r for r in rows if r["event_type"] == "extra_stream_pool_luminance_divergence"]
+    assert len(divergence_rows) == 1
+    import json
+
+    payload = json.loads(divergence_rows[0]["payload_json"])
+    assert payload["stream"] == 1  # 0 = main, 1 = second_stream
+    assert payload["base_vs_background_warning"] is True
+    assert payload["base_pool_mean_luminance"] == pytest.approx(192 / 255, abs=0.02)
+
+
+def test_run_trial_no_extra_stream_luminance_warning_when_pools_match(
+    mock_window, split_stim_root, event_sink
+):
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=False,
+            base_selector=StimulusSelector(subdirectory="dark"),
+            position_pix=(200.0, 0.0),
+        )
+    )
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.main_stream.base.trial_duration_seconds = 0.5
+    params.background_gray = 64 / 255  # matches both streams' (dark) pool
+
+    outcome = _run_trial_outcome(task, ctx, params)
+    assert outcome["extra_stream_luminance_warning"] is False
+    rows = _read_events(event_sink)
+    assert not any(r["event_type"] == "extra_stream_pool_luminance_divergence" for r in rows)
+
+
 def test_pool_luminance_inspected_once_per_selector(mock_window, split_stim_root, event_sink):
     """The per-pool pixel decode is cached by selector: after a trial, exactly two entries exist
     (base + oddball selectors), so repeated trials do not re-decode the pools every time."""
@@ -1458,6 +1531,32 @@ def test_check_triggers_warns_when_distractor_window_exceeds_min_interval():
     assert any("response_window_seconds" in w for w in task.check_triggers(params.model_dump()))
 
 
+def test_check_triggers_warns_when_baseline_duration_mismatches_main_trial():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.baseline.enabled = True
+    params.baseline.duration_seconds = 20.0
+    params.main_stream.base.trial_duration_seconds = 10.0
+    warnings = task.check_triggers(params.model_dump())
+    assert any("baseline.duration_seconds" in w and "does not match" in w for w in warnings)
+
+
+def test_check_triggers_clean_when_baseline_duration_matches_main_trial():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.baseline.enabled = True
+    params.baseline.duration_seconds = params.main_stream.base.trial_duration_seconds
+    assert task.check_triggers(params.model_dump()) == []
+
+
+def test_check_triggers_ignores_baseline_duration_when_baseline_disabled():
+    task = FPVSTask()
+    params = _clean_condition()
+    params.baseline.enabled = False
+    params.baseline.duration_seconds = 999.0  # wildly mismatched but baseline is off
+    assert task.check_triggers(params.model_dump()) == []
+
+
 def test_check_triggers_warns_when_distractor_guard_spans_whole_trial():
     task = FPVSTask()
     params = _clean_condition()
@@ -1495,6 +1594,53 @@ def test_check_triggers_invalid_params_returns_skip_message_not_exception():
     warnings = task.check_triggers({"main_stream": {"base": {"base_freq_hz": -1.0}}})
     assert len(warnings) == 1
     assert "checks skipped" in warnings[0]
+
+
+def test_check_triggers_warns_when_base_pool_too_small_for_oddball_period(stim_root):
+    """3-image base pool, default 6.0/1.2 Hz -> period 5: the pool would have to repeat within
+    a single oddball cycle."""
+    task = FPVSTask()
+    params = _clean_condition()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+
+    warnings = task.check_triggers(params.model_dump(), resource_dir=str(stim_root))
+    assert any(
+        "Stream 1 (main)" in w and "base pool has only 3" in w and "period is 5" in w
+        for w in warnings
+    )
+
+
+def test_check_triggers_no_pool_size_warning_when_pool_large_enough(stim_root):
+    task = FPVSTask()
+    params = _clean_condition()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+    params.main_stream.oddball.oddball_freq_hz = 3.0  # 6.0/3.0 -> period 2, pool of 3 is enough
+
+    warnings = task.check_triggers(params.model_dump(), resource_dir=str(stim_root))
+    assert not any("base pool has only" in w for w in warnings)
+
+
+def test_check_triggers_skips_pool_size_check_without_resource_dir(stim_root):
+    """No resource_dir given -> the resource-dependent check is skipped entirely (no crash, no
+    warning), even though the pool WOULD be too small if checked."""
+    task = FPVSTask()
+    params = _clean_condition()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+
+    warnings = task.check_triggers(params.model_dump())  # no resource_dir
+    assert not any("base pool has only" in w for w in warnings)
+
+
+def test_check_triggers_skips_pool_size_check_for_base_only_filler_stream(stim_root):
+    """A base-only (oddball_enabled=False) stream has no oddball cycle to fill -- never warned
+    about pool size regardless of how small its pool is."""
+    task = FPVSTask()
+    params = _clean_condition()
+    params.main_stream.oddball_enabled = False
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")  # 3 images
+
+    warnings = task.check_triggers(params.model_dump(), resource_dir=str(stim_root))
+    assert not any("base pool has only" in w for w in warnings)
 
 
 def test_check_triggers_warns_on_high_base_frequency():
@@ -2165,6 +2311,45 @@ def test_run_trial_dual_stream_triggers_and_jitter_wired(mock_window, stim_root,
     assert all(160.0 <= x <= 240.0 for x, _ in s1)
     assert any((x, y) != (-200.0, 0.0) for x, y in s0)
     assert any((x, y) != (200.0, 0.0) for x, y in s1)
+
+
+def test_run_trial_dual_stream_photodiode_tracks_configured_stream_index(mock_window, stim_root, event_sink):
+    """The photodiode's tracked stream is configurable (not hardcoded to the main stream) --
+    ``photodiode.tracked_stream_index`` reaches the engine and shows up in provenance."""
+    import json
+
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+    from xpman.tasks.fpvs.schema import BaseSequenceParams as _Base, OddballParams as _Odd, StreamParams
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            base=_Base(trial_duration_seconds=0.5),
+            base_selector=StimulusSelector(subdirectory="objects"),
+            oddball_selector=StimulusSelector(subdirectory="faces"),
+            position_pix=(-200.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            base=_Base(base_freq_hz=7.0), oddball=_Odd(oddball_freq_hz=1.1), enabled=True,
+            position_pix=(200.0, 0.0), base_selector=StimulusSelector(subdirectory="faces"),
+            oddball_selector=StimulusSelector(subdirectory="objects"),
+        ),
+        photodiode=PhotodiodeParams(tracked_stream_index=1),
+    )
+
+    patches = _psychopy_patches()
+    with patches[0], patches[1], patches[2], patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    rows = _read_events(event_sink)
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    assert start["photodiode_tracks_stream"] == 1
 
 
 def test_run_trial_dual_stream_no_triggers_stays_v1(mock_window, stim_root, event_sink):

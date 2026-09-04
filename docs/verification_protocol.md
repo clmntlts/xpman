@@ -229,9 +229,12 @@ these into the same photodiode + logic-analyzer session:
    after-baseline is post-adaptation.
 6. **Dual bilateral streams (`second_stream`).** The higher-risk draw-budget case: **2 ImageStims +
    fixation + photodiode + overlays per frame** — verify **no dropped frames** at the target refresh.
-   Confirm each stream renders at its own position and frequency, the photodiode (tracking stream 0)
-   still marks stream-0 onsets cleanly, and each stream's tagged response appears at its own frequency
-   in the FFT with the intermodulation terms (`|n·f1 ± m·f2|`) clear of the tags. v1 sends no
+   Confirm each stream renders at its own position and frequency, the photodiode (tracking
+   `photodiode.tracked_stream_index`, default 0=main) still marks that stream's onsets cleanly, and
+   each stream's tagged response appears at its own frequency in the FFT with the intermodulation
+   terms (`|n·f1 ± m·f2|`) clear of the tags. The non-tracked stream's onset timing is *not*
+   hardware-verified by the photodiode pass — if that stream's timing matters for the study, re-run
+   with `tracked_stream_index` pointed at it instead, or verify it by another means. v1 sends no
    per-stream stimulus triggers; if that changes, verify the reserved-code combiner on the analyzer
    (coincident onsets → one reserved code, never two overlapping pulses within the ~8 ms BioSemi
    pulse).
