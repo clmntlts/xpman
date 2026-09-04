@@ -150,7 +150,7 @@ def test_invalid_condition_params_warn_with_condition_name(session, registry, tm
 
 def test_task_check_triggers_output_prefixed_with_condition_name(session, tmp_path):
     class _WarningTask(DummyTask):
-        def check_triggers(self, condition_params: dict) -> list[str]:
+        def check_triggers(self, condition_params: dict, *, resource_dir: str | None = None) -> list[str]:
             return ["trigger code 7 used twice"]
 
     registry = TaskRegistry([_WarningTask()])

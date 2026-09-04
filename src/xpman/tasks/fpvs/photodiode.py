@@ -64,6 +64,16 @@ class PhotodiodeParams(BaseModel):
     size_pix: float = Field(default=50.0, gt=0, description="Side length of the square patch, in pixels.")
     color_on: str = Field(default="white", description="Patch color in its 'on' state.")
     color_off: str = Field(default="black", description="Patch color in its 'off' state.")
+    tracked_stream_index: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Which active stream's onsets the patch validates timing against, as an index into the "
+            "active-stream list (0=main, 1=second_stream/first active additional stream, ...). Only "
+            "meaningful once 2+ streams are active -- a single-stream Condition always tracks the only "
+            "stream regardless of this value."
+        ),
+    )
 
 
 def should_toggle(

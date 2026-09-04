@@ -147,6 +147,7 @@ def test_round_trip_set_then_get_values_photodiode(qtbot):
         "size_pix": 75.0,
         "color_on": "red",
         "color_off": "grey",
+        "tracked_stream_index": 1,
     }
     form.set_values(values)
     assert form.get_values() == values

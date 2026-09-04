@@ -103,7 +103,11 @@ class BaselineParams(BaseModel):
         description="Where the baseline sits relative to the oddball stream (before / after / both).",
     )
     duration_seconds: float = Field(
-        default=20.0, gt=0, description="How long each baseline segment runs (match the main sequence for a comparable measurement)."
+        default=10.0,
+        gt=0,
+        description="How long each baseline segment runs (match the main sequence's "
+        "trial_duration_seconds for a comparable measurement -- see check_triggers for a "
+        "mismatch advisory).",
     )
     blank_seconds: float = Field(
         default=1.0, ge=0, description="Fixation-only gap after each baseline segment."
@@ -223,7 +227,29 @@ class EqualizationParams(BaseModel):
 
 
 class FPVSProgramParams(BaseModel):
-    """No program-level parameters needed yet."""
+    """This Program's physical lab rig -- entirely optional, and independent of every spatial
+    Condition parameter (fixation/jitter/photodiode/stream positions all stay in raw pixels
+    regardless of whether this is set). The only effect of setting all three fields is that
+    "Preview Stimuli..." additionally shows a degrees-of-visual-angle readout, for comparing this
+    Program's pixel sizes/positions against a published study's stated degrees -- see
+    ``tasks.fpvs.visual_angle``. Leave unset (the default) to keep the preview exactly as it is
+    today."""
+
+    screen_width_cm: float | None = Field(
+        default=None,
+        gt=0,
+        description="Physical width of the monitor's visible display area, in cm.",
+    )
+    screen_width_px: int | None = Field(
+        default=None,
+        gt=0,
+        description="Horizontal resolution of the monitor, in pixels (e.g. 1920).",
+    )
+    screen_distance_cm: float | None = Field(
+        default=None,
+        gt=0,
+        description="Distance from the subject's eyes to the screen, in cm.",
+    )
 
 
 class FPVSExperimentParams(BaseModel):
@@ -630,6 +656,24 @@ class FPVSConditionParams(BaseModel):
                         "responses can't be separated. Use non-harmonic frequencies per step "
                         "(e.g. 6 & 7 Hz)."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _check_photodiode_tracked_stream_index(self) -> "FPVSConditionParams":
+        # photodiode.tracked_stream_index indexes into the same [main] + active_extra ordering
+        # _check_multi_stream and task.py's streams_list both use (0=main, 1=second_stream/first
+        # active additional stream, ...) -- out of range means "track a stream that isn't running",
+        # which the hardware-verification step would then silently validate nothing meaningful.
+        active_extra: list[StreamParams] = []
+        if self.second_stream.enabled:
+            active_extra.append(self.second_stream)
+        active_extra += [s for s in self.additional_streams if s.enabled]
+        n_active = 1 + len(active_extra)
+        if self.photodiode.tracked_stream_index >= n_active:
+            raise ValueError(
+                f"photodiode.tracked_stream_index ({self.photodiode.tracked_stream_index}) is out of "
+                f"range -- only {n_active} stream(s) are active (indices 0..{n_active - 1})."
+            )
         return self
 
     @model_validator(mode="after")

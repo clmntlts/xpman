@@ -8,6 +8,46 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## FPVS methodological gaps from lab-readiness review (2026-09-04)
+
+Follow-up to a lab-readiness assessment of the FPVS task (post [[FPVS stream/attention-task schema
+cleanup (2026-09-03)]]) that surfaced five remaining methodological gaps. All five are additive
+(new optional fields / new advisories); no schema version bump needed.
+
+- [x] **Baseline default duration now matches the main trial default.**
+      `BaselineParams.duration_seconds` defaulted to 20s while the main trial defaulted to 10s,
+      despite the field's own docstring saying they should match "for a comparable measurement" —
+      changed the default to 10s, and added a `check_triggers` advisory when a researcher edits one
+      without the other.
+- [x] **Photodiode tracking is now configurable, not hardcoded to the main stream.** In a
+      dual/multi-stream Condition, streams 2+ previously got no hardware-verified timing at all —
+      `_run_dual_stream`'s `tracked_stream_index` parameter already existed end-to-end but every
+      call site hardcoded it to `0`. Added `PhotodiodeParams.tracked_stream_index` (default `0`,
+      same ordering as the multi-stream collision check: `[main] + active_extra`), a
+      Condition-level bounds validator rejecting an index that doesn't refer to an active stream,
+      and updated the "photodiode tracks the MAIN stream only" advisories/docs to name the actually
+      -tracked stream.
+- [x] **Per-stream luminance-divergence check, not just the main stream.** `background_gray` is one
+      shared Condition value but contrast modulation is per-stream — a second/additional stream
+      drawing from a different-luminance pool silently broke the opacity==contrast assumption for
+      that stream with nothing to flag it. Extended the existing main-stream-only
+      `_pool_mean_luminance_for` check into every active extra stream's build loop; logs a new
+      `extra_stream_pool_luminance_divergence` event and rolls a single
+      `extra_stream_luminance_warning` bool into `outcome_summary`.
+- [x] **Pool-size-vs-oddball-period advisory.** Nothing warned when a stimulus pool was too small
+      relative to the oddball period it fills (small pool + fast rate = image repeats within one
+      oddball cycle — a real confound). Widened `check_triggers(...)` (base `TaskModule` ABC + FPVS
+      override + both callers) to take an optional `resource_dir`, and added a
+      resource-dir-gated advisory per active oddball-carrying stream when its base pool is smaller
+      than its oddball period.
+- [x] **Visual-angle / viewing-distance comparability.** Every spatial parameter was in raw pixels
+      with no way to relate it to a published study's stated sizes. Added optional
+      `screen_width_cm`/`screen_width_px`/`screen_distance_cm` to `FPVSProgramParams`, a new pure
+      `tasks/fpvs/visual_angle.py` (`pixels_per_degree`, `px_to_deg`), and threaded an optional
+      `program_params` through `build_condition_preview`/`build_spatial_layout` so the schematic
+      preview shows a degree readout (stream eccentricity, jitter region, fixation size) only when
+      all three geometry fields are set — byte-for-byte unchanged output otherwise.
+
 ## FPVS stream/attention-task schema cleanup (2026-09-03)
 
 Follow-up to a scientific-coherence review of the FPVS Condition parameter schema (issue #33's

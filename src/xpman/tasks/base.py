@@ -199,11 +199,14 @@ class TaskModule(ABC):
         """Optional dry-run/preview of a Condition's parameters. Default: no-op."""
         return None
 
-    def check_triggers(self, condition_params: dict) -> list[str]:
+    def check_triggers(self, condition_params: dict, *, resource_dir: str | None = None) -> list[str]:
         """Optional static trigger-conflict checker.
 
-        Returns a list of human-readable warning strings (empty if no issues found). Default:
-        no warnings.
+        Returns a list of human-readable warning strings (empty if no issues found).
+        ``resource_dir``: optional filesystem directory the check may use for checks that need to
+        know about actual stimulus availability (e.g. a pool too small for the paradigm it's
+        asked to fill) -- omit (``None``) for checks that only need the parameters themselves;
+        None disables any resource-dependent checks rather than raising. Default: no warnings.
         """
         return []
 
@@ -233,7 +236,9 @@ class TaskModule(ABC):
         """
         return []
 
-    def build_condition_preview(self, condition_params: dict) -> object | None:
+    def build_condition_preview(
+        self, condition_params: dict, *, program_params: dict | None = None
+    ) -> object | None:
         """Optional SCHEMATIC (spatial + temporal) preview of one Condition, for the GUI to render
         before anything is run.
 
@@ -243,6 +248,8 @@ class TaskModule(ABC):
         no windows, no pixel IO, and it must not raise on content problems. The base class returns
         ``None`` so the ABC stays free of any GUI/rendering dependency; a task that supports a schematic
         (see :class:`xpman.tasks.fpvs.task.FPVSTask`) returns the layout/timeline objects its matching
-        GUI dialog knows how to draw.
+        GUI dialog knows how to draw. ``program_params``: optional raw Program parameters dict (e.g.
+        physical display geometry) a task's schematic may use to enrich the preview; omit/``None`` for
+        a task that doesn't use it.
         """
         return None

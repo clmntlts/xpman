@@ -39,6 +39,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     derived_oddball_freq_hz,
     frames_per_cycle,
     oddball_pattern_mask,
+    oddball_period_stimuli,
     present_fixation_only,
     run_base_oddball_sequence,
     run_base_sequence,
@@ -75,6 +76,7 @@ from xpman.tasks.fpvs.schema import (
     BaselineParams,
     FamiliarizationParams,
     FPVSConditionParams,
+    FPVSProgramParams,
     FPVSSchema,
     PositionJitterParams,
     StimulusSelector,
@@ -924,6 +926,20 @@ class FPVSTask(TaskModule):
             extra_stream_params.append(params.second_stream)
         extra_stream_params += [s for s in params.additional_streams if s.enabled]
 
+        # Shared by the main stream's own luminance cross-check further below AND each extra
+        # stream's (issue #18 -- see the loop below for why per-stream matters).
+        def _diverges_from_background(value: float | None) -> bool:
+            return (
+                value is not None
+                and abs(value - params.background_gray) > LUMINANCE_DIVERGENCE_THRESHOLD
+            )
+
+        #: True once ANY second/additional stream's pool luminance diverges from background_gray or
+        #: from that same stream's own base-vs-oddball pool -- rolled into outcome_summary as one
+        #: flag regardless of how many extra streams are active; full per-stream detail is in the
+        #: extra_stream_pool_luminance_divergence event log entries below.
+        extra_stream_luminance_warning = False
+
         if extra_stream_params:
             n_streams_total = 1 + len(extra_stream_params)
             _duration = params.main_stream.base.trial_duration_seconds
@@ -948,7 +964,7 @@ class FPVSTask(TaskModule):
             # byte-for-byte unchanged. A stream with oddball_enabled=False is BASE-ONLY: only a base
             # pool, and a base-only Segment (oddball=None) so the engine presents it without oddballs
             # (a "similar" filler stream that flickers but contributes no oddball-frequency response).
-            for s in extra_stream_params:
+            for extra_index, s in enumerate(extra_stream_params):
                 s_base_entries = _select_pool(self._image_entries, s.base_selector)
                 if not s_base_entries:
                     raise ValueError(
@@ -964,6 +980,7 @@ class FPVSTask(TaskModule):
                     )
                     for i in s_base_order
                 ]
+                s_oddball_entries: list[ImageEntry] = []
                 if s.oddball_enabled:
                     s_oddball_entries = _select_pool(self._image_entries, s.oddball_selector)
                     if not s_oddball_entries:
@@ -984,6 +1001,42 @@ class FPVSTask(TaskModule):
                 else:
                     s_oddball_stims = []
                     s_segment_oddball = None
+
+                # Same luminance-vs-background_gray / base-vs-oddball divergence check as the main
+                # stream (issue #18), generalised: background_gray is one Condition-wide value but
+                # each stream's pool composition is independent, so a second/additional stream
+                # drawing from a different-luminance pool would silently break the opacity==contrast
+                # assumption for THAT stream with nothing to flag it. _pool_mean_luminance_for is
+                # already selector-generic (cached per distinct selector, not main-stream-specific).
+                s_base_luminance = self._pool_mean_luminance_for(s_base_entries, s.base_selector)
+                s_oddball_luminance = (
+                    self._pool_mean_luminance_for(s_oddball_entries, s.oddball_selector)
+                    if s.oddball_enabled
+                    else None
+                )
+                s_base_warning = _diverges_from_background(s_base_luminance)
+                s_oddball_warning = _diverges_from_background(s_oddball_luminance)
+                s_mismatch_warning = (
+                    s_base_luminance is not None
+                    and s_oddball_luminance is not None
+                    and abs(s_base_luminance - s_oddball_luminance) > LUMINANCE_DIVERGENCE_THRESHOLD
+                )
+                if s_base_warning or s_oddball_warning or s_mismatch_warning:
+                    extra_stream_luminance_warning = True
+                    ctx.event_sink.log(
+                        "extra_stream_pool_luminance_divergence",
+                        {
+                            "stream": extra_index + 1,  # 0 = main, matching streams_list ordering
+                            "base_pool_mean_luminance": s_base_luminance,
+                            "oddball_pool_mean_luminance": s_oddball_luminance,
+                            "background_gray": params.background_gray,
+                            "base_vs_background_warning": s_base_warning,
+                            "oddball_vs_background_warning": s_oddball_warning,
+                            "base_vs_oddball_mismatch_warning": s_mismatch_warning,
+                            "equalization_would_help": not params.equalization.enabled,
+                        },
+                    )
+
                 streams_list.append(
                     Stream(
                         base_stimuli=s_base_stims,
@@ -1050,7 +1103,7 @@ class FPVSTask(TaskModule):
                 event_sink=ctx.event_sink,
                 photodiode=photodiode,
                 photodiode_params=params.photodiode,
-                tracked_stream_index=0,
+                tracked_stream_index=params.photodiode.tracked_stream_index,
                 reserved_codes=reserved_codes,
                 abort_check=ctx.abort_check,
                 starting_frame_index=0,
@@ -1260,12 +1313,6 @@ class FPVSTask(TaskModule):
         base_pool_luminance = self._pool_mean_luminance_for(base_entries, params.main_stream.base_selector)
         oddball_pool_luminance = self._pool_mean_luminance_for(oddball_entries, params.main_stream.oddball_selector)
 
-        def _diverges_from_background(value: float | None) -> bool:
-            return (
-                value is not None
-                and abs(value - params.background_gray) > LUMINANCE_DIVERGENCE_THRESHOLD
-            )
-
         base_pool_luminance_warning = _diverges_from_background(base_pool_luminance)
         oddball_pool_luminance_warning = _diverges_from_background(oddball_pool_luminance)
         pool_luminance_mismatch_warning = (
@@ -1331,6 +1378,7 @@ class FPVSTask(TaskModule):
                 "base_pool_luminance_warning": base_pool_luminance_warning,
                 "oddball_pool_luminance_warning": oddball_pool_luminance_warning,
                 "pool_luminance_mismatch_warning": pool_luminance_mismatch_warning,
+                "extra_stream_luminance_warning": extra_stream_luminance_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
                 "n_oddballs_shown": sequence_result.n_oddballs_shown,
                 "requested_base_freq_hz": sequence_result.requested_base_freq_hz,
@@ -1476,25 +1524,39 @@ class FPVSTask(TaskModule):
                 lines.append(f"... and {len(scan_result.warnings) - 5} more scan warnings")
         return lines
 
-    def build_condition_preview(self, condition_params: dict) -> object | None:
+    def build_condition_preview(
+        self, condition_params: dict, *, program_params: dict | None = None
+    ) -> object | None:
         """Schematic preview of this Condition: the on-screen spatial layout (streams, fixation,
         go/no-go markers, photodiode, jitter regions) and the trial timeline (familiarization,
         baseline, fades, sweep steps, oddball cadence). Returns ``(SpatialLayout, TrialSchematic)``
         for the GUI's preview dialog, or ``None`` if the params don't validate (the dialog then falls
-        back to the text resource preview). Pure -- no hardware, no pixel IO, never raises."""
+        back to the text resource preview). Pure -- no hardware, no pixel IO, never raises.
+        ``program_params``: optional raw Program params dict; when it validates and has its
+        display geometry set, the spatial layout also gets a degrees-of-visual-angle readout (see
+        ``stimulus_preview.build_spatial_layout``) -- omit/invalid for the layout unchanged."""
         from xpman.tasks.fpvs.stimulus_preview import build_spatial_layout, build_trial_schematic
 
         try:
             params = FPVSConditionParams.model_validate(condition_params)
         except ValidationError:
             return None
-        return (build_spatial_layout(params), build_trial_schematic(params))
+        program: FPVSProgramParams | None = None
+        if program_params is not None:
+            try:
+                program = FPVSProgramParams.model_validate(program_params)
+            except ValidationError:
+                program = None
+        return (build_spatial_layout(params, program), build_trial_schematic(params))
 
-    def check_triggers(self, condition_params: dict) -> list[str]:
+    def check_triggers(self, condition_params: dict, *, resource_dir: str | None = None) -> list[str]:
         """Design-time sanity warnings for a Condition (surfaced by the "Check Triggers..."
         action and the pre-freeze dialog). Covers trigger-code conflicts and a base-frequency
         ceiling check. Range/type problems are pydantic's job (field constraints), not re-checked
-        here."""
+        here. ``resource_dir``: when given (and a real directory), also checks each active
+        oddball-carrying stream's base pool size against its oddball period -- omit/``None`` to
+        skip that one resource-dependent check (e.g. a caller with no Program resource directory
+        handy) without affecting anything else here."""
         try:
             params = FPVSConditionParams.model_validate(condition_params)
         except ValidationError as exc:
@@ -1642,6 +1704,22 @@ class FPVSTask(TaskModule):
                         )
                         break
 
+        # Baseline duration should match the main trial's -- BaselineParams.duration_seconds'
+        # own description recommends it "for a comparable measurement" (an unequal window changes
+        # the FFT frequency resolution, so the noise-floor comparison isn't quite apples-to-apples).
+        # Only the OUT-OF-THE-BOX default is kept in sync by the schema; this catches a researcher
+        # editing one duration without the other. Small float tolerance, not exact equality.
+        baseline = params.baseline
+        if baseline.enabled and abs(
+            baseline.duration_seconds - params.main_stream.base.trial_duration_seconds
+        ) > 1e-6:
+            warnings.append(
+                f"baseline.duration_seconds ({baseline.duration_seconds:g}s) does not match the "
+                f"main trial's duration ({params.main_stream.base.trial_duration_seconds:g}s) -- "
+                "baseline's own description recommends matching them for a comparable "
+                "noise-floor measurement."
+            )
+
         # Distractor (attention-control) advisories.
         distractor = params.distractor
         if distractor.enabled:
@@ -1736,8 +1814,10 @@ class FPVSTask(TaskModule):
             )
             warnings.append(
                 f"multiple simultaneous streams ({len(all_streams_desc)}): {desc}. Analyse each stream at "
-                "its own tagged frequencies (frequency-domain separation); the photodiode tracks the MAIN "
-                "stream only, and per-stream EEG triggers are unavailable with more than two streams."
+                "its own tagged frequencies (frequency-domain separation); the photodiode hardware-"
+                f"verifies stream {params.photodiode.tracked_stream_index} only (0=main) -- the other "
+                "streams' timing is unverified against real hardware -- and per-stream EEG triggers are "
+                "unavailable with more than two streams."
             )
             specs: list[StreamSpec] = []
             for _name, base, odd, odd_on, _pos in all_streams_desc:
@@ -1759,8 +1839,10 @@ class FPVSTask(TaskModule):
                 f"dual bilateral streams: main {params.main_stream.base.base_freq_hz:g} Hz at "
                 f"{tuple(params.main_stream.position_pix)} px, second {s2.base.base_freq_hz:g} Hz at "
                 f"{tuple(s2.position_pix)} px. Analyse each stream at its own tagged frequencies; the "
-                "photodiode tracks the MAIN stream only. Per-stream stimulus triggers are optional "
-                "(set each stream's base/oddball codes; coincident onsets use coincidence_codes)."
+                f"photodiode hardware-verifies stream {params.photodiode.tracked_stream_index} only "
+                "(0=main, 1=second) -- the other stream's timing is unverified against real hardware. "
+                "Per-stream stimulus triggers are optional (set each stream's base/oddball codes; "
+                "coincident onsets use coincidence_codes)."
             )
             odd1 = (
                 derived_oddball_freq_hz(params.main_stream.base.base_freq_hz, params.main_stream.oddball.pattern)
@@ -1814,5 +1896,36 @@ class FPVSTask(TaskModule):
                             "(last one truncated). Choose a step duration that is a whole number of BOTH "
                             "streams' cycle lengths so each stream's per-segment analysis window is clean."
                         )
+
+        # Stimulus-pool-size vs oddball-period advisory: a base pool smaller than the oddball
+        # period means base images MUST repeat within a single oddball cycle at this rate -- a
+        # classic FPVS confound (periodic image repetition aliasing near/onto the oddball
+        # frequency). Needs actual pool sizes on disk, so only runs when a real resource_dir was
+        # given; skips silently otherwise, matching every other "None disables the check" pattern
+        # in this method (e.g. a caller with no Program resource directory handy).
+        if resource_dir and Path(resource_dir).is_dir():
+            active_streams = [("Stream 1 (main)", params.main_stream)]
+            if params.second_stream.enabled:
+                active_streams.append(("Stream 2", params.second_stream))
+            active_streams += [
+                (f"Stream {i + 3}", s) for i, s in enumerate(params.additional_streams) if s.enabled
+            ]
+            scan_result = scan_directory(Path(resource_dir))
+            for label, stream in active_streams:
+                if not stream.oddball_enabled:
+                    continue  # base-only filler: no oddball cycle to fill
+                if stream.oddball.pattern is not None:
+                    period = len(oddball_pattern_mask(stream.oddball.pattern))
+                else:
+                    period = oddball_period_stimuli(
+                        stream.base.base_freq_hz, stream.oddball.oddball_freq_hz
+                    )
+                pool_size = len(_select_pool(scan_result.entries, stream.base_selector))
+                if pool_size < period:
+                    warnings.append(
+                        f"{label} base pool has only {pool_size} image(s) but its oddball period "
+                        f"is {period} stimuli -- base images will repeat within a single oddball "
+                        "cycle at this rate. Add more images to the pool, or slow the oddball rate."
+                    )
 
         return warnings

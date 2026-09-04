@@ -604,8 +604,10 @@ frequency, image pools, position, and modulation. Every stream — the main one 
 `second_stream`, and each `additional_streams` entry — is the **same shape**, shown in the GUI as
 uniform "Stream 1 (main)", "Stream 2", "Stream 3", ... cards. All active streams are drawn every
 frame at their own position; frequency-domain analysis recovers each stream's tagged response by
-FFT. Each stream's onsets are logged separately (with a `stream` index), and the photodiode tracks
-the **main** stream only.
+FFT. Each stream's onsets are logged separately (with a `stream` index), and the photodiode
+hardware-verifies exactly one stream's timing -- set `photodiode.tracked_stream_index` to pick
+which (0=main, 1=`second_stream`/first active `additional_streams` entry, ...; default 0). The
+other streams' timing is presented but never hardware-verified against the photodiode.
 
 | Field (on each stream's card) | Type | Meaning |
 |---|---|---|

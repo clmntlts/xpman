@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from xpman.tasks.fpvs.schema import FPVSConditionParams
+from xpman.tasks.fpvs.schema import FPVSConditionParams, FPVSProgramParams
+from xpman.tasks.fpvs.visual_angle import pixels_per_degree, px_to_deg
 
 #: Nominal screen used to place px-from-centre positions in the spatial schematic. Real resolution
 #: isn't a Condition parameter, so this is illustrative -- the layout's *relative* geometry is what
@@ -127,10 +128,45 @@ def _photodiode_center(params: FPVSConditionParams) -> tuple[float, float]:
     return (x, y)
 
 
-def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
-    """Describe where every visible element sits on screen for this Condition. Pure."""
+def _pixels_per_degree_or_none(program_params: "FPVSProgramParams | None") -> float | None:
+    """``pixels_per_degree`` when the Program has its full display geometry set, else ``None`` --
+    the single "is a degree readout available at all" gate every call site below shares."""
+    if program_params is None:
+        return None
+    if (
+        program_params.screen_width_cm is None
+        or program_params.screen_width_px is None
+        or program_params.screen_distance_cm is None
+    ):
+        return None
+    return pixels_per_degree(
+        screen_width_cm=program_params.screen_width_cm,
+        screen_width_px=program_params.screen_width_px,
+        screen_distance_cm=program_params.screen_distance_cm,
+    )
+
+
+def _with_deg(detail: str, px_value: float, ppd: float | None) -> str:
+    """Append a "(~X.Xdeg)" degree-equivalent to a detail string when a conversion is available;
+    returns ``detail`` unchanged when ``ppd`` is ``None`` (no display geometry configured)."""
+    if ppd is None:
+        return detail
+    return f"{detail} (~{px_to_deg(px_value, ppd):.1f}deg)"
+
+
+def build_spatial_layout(
+    params: FPVSConditionParams, program_params: "FPVSProgramParams | None" = None
+) -> SpatialLayout:
+    """Describe where every visible element sits on screen for this Condition. Pure.
+
+    ``program_params``: optional -- when the Program has its display geometry set (screen
+    width in cm/px + viewing distance, see ``FPVSProgramParams``), a handful of elements'
+    ``detail`` text also gets a degrees-of-visual-angle readout and a summary note is added.
+    Omit (the default) for byte-for-byte the same output as before this existed.
+    """
     elements: list[SpatialElement] = []
     notes: list[str] = []
+    ppd = _pixels_per_degree_or_none(program_params)
 
     # Every active stream beyond the main one: the legacy second_stream (if enabled) then any enabled
     # additional_streams, in the same order the runtime presents them (stream indices 1, 2, 3, ...).
@@ -141,6 +177,10 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
     multi = bool(active_extra)
     # Single stream sits at centre (main_stream.position_pix only applies once another stream exists).
     main_x, main_y = (params.main_stream.position_pix if multi else (0.0, 0.0))
+    main_detail = f"base {params.main_stream.base.base_freq_hz:g} Hz"
+    if multi and ppd is not None:
+        eccentricity_px = (main_x**2 + main_y**2) ** 0.5
+        main_detail = f"{main_detail}, ~{px_to_deg(eccentricity_px, ppd):.1f}deg from centre"
     elements.append(
         SpatialElement(
             kind="stream",
@@ -150,7 +190,7 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
             width=_STIM_BOX_PX,
             height=_STIM_BOX_PX,
             color="#7f77dd",
-            detail=f"base {params.main_stream.base.base_freq_hz:g} Hz",
+            detail=main_detail,
         )
     )
     # Distinct colours for the extra streams (cycled if there are many). "#1d9e75" first keeps the
@@ -158,6 +198,9 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
     _stream_colors = ["#1d9e75", "#d98a1d", "#c0518a", "#5a9bd4", "#8a8a3a"]
     for idx, s in enumerate(active_extra):
         detail = f"base {s.base.base_freq_hz:g} Hz" + ("" if s.oddball_enabled else ", base-only")
+        if ppd is not None:
+            s_eccentricity_px = (s.position_pix[0] ** 2 + s.position_pix[1] ** 2) ** 0.5
+            detail = f"{detail}, ~{px_to_deg(s_eccentricity_px, ppd):.1f}deg from centre"
         elements.append(
             SpatialElement(
                 kind="stream",
@@ -181,17 +224,22 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
                     SpatialElement(
                         kind="jitter", label="jitter", x=float(cx), y=float(cy),
                         radius=jitter.radius_pix, region="disk", color="#378add",
-                        detail=f"disk r={jitter.radius_pix:g}px, per {jitter.per}",
+                        detail=_with_deg(
+                            f"disk r={jitter.radius_pix:g}px, per {jitter.per}", jitter.radius_pix, ppd
+                        ),
                     )
                 )
             else:
                 w = abs(jitter.x_range_pix[1] - jitter.x_range_pix[0])
                 h = abs(jitter.y_range_pix[1] - jitter.y_range_pix[0])
+                detail = f"rect {w:g}x{h:g}px, per {jitter.per}"
+                if ppd is not None:
+                    detail = f"{detail} (~{px_to_deg(w, ppd):.1f}x{px_to_deg(h, ppd):.1f}deg)"
                 elements.append(
                     SpatialElement(
                         kind="jitter", label="jitter", x=float(cx), y=float(cy),
                         width=w, height=h, region="rectangle", color="#378add",
-                        detail=f"rect {w:g}x{h:g}px, per {jitter.per}",
+                        detail=detail,
                     )
                 )
 
@@ -203,7 +251,7 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
                 kind="fixation", label="fixation", x=float(fx.position_pix[0]), y=float(fx.position_pix[1]),
                 color=fx.color, shape=fx.shape.value, radius=fx.size_pix, line_width=fx.line_width_pix,
                 bar_gap=fx.bar_gap_pix, bar_orientation=fx.bar_orientation,
-                detail=f"{fx.shape.value}, {fx.color}",
+                detail=_with_deg(f"{fx.shape.value}, {fx.color}", fx.size_pix, ppd),
             )
         )
 
@@ -235,6 +283,12 @@ def build_spatial_layout(params: FPVSConditionParams) -> SpatialLayout:
 
     notes.append(f"Screen shown at a nominal {NOMINAL_SCREEN_W}x{NOMINAL_SCREEN_H}; positions are px from centre.")
     notes.append("Stimulus boxes are illustrative -- images are drawn at their native size at run time.")
+    if ppd is not None and program_params is not None:
+        notes.append(
+            f"At {program_params.screen_distance_cm:g}cm on a "
+            f"{program_params.screen_width_cm:g}cm/{program_params.screen_width_px}px screen: "
+            f"1deg ~= {ppd:.1f}px (degree readouts above use this)."
+        )
     return SpatialLayout(
         screen_w=NOMINAL_SCREEN_W,
         screen_h=NOMINAL_SCREEN_H,

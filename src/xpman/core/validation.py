@@ -94,7 +94,9 @@ def validate_program_for_freeze(
                     f"({loc}: {first['msg']})"
                 )
                 continue
-            for trigger_warning in task.check_triggers(condition.parameters_json or {}):
+            for trigger_warning in task.check_triggers(
+                condition.parameters_json or {}, resource_dir=resource_dir
+            ):
                 warnings.append(f'Condition "{condition.name}": {trigger_warning}')
 
     return warnings

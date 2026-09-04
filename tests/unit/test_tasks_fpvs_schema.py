@@ -78,6 +78,26 @@ def test_schema_exposes_expected_models():
     schema.experiment_params_model()()
 
 
+def test_program_params_display_geometry_defaults_unset():
+    from xpman.tasks.fpvs.schema import FPVSProgramParams
+
+    params = FPVSProgramParams()
+    assert params.screen_width_cm is None
+    assert params.screen_width_px is None
+    assert params.screen_distance_cm is None
+
+
+def test_program_params_display_geometry_rejects_non_positive_values():
+    from xpman.tasks.fpvs.schema import FPVSProgramParams
+
+    with pytest.raises(ValidationError):
+        FPVSProgramParams(screen_width_cm=0.0)
+    with pytest.raises(ValidationError):
+        FPVSProgramParams(screen_width_px=-1)
+    with pytest.raises(ValidationError):
+        FPVSProgramParams(screen_distance_cm=0.0)
+
+
 def test_schema_version_is_set():
     assert FPVSSchema.SCHEMA_VERSION == "9"
 
@@ -364,6 +384,13 @@ def test_condition_params_have_baseline_disabled_by_default():
     assert params.baseline.position == "before"
 
 
+def test_baseline_duration_default_matches_main_trial_duration_default():
+    """Regression: baseline.duration_seconds' own description says it should match the main
+    trial's duration "for a comparable measurement" -- the two defaults must actually agree."""
+    params = FPVSConditionParams()
+    assert params.baseline.duration_seconds == params.main_stream.base.trial_duration_seconds == 10.0
+
+
 def test_condition_params_have_second_stream_disabled_by_default():
     params = FPVSConditionParams()
     assert params.second_stream.enabled is False
@@ -449,6 +476,44 @@ def test_valid_dual_stream_is_accepted():
     params.main_stream.position_pix = (-200.0, 0.0)
     assert params.second_stream.enabled is True
     assert (params.main_stream.base.base_freq_hz, params.second_stream.base.base_freq_hz) == (6.0, 7.0)
+
+
+def test_photodiode_tracked_stream_index_defaults_to_main():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    assert FPVSConditionParams().photodiode.tracked_stream_index == 0
+    assert PhotodiodeParams().tracked_stream_index == 0
+
+
+def test_photodiode_tracked_stream_index_within_range_is_accepted():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    params = FPVSConditionParams(
+        second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)),
+        photodiode=PhotodiodeParams(tracked_stream_index=1),
+    )
+    params.main_stream.position_pix = (-200.0, 0.0)
+    assert params.photodiode.tracked_stream_index == 1
+
+
+def test_photodiode_tracked_stream_index_out_of_range_raises():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+
+    # Single active stream (main only) -> only index 0 is valid.
+    with pytest.raises(ValidationError, match="tracked_stream_index"):
+        FPVSConditionParams(photodiode=PhotodiodeParams(tracked_stream_index=1))
+
+
+def test_photodiode_tracked_stream_index_out_of_range_with_dual_stream_raises():
+    from xpman.tasks.fpvs.photodiode import PhotodiodeParams
+    from xpman.tasks.fpvs.schema import StreamParams
+
+    with pytest.raises(ValidationError, match="tracked_stream_index"):
+        FPVSConditionParams(
+            second_stream=StreamParams(base=BaseSequenceParams(base_freq_hz=7.0), oddball=OddballParams(oddball_freq_hz=1.1), enabled=True, position_pix=(200.0, 0.0)),
+            photodiode=PhotodiodeParams(tracked_stream_index=2),
+        )
 
 
 # ---------------------------------------------------------------------------
