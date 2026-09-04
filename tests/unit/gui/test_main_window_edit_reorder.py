@@ -299,6 +299,62 @@ def test_check_triggers_with_conflicts_shows_warning(qtbot, session, registry):
     mock_info.assert_not_called()
 
 
+def test_check_triggers_unknown_task_shows_error_not_a_crash(qtbot, session):
+    """Regression: an uninstalled/missing task plugin used to crash Check Triggers outright
+    (UnknownTaskError caught nowhere in main_window.py) instead of the clean QMessageBox.critical
+    every other action-triggered DB/task failure already shows."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([]))  # no "dummy" registered
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    with patch.object(QMessageBox, "critical") as mock_critical:
+        window._check_triggers(node)  # must not raise
+    mock_critical.assert_called_once()
+
+
+def test_preview_stimuli_unknown_task_shows_error_not_a_crash(qtbot, session):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([]))
+    qtbot.addWidget(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    with patch.object(QMessageBox, "critical") as mock_critical:
+        window._preview_stimuli(node)  # must not raise
+    mock_critical.assert_called_once()
+
+
+def test_select_condition_node_unknown_task_shows_inline_error_not_a_crash(qtbot, session):
+    """Same guarantee at the point most likely to actually be hit in practice: simply clicking
+    the node in the tree (_on_node_selected -> _show_param_form -> registry.get)."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([]))
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    window._on_node_selected(node)  # must not raise
+
+    assert window._error_label.isVisible()
+    assert "dummy" in window._error_label.text()
+
+
+def test_select_experiment_node_unknown_task_shows_inline_error_not_a_crash(qtbot, session):
+    """Same guarantee via the OTHER resolution path (_show_experiment_overview ->
+    _resolve_experiment_params_model), which hits registry.get independently of _show_param_form."""
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, TaskRegistry([]))
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    node = window._tree.model_.node_at(_find_index(window, "experiment", fixture["experiment"].id))
+    window._on_node_selected(node)  # must not raise
+
+    assert window._error_label.isVisible()
+
+
 def test_menu_offers_check_triggers_for_condition(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)

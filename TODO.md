@@ -8,6 +8,68 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Pre-release panel review: 6 fixes (2026-09-04)
+
+Follow-up to a multi-agent panel review (EEG-hardware-engineer + FPVS-methodology-expert +
+general-correctness lenses) requested ahead of a release discussion. Every claim was
+independently re-verified against actual library source (PsychoPy, pyserial) before fixing, not
+just trusted from the review pass. Full findings write-up is in the session transcript; this is
+the "what actually shipped" record.
+
+- [x] **RT clock-epoch mismatch.** `response.py`'s `ResponseCollector` built `keyboard.Keyboard()`
+      with no `clock=`, defaulting to a FRESH `psychopy.clock.Clock()` epoched at construction
+      time -- not the shared `psychopy.core.monotonicClock` every other xpman timestamp uses (the
+      same bug class `hardware/clock.py` already fixed once, one layer down). Traced into
+      PsychoPy's actual source: dormant while the `'ptb'` keyboard backend is active (uses the
+      global clock regardless), live and RT-corrupting the moment PTB is unavailable and Keyboard
+      falls back to `'event'`. Fixed: `keyboard.Keyboard(clock=core.monotonicClock)`.
+      `ResponseCollector` had zero dedicated tests before this (explaining how it went unnoticed)
+      -- added a full test file.
+- [x] **Silently-droppable EEG trigger byte.** `trigger_serial.py`'s `set_code()`/`clear_code()`
+      discarded `serial.Serial.write()`'s return value. Verified against pyserial's actual Windows
+      implementation: with `write_timeout=0` (xpman's real port setting), a transient USB/driver
+      hiccup can return `0` bytes written with **no exception at all** -- directly contradicting
+      the method's own documented "a write failure is never swallowed" guarantee. Fixed: both
+      methods now check the return value and raise `RuntimeError` on a short write.
+- [x] **Equalization discarded the alpha channel.** `equalization_cache.py`/`stimulus_inspect.py`
+      did `img.convert("RGB")` before measuring luminance/contrast, dropping alpha and keeping
+      whatever arbitrary RGB sat under transparent pixels -- corrupting both the equalization
+      decision and (worse) the saved output file's actual transparency for any stimulus set using
+      transparent backgrounds (a standard FPVS technique). Fixed: both now composite over the
+      Condition's `background_gray` for measurement (matching how `visual.ImageStim` actually
+      renders it) while preserving the true alpha channel unchanged in the saved file; an ordinary
+      fully-opaque source still saves byte-for-byte as before. `background_gray` is now part of
+      both modules' cache keys.
+- [x] **Paradigm safeguards went stale after freeze.** `check_triggers`' pool-size-vs-oddball-
+      period safeguard only ever ran at Instance-freeze time (or a manual click) -- but `prepare()`
+      re-scans the resource folder fresh every Run, so a Condition that passed cleanly at freeze
+      could silently violate the safeguard later if the folder was edited afterward, with nothing
+      re-checking it, ever. Fixed: `run_trial` now re-runs the same check live, every Run, logging
+      `pool_size_vs_oddball_period_stale_warning` and a `pool_size_vs_period_warning` flag in
+      `outcome_summary`.
+- [x] **`core/clone.py` had no atomicity boundary.** `clone_condition/block/experiment/program`
+      `flush()` through `repo.create_*` in loops with no rollback on failure; the GUI only wraps
+      the *final* `safe_commit()`, called *after* `clone_*()` already returns. Under the documented
+      GUI+launch-worker concurrent-write scenario, a failure mid-clone left already-flushed rows
+      sitting in an open transaction that a LATER, unrelated commit would silently persist. Fixed:
+      the four public entry points now roll back and re-raise on any failure (not the shared
+      internal helper they call -- only the outermost call should ever roll back). Also wrapped
+      the 4 GUI "Duplicate ..." call sites (previously bare, no error handling at all) in a
+      try/except showing the same `QMessageBox.critical` every other DB-write failure does.
+- [x] **Two uncaught-exception GUI crash paths.** (1) `EnumFieldWidget.set_value` had no fallback
+      for a legacy/removed enum value (unlike its sibling `ChoiceFieldWidget`, which already
+      documents the lenient "ignore what we can't place" contract) -- crashed tree-node selection
+      outright for any pre-existing row using it. (2) `UnknownTaskError` was never caught anywhere
+      in `main_window.py` -- an uninstalled/missing task plugin crashed node selection, Check
+      Triggers, or Preview Stimuli instead of showing an error, unlike `core/validation.py`'s
+      freeze-time path, which already handles this identical case correctly. Fixed both: the enum
+      widget now matches its sibling's contract; `_on_node_selected` shows the existing inline
+      `_error_label` (matching the save-validation-error UX already used there), and Check
+      Triggers/Preview Stimuli show `QMessageBox.critical`.
+
+All 6 fixes verified against real library source where relevant (not just the review's claims),
+with dedicated regression tests for each. Full suite: 1282 passed, ruff clean.
+
 ## Eager image preload + periodic break/instructions screen (2026-09-04)
 
 - [x] **Preload every image at Run launch, not lazily at first use** (consistent trial-to-trial

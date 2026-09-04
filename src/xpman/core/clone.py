@@ -15,11 +15,44 @@ of the editable design-time tree.
 from __future__ import annotations
 
 import copy
+import functools
+from typing import Callable, TypeVar
 
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
 from xpman.core.models import Block, Condition, Experiment, Program
+
+_T = TypeVar("_T")
+
+
+def _rollback_on_failure(fn: Callable[..., _T]) -> Callable[..., _T]:
+    """Wrap a public ``clone_*`` entry point so ANY failure mid-clone rolls the session back
+    before re-raising, instead of leaving already-``flush()``ed rows sitting in an open
+    transaction.
+
+    Every write here goes through ``repo.create_*``, which ``flush()``es but does not commit --
+    callers own the commit (this module's own docstring). That means a failure partway through a
+    multi-entity clone (e.g. ``clone_program``'s loop over experiments) previously left whatever
+    had already been flushed sitting in the session's pending transaction with nothing rolling it
+    back. Under the concurrent-write scenario ``core/db.py`` itself documents (the GUI and the
+    launch-worker subprocess writing the same SQLite file), a ``flush()`` can genuinely raise
+    (lock contention) mid-clone -- and the caller's own ``safe_commit()`` for some LATER,
+    unrelated change would then silently commit those orphaned partial-clone rows along with it.
+    Only decorates the four PUBLIC entry points, not the shared ``_clone_experiment_into`` helper
+    they call internally -- rolling back partway through, e.g., ``clone_program``'s per-experiment
+    loop would be wrong; only the outermost call should ever roll back.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(session: Session, *args, **kwargs) -> _T:
+        try:
+            return fn(session, *args, **kwargs)
+        except Exception:
+            session.rollback()
+            raise
+
+    return wrapper
 
 
 def _require(entity, entity_id: int, type_name: str):
@@ -50,6 +83,7 @@ def _cloned_params(parameters_json: dict | None) -> dict:
     return copy.deepcopy(parameters_json or {})
 
 
+@_rollback_on_failure
 def clone_condition(session: Session, condition_id: int, *, name: str | None = None) -> Condition:
     """Copy a Condition (name + parameters) into the same Experiment."""
     source = _require(repo.get_condition(session, condition_id), condition_id, "Condition")
@@ -64,6 +98,7 @@ def clone_condition(session: Session, condition_id: int, *, name: str | None = N
     )
 
 
+@_rollback_on_failure
 def clone_block(session: Session, block_id: int, *, name: str | None = None) -> Block:
     """Copy a Block (settings + all its Trials) into the same Experiment, appended at the end.
 
@@ -143,6 +178,7 @@ def _clone_experiment_into(session: Session, source: Experiment, program_id: int
     return new_experiment
 
 
+@_rollback_on_failure
 def clone_experiment(session: Session, experiment_id: int, *, name: str | None = None) -> Experiment:
     """Deep-copy an Experiment (conditions + blocks + trials, with Trial -> Condition
     references remapped to the cloned Conditions) into the same Program."""
@@ -153,6 +189,7 @@ def clone_experiment(session: Session, experiment_id: int, *, name: str | None =
     return _clone_experiment_into(session, source, source.program_id, name)
 
 
+@_rollback_on_failure
 def clone_program(session: Session, program_id: int, *, name: str | None = None) -> Program:
     """Deep-copy a Program (all Experiments with their full contents) into the same Profile.
 

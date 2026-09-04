@@ -89,3 +89,65 @@ def test_mean_luminance_uses_bt709_not_itu601_coefficients(tmp_path):
     result = inspect_pool([path])
     assert result.mean_luminance == pytest.approx(0.7152, abs=0.001)  # BT.709 green coefficient
     assert result.mean_luminance != pytest.approx(0.587, abs=0.01)  # NOT the ITU-R 601 coefficient
+
+
+# ---------------------------------------------------------------------------
+# background_gray: transparent images are measured against what's actually visible
+# ---------------------------------------------------------------------------
+
+
+def _write_rgba(path, *, size=(16, 16), rgb=(200, 200, 200), alpha=0):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", size, color=(*rgb, alpha)).save(path)
+    return path
+
+
+def test_background_gray_none_keeps_the_old_naive_rgb_behavior(tmp_path):
+    """Default (background_gray omitted): unchanged from before -- alpha is discarded, the
+    hidden RGB is measured verbatim. Documents the limitation for the one caller
+    (FPVSTask.prepare()) that genuinely doesn't know the Condition's background yet."""
+    ghost = _write_rgba(tmp_path / "ghost.png", rgb=(200, 200, 200), alpha=0)
+    result = inspect_pool([ghost])
+    assert result.mean_luminance == pytest.approx(200 / 255.0, abs=0.01)
+
+
+def test_background_gray_given_composites_transparent_pixels_over_it():
+    """Regression: with background_gray given, a fully-transparent image's measured luminance
+    must reflect the background it's shown over, not whatever RGB happens to be stored under
+    the (invisible) transparent pixels -- matching how visual.ImageStim actually renders it."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ghost = _write_rgba(Path(tmp) / "ghost.png", rgb=(200, 200, 200), alpha=0)
+        result = inspect_pool([ghost], background_gray=0.5)
+        assert result.mean_luminance == pytest.approx(0.5, abs=0.01)
+
+        result_dark_bg = inspect_pool([ghost], background_gray=0.1)
+        assert result_dark_bg.mean_luminance == pytest.approx(0.1, abs=0.01)
+
+
+def test_partial_transparency_blends_foreground_and_background():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        half = _write_rgba(Path(tmp) / "half.png", rgb=(255, 255, 255), alpha=128)
+        result = inspect_pool([half], background_gray=0.0)
+        # ~50% alpha over a black background -> roughly half the fully-opaque white luminance.
+        assert 0.3 < result.mean_luminance < 0.7
+
+
+def test_opaque_source_is_unaffected_by_background_gray():
+    """A fully-opaque image (the common case) must measure the same whether or not
+    background_gray is given -- nothing behind full opacity is ever visible anyway."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        opaque = _write_rgba(Path(tmp) / "opaque.png", rgb=(90, 90, 90), alpha=255)
+        without_bg = inspect_pool([opaque])
+        with_bg = inspect_pool([opaque], background_gray=0.9)
+        assert without_bg.mean_luminance == pytest.approx(with_bg.mean_luminance, abs=0.001)

@@ -449,7 +449,7 @@ class FPVSTask(TaskModule):
         #: Per-pool mean luminance, keyed by (selector.subdirectory, selector.filename_pattern) so a
         #: resolved base/oddball pool's pixels are decoded once per distinct selector per Run, not
         #: every trial (issue #18). Populated lazily in run_trial via _pool_mean_luminance_for.
-        self._pool_luminance_cache: dict[tuple[str | None, str | None], float | None] = {}
+        self._pool_luminance_cache: dict[tuple[str | None, str | None, float], float | None] = {}
         self._response_collector: ResponseCollector | None = None
         #: Cache of built ImageStim (GPU texture) keyed by (entry.path, resolved source path) --
         #: see _get_image_stim -- reused across trials: building one uploads a texture, so
@@ -587,25 +587,69 @@ class FPVSTask(TaskModule):
         ctx.event_sink.log("images_preloaded", {"n_images": len(self._image_entries)})
 
     def _pool_mean_luminance_for(
-        self, entries: list[ImageEntry], selector: StimulusSelector
+        self, entries: list[ImageEntry], selector: StimulusSelector, background_gray: float
     ) -> float | None:
-        """Mean luminance of one resolved pool, inspected once per distinct selector per Run (cached).
+        """Mean luminance of one resolved pool, inspected once per distinct (selector,
+        background_gray) combination per Run (cached).
 
         The whole-directory inspection in prepare() yields a single aggregate that blends the base and
         oddball categories together. But those pools (e.g. objects vs faces) can differ in mean
         luminance, and it is the per-pool number -- and the gap between the two -- that reveals a
         luminance confound landing on the base/oddball frequency (issue #18). Keyed by the selector's
-        fields because _select_pool is a pure function of the fixed per-Run entries and the selector,
-        so the pixel decode runs once per distinct pool across the whole Run rather than every trial.
-        Returns None for an unreadable pool (inspect_pool never raises), which disables the checks that
-        read it -- matching the whole-set path's "None means don't advise" behaviour."""
-        key = (selector.subdirectory, selector.filename_pattern)
+        fields (plus background_gray, since a transparent-background pool's measured luminance
+        depends on what it's composited against -- see inspect_pool) because _select_pool is a pure
+        function of the fixed per-Run entries and the selector, so the pixel decode runs once per
+        distinct pool across the whole Run rather than every trial. Returns None for an unreadable
+        pool (inspect_pool never raises), which disables the checks that read it -- matching the
+        whole-set path's "None means don't advise" behaviour."""
+        key = (selector.subdirectory, selector.filename_pattern, background_gray)
         if key not in self._pool_luminance_cache:
             inspection = inspect_pool(
-                [entry.path for entry in entries], sample_size=_STIMULUS_INSPECT_SAMPLE
+                [entry.path for entry in entries],
+                sample_size=_STIMULUS_INSPECT_SAMPLE,
+                background_gray=background_gray,
             )
             self._pool_luminance_cache[key] = inspection.mean_luminance
         return self._pool_luminance_cache[key]
+
+    def _check_pool_size_vs_oddball_period_live(self, ctx: TaskContext, params: "FPVSConditionParams") -> bool:
+        """Re-run the pool-size-vs-oddball-period safeguard (see ``check_triggers``) against the
+        pool as it actually exists on disk THIS Run, not just at Instance-freeze time.
+
+        ``check_triggers`` only ever runs at freeze time (or on a manual "Check Triggers..."
+        click) against whatever the resource folder looked like then. But ``prepare()``
+        re-scans the resource directory fresh on every Run -- so a Condition that passed cleanly
+        at freeze can silently violate this safeguard later if the folder is edited afterward
+        (routine curation removing a few images), with nothing re-checking it, ever, until now.
+        Advisory only (logs an event + returns whether any stream tripped it, for
+        ``outcome_summary``) -- must never abort a Run.
+        """
+        any_warning = False
+        active_streams = [("Stream 1 (main)", params.main_stream)]
+        if params.second_stream.enabled:
+            active_streams.append(("Stream 2", params.second_stream))
+        active_streams += [
+            (f"Stream {i + 3}", s) for i, s in enumerate(params.additional_streams) if s.enabled
+        ]
+        for label, stream in active_streams:
+            if not stream.oddball_enabled:
+                continue  # base-only filler: no oddball cycle to fill
+            if stream.oddball.pattern is not None:
+                period = len(oddball_pattern_mask(stream.oddball.pattern))
+            else:
+                period = oddball_period_stimuli(stream.base.base_freq_hz, stream.oddball.oddball_freq_hz)
+            pool_size = len(_select_pool(self._image_entries, stream.base_selector))
+            if pool_size < period:
+                any_warning = True
+                ctx.event_sink.log(
+                    "pool_size_vs_oddball_period_stale_warning",
+                    {
+                        "stream": label,
+                        "pool_size": pool_size,
+                        "oddball_period_stimuli": period,
+                    },
+                )
+        return any_warning
 
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
         # LOAD-PATH CONTRACT (intentional): a frozen Instance's condition params are read back here
@@ -634,6 +678,8 @@ class FPVSTask(TaskModule):
                 f"images (out of {len(self._image_entries)} found in resource directory)"
             )
 
+        pool_size_vs_period_warning = self._check_pool_size_vs_oddball_period_live(ctx, params)
+
         # Luminance/contrast equalization (opt-in, default off -- resolve_equalized_pool returns
         # an empty mapping when disabled, so the disabled path is byte-for-byte unchanged: no
         # extra rng draws, no path-override lookups that ever hit). Scope is the COMBINED pool --
@@ -653,7 +699,7 @@ class FPVSTask(TaskModule):
                 if s.oddball_enabled:
                     equalization_entries += _select_pool(self._image_entries, s.oddball_selector)
             equalization_result = resolve_equalized_pool(
-                equalization_entries, params.equalization, Path(ctx.resource_dir)
+                equalization_entries, params.equalization, Path(ctx.resource_dir), params.background_gray
             )
             path_overrides = equalization_result.resolved_paths
             ctx.event_sink.log(
@@ -1037,9 +1083,11 @@ class FPVSTask(TaskModule):
                 # drawing from a different-luminance pool would silently break the opacity==contrast
                 # assumption for THAT stream with nothing to flag it. _pool_mean_luminance_for is
                 # already selector-generic (cached per distinct selector, not main-stream-specific).
-                s_base_luminance = self._pool_mean_luminance_for(s_base_entries, s.base_selector)
+                s_base_luminance = self._pool_mean_luminance_for(
+                    s_base_entries, s.base_selector, params.background_gray
+                )
                 s_oddball_luminance = (
-                    self._pool_mean_luminance_for(s_oddball_entries, s.oddball_selector)
+                    self._pool_mean_luminance_for(s_oddball_entries, s.oddball_selector, params.background_gray)
                     if s.oddball_enabled
                     else None
                 )
@@ -1339,8 +1387,12 @@ class FPVSTask(TaskModule):
         #   - Base pool vs oddball pool: if their means differ, every oddball onset is also a luminance
         #     STEP recurring at exactly the oddball frequency -- a low-level luminance transient
         #     masquerading as the high-level categorization response, the confound that matters most.
-        base_pool_luminance = self._pool_mean_luminance_for(base_entries, params.main_stream.base_selector)
-        oddball_pool_luminance = self._pool_mean_luminance_for(oddball_entries, params.main_stream.oddball_selector)
+        base_pool_luminance = self._pool_mean_luminance_for(
+            base_entries, params.main_stream.base_selector, params.background_gray
+        )
+        oddball_pool_luminance = self._pool_mean_luminance_for(
+            oddball_entries, params.main_stream.oddball_selector, params.background_gray
+        )
 
         base_pool_luminance_warning = _diverges_from_background(base_pool_luminance)
         oddball_pool_luminance_warning = _diverges_from_background(oddball_pool_luminance)
@@ -1408,6 +1460,7 @@ class FPVSTask(TaskModule):
                 "oddball_pool_luminance_warning": oddball_pool_luminance_warning,
                 "pool_luminance_mismatch_warning": pool_luminance_mismatch_warning,
                 "extra_stream_luminance_warning": extra_stream_luminance_warning,
+                "pool_size_vs_period_warning": pool_size_vs_period_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
                 "n_oddballs_shown": sequence_result.n_oddballs_shown,
                 "requested_base_freq_hz": sequence_result.requested_base_freq_hz,

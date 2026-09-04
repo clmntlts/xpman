@@ -33,6 +33,11 @@ class _MockedSerial:
         self.mock_serial_cls = MagicMock(name="serial.Serial")
         self.mock_serial_instance = MagicMock(name="serial.Serial()")
         self.mock_serial_instance.is_open = True
+        # Real pyserial's write() returns the number of bytes actually written -- default to the
+        # real-success value (every byte written here is a single-byte bytes([...])) so tests that
+        # don't care about short-write detection aren't tripped by MagicMock's default return
+        # value (a truthy-but-not-1 MagicMock, which set_code/clear_code would now reject).
+        self.mock_serial_instance.write.return_value = 1
         self.mock_serial_cls.return_value = self.mock_serial_instance
         self._patcher = patch("serial.Serial", self.mock_serial_cls)
 
@@ -115,6 +120,25 @@ def test_set_code_propagates_write_failure_not_swallowed():
         ctx.mock_serial_instance.write.side_effect = OSError("device disconnected")
         with pytest.raises(OSError, match="device disconnected"):
             ctx.trigger.set_code(7)
+
+
+def test_set_code_raises_on_a_short_write_that_returns_without_raising():
+    """Regression: with write_timeout=0 (this class's actual port setting), pyserial's Windows
+    backend can return 0 (bytes written) on a transient USB/driver hiccup WITHOUT raising at all
+    -- confirmed against serial.serialwin32.Serial.write's own source. Discarding write()'s
+    return value (the original bug) let a trigger byte vanish with the run still logging success;
+    set_code must now detect and raise on this itself, not rely on write() to raise."""
+    with _MockedSerial(port="COM4") as ctx:
+        ctx.mock_serial_instance.write.return_value = 0  # silent short write, no exception
+        with pytest.raises(RuntimeError, match="byte"):
+            ctx.trigger.set_code(7)
+
+
+def test_clear_code_raises_on_a_short_write_when_not_auto_pulse():
+    with _MockedSerial(port="COM4", auto_pulse=False) as ctx:
+        ctx.mock_serial_instance.write.return_value = 0
+        with pytest.raises(RuntimeError, match="byte"):
+            ctx.trigger.clear_code()
 
 
 def test_close_closes_the_port():

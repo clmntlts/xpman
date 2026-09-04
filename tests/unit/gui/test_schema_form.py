@@ -263,6 +263,36 @@ def test_editing_enum_combobox_reflected_in_get_values(qtbot):
     assert form.get_values()["toggle_strategy"] == ToggleStrategy.ODDBALL_ONSET_ONLY.value
 
 
+def test_legacy_removed_enum_value_does_not_crash_form_construction(qtbot):
+    """Regression: a Condition/Program saved under an enum member the schema has since removed
+    must not crash tree-node selection. SchemaForm.__init__ calls set_values() unconditionally on
+    construction with no surrounding try/except, so EnumFieldWidget.set_value itself must be
+    lenient -- exactly like its sibling ChoiceFieldWidget already is (see that widget's own
+    docstring/behavior) -- not raise ValueError for an unrecognized raw value."""
+    form = SchemaForm(PhotodiodeParams, initial_values={"toggle_strategy": "some_removed_member"})
+    qtbot.addWidget(form)  # must not raise
+
+    widget = form._field_widgets["toggle_strategy"]
+    # Selection left unchanged (the widget's own default), not crashed and not silently coerced
+    # to the unrecognized value.
+    assert widget.get_value() in {m.value for m in ToggleStrategy}
+
+
+def test_enum_field_widget_set_value_leniently_ignores_unknown_value(qtbot):
+    """Same guarantee, exercised directly against the widget (not through the whole form)."""
+    from xpman.gui.forms.widgets import EnumFieldWidget
+
+    widget = EnumFieldWidget(ToggleStrategy)
+    qtbot.addWidget(widget)
+    widget.set_value(ToggleStrategy.EVERY_N_FRAMES)
+    assert widget.get_value() == ToggleStrategy.EVERY_N_FRAMES.value
+
+    widget.set_value("not_a_real_member")  # must not raise
+
+    # Selection is left exactly as it was before the unrecognized value -- not reset, not crashed.
+    assert widget.get_value() == ToggleStrategy.EVERY_N_FRAMES.value
+
+
 def test_hidden_field_is_not_rendered_but_round_trips(qtbot):
     """A field marked json_schema_extra={'hidden': True} isn't shown, but its value is preserved
     verbatim through get/set so a round-trip never drops or corrupts it (used for list-of-model

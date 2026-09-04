@@ -191,3 +191,84 @@ def test_all_images_unreadable_returns_empty_without_raising(tmp_path):
     assert result.resolved_paths == {}
     assert result.n_failed == 1
     assert result.mean_luminance_before is None
+
+
+# ---------------------------------------------------------------------------
+# Transparent-background images: measured against what's actually VISIBLE
+# (composited over background_gray), and alpha is preserved in the output
+# ---------------------------------------------------------------------------
+
+
+def _write_rgba(path, *, size=(16, 16), rgb=(200, 200, 200), alpha=0):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", size, color=(*rgb, alpha)).save(path)
+    return path
+
+
+def test_fully_transparent_image_is_measured_against_the_background_not_its_hidden_rgb(tmp_path):
+    """Regression: a fully-transparent image (alpha=0) with bright hidden RGB (200,200,200) must
+    be measured as if it were the background color, not as if it were a bright visible image --
+    img.convert("RGB") used to discard alpha and keep the hidden 200/255 RGB verbatim, corrupting
+    both the equalization decision and the saved file's actual transparency."""
+    ghost = _write_rgba(tmp_path / "pool" / "ghost.png", rgb=(200, 200, 200), alpha=0)
+    opaque = _write(tmp_path / "pool" / "opaque.png", color=(10, 10, 10))
+    entries = _entries([ghost, opaque])
+
+    background_gray = 0.5
+    result = resolve_equalized_pool(
+        entries, EqualizationParams(enabled=True), tmp_path, background_gray
+    )
+
+    # A pool of [fully-transparent, near-black] should measure close to [background, near-black]
+    # -- nowhere near what the hidden 200/255 RGB would have implied (0.784).
+    assert result.mean_luminance_before < 0.4
+    assert result.mean_luminance_before != pytest.approx(200 / 255.0, abs=0.05)
+
+
+def test_transparency_is_preserved_in_the_saved_equalized_file(tmp_path):
+    """The equalized output file for a genuinely-transparent source must still BE transparent --
+    not silently flattened to opaque, which would be a real, visible change to what's on screen
+    (transparent-background stimuli are a standard FPVS technique)."""
+    from PIL import Image
+
+    ghost = _write_rgba(tmp_path / "pool" / "ghost.png", rgb=(180, 60, 60), alpha=90)
+    entries = _entries([ghost])
+
+    result = resolve_equalized_pool(entries, EqualizationParams(enabled=True, strength=1.0), tmp_path)
+    out_path = result.resolved_paths[ghost]
+
+    with Image.open(out_path) as out_img:
+        assert out_img.mode == "RGBA"
+        out_alpha = np.asarray(out_img)[..., 3]
+    # Alpha must be carried through completely unchanged -- only RGB is ever equalized.
+    assert np.all(out_alpha == 90)
+
+
+def test_opaque_image_still_saves_as_plain_rgb_byte_for_byte(tmp_path):
+    """An ordinary fully-opaque source (the overwhelmingly common case, and the only case a
+    non-alpha format like .bmp could even represent) must keep saving as plain RGB -- no mode
+    change, no behavior change, for every pool that never used transparency."""
+    from PIL import Image
+
+    opaque = _write(tmp_path / "pool" / "opaque.png", color=(50, 50, 50))
+    result = resolve_equalized_pool(_entries([opaque]), EqualizationParams(enabled=True), tmp_path)
+
+    with Image.open(result.resolved_paths[opaque]) as out_img:
+        assert out_img.mode == "RGB"
+
+
+def test_different_background_gray_misses_the_cache_and_remeasures(tmp_path):
+    """A transparent image's measured luminance genuinely depends on background_gray, so two
+    Conditions sharing a pool + equalization settings but a different background must not
+    silently reuse each other's cached (differently-composited) result."""
+    ghost = _write_rgba(tmp_path / "pool" / "ghost.png", rgb=(200, 200, 200), alpha=0)
+    entries = _entries([ghost])
+    params = EqualizationParams(enabled=True)
+
+    on_dark_bg = resolve_equalized_pool(entries, params, tmp_path, 0.1)
+    on_light_bg = resolve_equalized_pool(entries, params, tmp_path, 0.9)
+
+    assert on_dark_bg.mean_luminance_before != on_light_bg.mean_luminance_before
+    assert on_dark_bg.resolved_paths[ghost] != on_light_bg.resolved_paths[ghost]

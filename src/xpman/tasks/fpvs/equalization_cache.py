@@ -33,8 +33,12 @@ CACHE_DIRNAME = ".xpman_equalized_cache"
 _MANIFEST_NAME = "_manifest.json"
 
 
-def _cache_key(entries: list[ImageEntry], params: EqualizationParams) -> str:
-    """Deterministic id for one (pool contents, equalization settings) combination."""
+def _cache_key(entries: list[ImageEntry], params: EqualizationParams, background_gray: float) -> str:
+    """Deterministic id for one (pool contents, equalization settings, background) combination.
+    ``background_gray`` is part of the key because it's what a transparent-background image's
+    hidden pixels are composited against for luminance/contrast measurement (see
+    ``resolve_equalized_pool``) -- two Conditions sharing a pool and equalization settings but a
+    different ``background_gray`` must not silently reuse each other's cached result."""
     digest = hashlib.sha256()
     digest.update(
         json.dumps(
@@ -42,6 +46,7 @@ def _cache_key(entries: list[ImageEntry], params: EqualizationParams) -> str:
                 "strength": params.strength,
                 "luminance": params.equalize_luminance,
                 "contrast": params.equalize_contrast,
+                "background_gray": background_gray,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -74,7 +79,10 @@ _EMPTY_RESULT = EqualizationResult({}, None, None, None, None, 0, 0)
 
 
 def resolve_equalized_pool(
-    entries: list[ImageEntry], params: EqualizationParams, resource_dir: str | Path
+    entries: list[ImageEntry],
+    params: EqualizationParams,
+    resource_dir: str | Path,
+    background_gray: float = 0.5,
 ) -> EqualizationResult:
     """Ensure an equalized version of every image in ``entries`` exists under the cache
     directory (building the cache on first use), and return the path mapping to use.
@@ -83,6 +91,15 @@ def resolve_equalized_pool(
     every active stream's own pools -- not one sub-pool, so equalization removes any low-level
     luminance/contrast difference BETWEEN those pools, not just noise within one (see
     ``schema.EqualizationParams``'s docstring for why that scope matters).
+
+    ``background_gray`` is the Condition's actual background (``FPVSConditionParams.
+    background_gray``) -- needed because a transparent-background image's luminance/contrast are
+    measured against what a subject actually SEES (the image alpha-composited over this
+    background, exactly like ``visual.ImageStim`` renders it), not the raw, possibly-arbitrary
+    RGB values PIL stores under fully-transparent pixels. Getting this wrong silently
+    mis-measures (and therefore mis-equalizes) any stimulus set using transparent backgrounds --
+    a standard FPVS technique. Alpha itself is preserved unchanged in the saved equalized image;
+    only the measurement is background-composited, not the stored pixels.
 
     Never raises: an image that can't be opened/decoded is skipped (counted in ``n_failed``),
     matching ``stimulus_inspect.inspect_pool``'s advisory-grade convention -- a bad image
@@ -94,7 +111,7 @@ def resolve_equalized_pool(
     from PIL import Image  # lazy: keep import light until equalization actually runs
     import numpy as np
 
-    cache_dir = Path(resource_dir) / CACHE_DIRNAME / _cache_key(entries, params)
+    cache_dir = Path(resource_dir) / CACHE_DIRNAME / _cache_key(entries, params, background_gray)
     manifest_path = cache_dir / _MANIFEST_NAME
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -109,19 +126,28 @@ def resolve_equalized_pool(
             manifest["n_failed"],
         )
 
+    # rgb: the image's own foreground pixels, alpha UNCHANGED -- what actually gets transformed
+    # and saved. visible_rgb: rgb alpha-composited over background_gray -- what a subject actually
+    # sees, used ONLY to measure luminance/contrast (the equalization decision), never saved.
     images: dict[Path, "np.ndarray"] = {}
+    visible_images: dict[Path, "np.ndarray"] = {}
+    alphas: dict[Path, "np.ndarray"] = {}
     n_failed = 0
     for entry in entries:
         try:
             with Image.open(entry.path) as img:
-                images[entry.path] = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
+                rgba = np.asarray(img.convert("RGBA"), dtype=np.float64) / 255.0
+            rgb, alpha = rgba[..., :3], rgba[..., 3:4]
+            images[entry.path] = rgb
+            alphas[entry.path] = alpha
+            visible_images[entry.path] = rgb * alpha + background_gray * (1.0 - alpha)
         except Exception:  # noqa: BLE001 - advisory-grade: a bad image is skipped, never fatal
             n_failed += 1
 
     if not images:
         return EqualizationResult({}, None, None, None, None, 0, n_failed)
 
-    per_image_luminance = {path: luminance(rgb) for path, rgb in images.items()}
+    per_image_luminance = {path: luminance(rgb) for path, rgb in visible_images.items()}
     per_image_mean_lum = {path: float(lum.mean()) for path, lum in per_image_luminance.items()}
     per_image_contrast = {path: rms_contrast(lum) for path, lum in per_image_luminance.items()}
 
@@ -157,11 +183,25 @@ def resolve_equalized_pool(
         # bare filename in different subdirectories never collide in the flat cache folder.
         out_name = f"{path.stem}_{hashlib.sha1(str(path).encode('utf-8')).hexdigest()[:8]}{path.suffix}"
         out_path = cache_dir / out_name
-        Image.fromarray((clipped * 255.0).round().astype(np.uint8)).save(out_path)
+
+        # Preserve genuine transparency (save as RGBA) only when the source actually had some --
+        # a uniformly-opaque source (the overwhelmingly common case, and the only case a non-alpha
+        # format like .bmp/.jpg can even represent) saves exactly as before, byte-for-byte. Alpha
+        # itself is carried through UNCHANGED -- only the foreground RGB was ever transformed.
+        out_alpha = alphas[path]
+        if np.allclose(out_alpha, 1.0):
+            Image.fromarray((clipped * 255.0).round().astype(np.uint8)).save(out_path)
+            visible_after = clipped
+        else:
+            rgba_out = np.concatenate([clipped, out_alpha], axis=-1)
+            Image.fromarray((rgba_out * 255.0).round().astype(np.uint8)).save(out_path)
+            visible_after = clipped * out_alpha + background_gray * (1.0 - out_alpha)
 
         resolved[path] = out_path
         file_manifest[str(path)] = out_name
-        out_luminance = luminance(clipped)
+        # "After" stats are measured the same way "before" was -- against what's actually visible
+        # (composited over background_gray), so before/after are comparable on the same basis.
+        out_luminance = luminance(visible_after)
         after_lums.append(float(out_luminance.mean()))
         after_contrasts.append(rms_contrast(out_luminance))
 

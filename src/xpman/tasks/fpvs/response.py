@@ -53,9 +53,19 @@ class ResponseCollector:
         if not enabled:
             return
         try:
+            import psychopy.core as core
             from psychopy.hardware import keyboard
 
-            self._keyboard = keyboard.Keyboard()
+            # Explicit clock=core.monotonicClock -- the same shared instance Window.flip()'s
+            # return value and every other xpman timestamp (see hardware/clock.py) is on. Without
+            # this, Keyboard() defaults to a FRESH psychopy.clock.Clock() epoched at THIS
+            # construction instant, not at psychopy.core import time -- invisible when the 'ptb'
+            # backend is active (it discards this clock's epoch and uses the global one anyway,
+            # via KeyboardDevice._ptbOffset), but live and RT-corrupting the moment PTB is
+            # unavailable and Keyboard falls back to the 'event' backend, which timestamps
+            # directly off self.clock.getTime() (see KeyPress.__init__). Exactly the clock-epoch
+            # bug class hardware/clock.py already fixed once, one layer down.
+            self._keyboard = keyboard.Keyboard(clock=core.monotonicClock)
             self.backend = self._describe_backend(self._keyboard)
         except Exception as exc:  # noqa: BLE001 - degrade to the event fallback rather than crash
             logger.warning("Keyboard() init failed (%s); using psychopy.event fallback only.", exc)
