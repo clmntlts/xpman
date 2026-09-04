@@ -1429,7 +1429,15 @@ def _run_dual_stream(
                         if first_seg_list[rt.stream_index].oddball
                         else None
                     ),
-                    "achieved_oddball_freq_hz": rt.plan.achieved_oddball_hz,
+                    # rt.plan.achieved_oddball_hz is 0.0 for a base-only stream -- an internal
+                    # sentinel (see _plan_base_only_segment's docstring), never a real measurement.
+                    # Null it out here to match requested_oddball_freq_hz above: otherwise a
+                    # researcher reading the raw export sees "requested: null, achieved: 0.0" for
+                    # the same base-only stream and could mistake 0.0 for an actual measured
+                    # oddball frequency rather than "this stream has no oddball at all."
+                    "achieved_oddball_freq_hz": (
+                        rt.plan.achieved_oddball_hz if first_seg_list[rt.stream_index].oddball else None
+                    ),
                     "frames_per_stimulus": rt.plan.n_frames_per_stim,
                     "position_pix": [rt.stream.position_pix[0], rt.stream.position_pix[1]],
                     "base_trigger_code": rt.stream.base_trigger_code,

@@ -8,6 +8,41 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Wall-clock sync anchor for the raw export (2026-09-04)
+
+- [x] **Cross-system alignment**: every raw-export row's `timestamp` is seconds on PsychoPy's
+      monotonic clock, zeroed at an arbitrary process-start instant with no logged relationship to
+      real time -- there was no way to align the export against another system's own timestamped
+      log (video, eye-tracker, ...) without an anchor. `runtime.engine.execute_run` now logs a
+      `wall_clock_utc` field (a real `datetime.now(timezone.utc)`, ISO 8601) alongside the existing
+      `run_started` event -- that event's own `timestamp` column IS the monotonic reading at the
+      same instant, so the pair is a complete `(monotonic, wall-clock)` anchor. Added
+      `core.raw_export.find_wall_clock_anchor`/`event_wall_clock_time` so converting any other
+      event's `timestamp` to an absolute UTC instant is one function call, not hand-rolled per
+      analysis script. Explicitly scoped as **soft, software-clock precision** (fine for a video/
+      eye-tracker log) -- not a substitute for the photodiode+trigger hardware sync EEG timing
+      needs (`docs/verification_protocol.md`); two independent OS clocks drift regardless of how
+      carefully either is timestamped. Frame numbers (the other half of the original ask) were
+      already logged (`frame_index`) on every flip/onset event -- confirmed, not a gap.
+      Backward-compatible: an older raw export with no `wall_clock_utc` field just makes
+      `find_wall_clock_anchor` return `None`, not raise.
+
+## Base-only stream's achieved_oddball_freq_hz: 0.0 instead of null (2026-09-04)
+
+- [x] **Fixed an inconsistency spotted by eyeballing a real raw export** right after the "int too
+      big to convert" fix above -- self-introduced earlier this session (the per-stream
+      requested/achieved frequency echo added for dual/multi-stream verification). For a base-only
+      "filler" stream in the `base_oddball_sequence_start` event's `streams` list,
+      `requested_oddball_freq_hz` correctly showed `null` (this stream has no oddball), but
+      `achieved_oddball_freq_hz` echoed the internal `0.0` sentinel (`_plan_base_only_segment`'s
+      documented placeholder, never a real measurement) verbatim -- reading, on a raw CSV/Parquet
+      export, like "an oddball was measured at 0.0 Hz" rather than "this stream has no oddball at
+      all." `paradigm_oddball.py`'s event-construction now nulls `achieved_oddball_freq_hz` too
+      whenever the stream has no oddball segment, matching `requested_oddball_freq_hz`. (The
+      internal `_SegmentPlan.achieved_oddball_hz`/`per_stream[i].achieved_oddball_freq_hz` sentinel
+      itself is untouched -- it's a different, already well-tested internal field; only the
+      externally-logged/exported event payload changed.)
+
 ## Raw-data export crash: "int too big to convert" (2026-09-04)
 
 - [x] **Fixed a real bug hit live in the GUI** ("Export raw data..." → "Could not export raw

@@ -8,12 +8,19 @@ Deliberately separate from ``core.export``: that module's tidy per-trial summary
 actually recorded" view (one row per raw event -- flips, onsets, trigger sends, trial/phase
 boundaries, ...). See ``core.export``'s module docstring for why those stay two different shapes
 rather than one merged table.
+
+Every row's own ``timestamp`` is seconds on PsychoPy's monotonic clock -- fine for computing
+inter-event durations, but with no inherent relationship to real time, so aligning the export
+against another system's own timestamped log (video, eye-tracker, ...) needed a wall-clock anchor.
+``runtime.engine`` logs one (a ``wall_clock_utc`` field on the once-per-Run ``run_started`` event);
+see :func:`find_wall_clock_anchor` / :func:`event_wall_clock_time` to use it.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +124,33 @@ def normalize_raw_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     other_keys = sorted(present - set(_RAW_CONTEXT_COLUMNS))
     all_keys = [c for c in _RAW_CONTEXT_COLUMNS if c in present] + other_keys
     return [{key: row.get(key) for key in all_keys} for row in rows]
+
+
+def find_wall_clock_anchor(rows: list[dict[str, Any]]) -> tuple[float, datetime] | None:
+    """Find the ``(monotonic_timestamp, wall_clock_utc)`` anchor pair logged once per Run on the
+    ``run_started`` event (see ``runtime.engine.execute_run``), or ``None`` if this Run predates
+    the wall-clock-anchor feature (an older raw export with no ``wall_clock_utc`` field).
+
+    Pass the result to :func:`event_wall_clock_time` to convert any other event's own
+    ``timestamp`` (seconds on PsychoPy's monotonic clock, otherwise unrelated to real time) into
+    an absolute UTC instant -- for aligning the raw export against another system's own
+    timestamped log (video, eye-tracker, ...). Soft, software-clock precision; not a substitute
+    for the photodiode+trigger hardware sync EEG timing needs (see
+    ``docs/verification_protocol.md``).
+    """
+    for row in rows:
+        if row.get("event_type") == "run_started" and row.get("wall_clock_utc"):
+            return float(row["timestamp"]), datetime.fromisoformat(row["wall_clock_utc"])
+    return None
+
+
+def event_wall_clock_time(
+    event_timestamp: float, anchor: tuple[float, datetime]
+) -> datetime:
+    """Convert one event's monotonic ``timestamp`` to an absolute UTC ``datetime``, given the
+    ``(monotonic_timestamp, wall_clock_utc)`` anchor pair from :func:`find_wall_clock_anchor`."""
+    anchor_timestamp, anchor_wall_clock_utc = anchor
+    return anchor_wall_clock_utc + timedelta(seconds=event_timestamp - anchor_timestamp)
 
 
 def get_run_raw_event_rows(session: Session, run_id: int, data_dir: str | Path | None) -> list[dict[str, Any]]:
