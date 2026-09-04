@@ -71,12 +71,19 @@ def _insert_run(session, instance_id, subject_id, *, status=RunStatus.COMPLETED)
     return run
 
 
+#: A realistic core.rng.derive_seed() value -- the FULL SHA-256 digest of some key, interpreted as
+#: an integer (up to 256 bits) -- not a small placeholder int. Using a small int here would never
+#: have caught the real bug (#raw-export-int-overflow): pa.Table.from_pylist only raises
+#: `OverflowError: int too big to convert` once a value actually exceeds int64 range.
+_REALISTIC_RNG_SEED = int.from_bytes(b"xpman-test-fixture-seed-material", byteorder="big")
+
+
 def _write_real_events(data_dir, instance_id, subject_id, run_id) -> None:
     """Write a real EventSink CSV/Parquet at the canonical data_dir layout, with a small but
     representative mix of event types/payload shapes (mirrors what task.py actually logs)."""
     run_dir = data_dir / str(instance_id) / str(subject_id) / str(run_id)
     sink = EventSink(run_dir / "events.csv", run_dir / "events.parquet")
-    sink.log("run_started", {"rng_seed": 123456789})
+    sink.log("run_started", {"rng_seed": _REALISTIC_RNG_SEED})
     sink.log("trial_start", {"trial_index": 0, "condition_id": 1}, timestamp=1.0)
     sink.log("stimulus_onset", {"stim_index": 0, "is_oddball": False, "image": "img001.png", "pos": [0.0, 0.0]}, timestamp=1.1)
     sink.log("trigger_sent", {"code": 1, "stim_index": 0, "is_oddball": False}, timestamp=1.1)
@@ -136,6 +143,22 @@ def test_read_raw_event_rows_flattens_payload_and_stringifies_lists(tmp_path):
     assert rows[0]["stim_index"] == 0
     # A list payload value becomes JSON text, not a raw Python list -- CSV/Parquet-safe.
     assert rows[0]["pos"] == json.dumps([10.0, -5.0])
+
+
+def test_read_raw_event_rows_stringifies_ints_outside_int64_range(tmp_path):
+    """Regression: run_started's rng_seed (core.rng.derive_seed) is a full-SHA-256-digest integer,
+    up to 256 bits by design -- pyarrow's Table.from_pylist raises `OverflowError: int too big to
+    convert` on ANY int outside signed-64-bit range, which previously surfaced to a researcher as
+    an opaque "Could not export raw data: int too big to convert" dialog on every real Run."""
+    events_dir = tmp_path / "run"
+    sink = EventSink(events_dir / "events.csv", events_dir / "events.parquet")
+    huge_seed = 2**200 + 12345  # far outside int64 (max ~9.2e18)
+    sink.log("run_started", {"rng_seed": huge_seed, "n_trials": 5})
+    sink.close()
+
+    rows = read_raw_event_rows(events_dir / "events.csv")
+    assert rows[0]["rng_seed"] == str(huge_seed)  # stringified, round-trips exactly
+    assert rows[0]["n_trials"] == 5  # an ordinary in-range int is untouched, stays a real int
 
 
 def test_get_run_raw_event_rows_end_to_end(session, tmp_path):
@@ -229,6 +252,10 @@ def test_export_run_raw_bundle_writes_csv_parquet_and_manifest(session, tmp_path
 
     table = pq.read_table(parquet_path)
     assert table.num_rows == 6
+    # Regression: this used to raise OverflowError building the table (rng_seed is a full
+    # SHA-256-digest int, up to 256 bits) -- confirm it round-trips as a string, not silently lost.
+    rng_seed_col = table.column("rng_seed").to_pylist()
+    assert str(_REALISTIC_RNG_SEED) in rng_seed_col
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["run_id"] == run.id
