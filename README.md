@@ -34,7 +34,36 @@ setup/contributing doc; the tutorial is for actually using the app.
 see "Packaged build" below — then just double-click `xpman.exe`. No Python required. That's
 what [`docs/tutorial.md`](docs/tutorial.md) assumes.
 
-**Developing xpman:**
+**Developing xpman, on a machine that already has this checkout:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_dev_env.ps1
+```
+
+(`-ExecutionPolicy Bypass` is needed because Windows' default policy blocks unsigned scripts —
+this only affects this one invocation, not your system-wide policy. Already running inside a
+PowerShell prompt with a permissive policy? Plain `scripts\setup_dev_env.ps1` works too.)
+
+One command, safe to re-run: installs git/Python 3.11 via `winget` if either is missing, creates
+`.venv`, installs the `dev` extra, and runs the test suite as a real smoke test (a clean `pip
+install` isn't proof PsychoPy/PySide6 actually work on this machine's graphics stack — see the
+script's header comment). Pass `-SkipTests` to skip the test run, or `-IncludeBuildTools` to also
+install the `build` extra (PyInstaller) for producing a packaged `.exe` from this checkout too.
+
+**On a genuinely bare machine (nothing installed, repo not even cloned yet):** download just
+[`scripts/setup_dev_env.ps1`](scripts/setup_dev_env.ps1) into an empty folder, then from a
+PowerShell prompt in that folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup_dev_env.ps1
+```
+
+Don't just double-click the file — Windows opens `.ps1` files in a text editor by default rather
+than running them. With no existing checkout to run from, the command above clones this repo
+first (default: into `.\xpman`; override with `-RepoUrl`/`-Destination`), then proceeds exactly
+as above.
+
+**Or by hand, if you'd rather not run a script:**
 
 ```powershell
 py -3.11 -m venv .venv
