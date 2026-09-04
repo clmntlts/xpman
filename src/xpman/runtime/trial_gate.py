@@ -13,6 +13,14 @@ Kept out of ``engine.py`` itself (which deliberately never draws) and out of the
 cross-task run behavior, not paradigm logic). ``make_trial_gate`` builds the closure the engine
 calls; the drawing/waiting is PsychoPy-coupled but injectable-window-friendly, so it unit-tests
 with a mock window + patched keyboard the same way ``tasks/fpvs`` does.
+
+**Periodic break / instructions screen** (``break_every_n_trials``/``break_text``, both
+optional): the same gate, at trials ``0, N, 2N, ...``, additionally shows a researcher-authored
+free-form message and -- regardless of the routine ``mode`` -- always waits for the advance key
+rather than the AUTO delay, so a break/instructions message can't auto-dismiss before it's read.
+Firing at trial 0 (before the very first trial) is what makes this double as an instructions
+screen with no separate mechanism needed: the same "every N trials" schedule naturally includes
+the run's start.
 """
 
 from __future__ import annotations
@@ -59,6 +67,8 @@ def make_trial_gate(
     show_info: bool,
     n_trials: int,
     abort_check: Callable[[], bool] = lambda: False,
+    break_every_n_trials: int = 0,
+    break_text: str = "",
 ) -> Callable[[int], None]:
     """Build the ``on_before_trial(trial_index)`` hook the engine calls before each trial.
 
@@ -67,18 +77,34 @@ def make_trial_gate(
     ``abort_check`` and return early if it becomes true, so an abort requested during a long
     manual wait is honored promptly (the engine re-checks ``abort_check`` right after the hook
     returns and stops before running the trial).
+
+    ``break_every_n_trials`` (0 disables): at ``trial_index`` 0, N, 2N, ... this ALSO shows
+    ``break_text`` above the routine text and, regardless of ``mode``, waits for the advance key
+    (never the AUTO delay) -- a break/instructions message must be dismissed deliberately, not
+    time out. Trial 0 always qualifies (``0 % N == 0`` for any N > 0), so this doubles as a
+    one-time instructions screen before the run's very first trial with no separate mechanism.
     """
     import psychopy.event as event
     import psychopy.visual as visual
 
     def gate(trial_index: int) -> None:
-        text = _info_text(mode, trial_index, n_trials, show_info)
+        at_break = break_every_n_trials > 0 and trial_index % break_every_n_trials == 0
+        info = _info_text(mode, trial_index, n_trials, show_info)
+        if at_break:
+            lines = [break_text] if break_text else []
+            if show_info:
+                position = f"Trial {trial_index + 1}" + (f" of {n_trials}" if n_trials else "")
+                lines.append(position)
+            lines.append("Press SPACE to continue")
+            text = "\n\n".join(lines)
+        else:
+            text = info
         if text:
             stim = visual.TextStim(window, text=text, units="norm", height=0.08)
             stim.draw()
         window.flip()
 
-        if mode is TrialAdvanceMode.MANUAL:
+        if mode is TrialAdvanceMode.MANUAL or at_break:
             event.clearEvents()
             while not abort_check():
                 if _ADVANCE_KEY in event.getKeys(keyList=[_ADVANCE_KEY]):
@@ -86,7 +112,8 @@ def make_trial_gate(
                 _wait(_POLL_INTERVAL_SECONDS)
             return
 
-        # AUTO: wait `seconds`, polling abort so a long delay can still be cut short.
+        # AUTO (and not a break): wait `seconds`, polling abort so a long delay can still be cut
+        # short.
         deadline = clock.get_time() + seconds
         while clock.get_time() < deadline and not abort_check():
             _wait(_POLL_INTERVAL_SECONDS)

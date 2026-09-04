@@ -169,14 +169,17 @@ class TaskModule(ABC):
         before the trial loop starts (see ``runtime/engine.py``), so a task no longer has to smuggle
         such logic into a ``trial_index == 0`` branch of ``run_trial``.
 
-        Note on FPVS familiarization: FPVS deliberately does *not* use this hook (yet). Its
+        Note on FPVS familiarization specifically: it deliberately does *not* use this hook. Its
         familiarization stream is interleaved *inside* trial 0 -- it runs after that trial's
         randomized pre-stimulus interval and consumes trial-0's ``ctx.rng``-seeded base-pool shuffle,
         and it is reported in trial 0's ``outcome_summary``. Hoisting it up here would move it ahead
         of the pre-interval and change ``ctx.rng`` consumption order, both observable and both
-        forbidden by the byte-for-byte reproducibility guarantee. So FPVS keeps its in-trial
-        mechanism; this hook exists so *future* tasks (and any FPVS warm-up that is genuinely
-        run-level, not trial-0-coupled) have a clean, task-agnostic place to hang off.
+        forbidden by the byte-for-byte reproducibility guarantee. So FPVS keeps that one in-trial.
+
+        FPVS DOES use this hook for something else that genuinely is run-level, not trial-0-coupled:
+        ``tasks.fpvs.task.FPVSTask.on_before_run`` eagerly builds (GPU-uploads) every discovered
+        image's ``ImageStim`` here, so trial-start latency doesn't depend on which images a given
+        trial's randomized pool draw happens to touch for the first time.
         """
         return None
 

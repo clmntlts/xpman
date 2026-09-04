@@ -116,6 +116,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Show 'Trial N of M' text on the between-trials screen.",
     )
     parser.add_argument(
+        "--break-every-n-trials",
+        type=int,
+        default=0,
+        help="Show break_text and pause for a keypress (regardless of --trial-advance) every N "
+        "trials, starting at trial 1 -- 0 disables this (default). Trial 1 always qualifies, so "
+        "this doubles as a one-time instructions screen with no separate setting.",
+    )
+    parser.add_argument(
+        "--break-text",
+        default="",
+        help="Free-form message shown on the periodic break/instructions screen (see "
+        "--break-every-n-trials). May be empty (still pauses, no custom text).",
+    )
+    parser.add_argument(
         "--trigger-backend",
         choices=["none", "parallel", "serial"],
         default=None,
@@ -234,6 +248,8 @@ def run(
             show_info=args.show_trial_info,
             n_trials=n_trials,
             abort_check=_abort_check,
+            break_every_n_trials=args.break_every_n_trials,
+            break_text=args.break_text,
         )
 
     # Built inside the try (below) so a failed serial/parallel open is reported as a clean

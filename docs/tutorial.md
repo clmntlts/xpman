@@ -367,6 +367,10 @@ exported results.
       several experiments as alternative protocols).
     - **Between trials**: leave "Wait for keypress (manual)" for a real EEG session (the run
       pauses before each trial until you press SPACE) or choose auto-advance with a delay.
+    - **Periodic break / instructions screen** (optional): check the box, set "Every N trials",
+      and write a message — it's shown and waits for SPACE at trial 1 (so it doubles as one-time
+      instructions before the run starts) and again every N trials after that, regardless of the
+      Between-trials setting above (a break always waits for a keypress, never auto-dismisses).
     - Set **Monitor (screen index)** if the stimulus screen isn't the primary display.
     - Leave Fullscreen checked; check/uncheck triggers depending on whether an amplifier is
       connected → **Launch**. Watch the progress bar; use Abort if needed.

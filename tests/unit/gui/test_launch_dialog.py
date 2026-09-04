@@ -255,6 +255,53 @@ def test_launch_passes_auto_advance_when_selected(qtbot, db_path, tmp_path):
     assert "3.5" in args_arg
 
 
+def test_break_controls_disabled_until_toggled(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    assert not dialog._break_enabled_check.isChecked()  # off by default
+    assert not dialog._break_every_n_spin.isEnabled()
+    assert not dialog._break_text_edit.isEnabled()
+
+    dialog._break_enabled_check.setChecked(True)
+    assert dialog._break_every_n_spin.isEnabled()
+    assert dialog._break_text_edit.isEnabled()
+
+
+def test_launch_omits_break_args_when_disabled(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+
+    assert "--break-every-n-trials" not in args_arg
+    assert "--break-text" not in args_arg
+
+
+def test_launch_passes_break_settings_when_enabled(qtbot, db_path, tmp_path):
+    fixture = _build_fixture(db_path)
+    dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
+    qtbot.addWidget(dialog)
+    dialog._break_enabled_check.setChecked(True)
+    dialog._break_every_n_spin.setValue(7)
+    dialog._break_text_edit.setPlainText("Take a short break.")
+
+    mock_process = MagicMock()
+    with patch("xpman.gui.dialogs.launch_dialog.QProcess", return_value=mock_process):
+        dialog._on_launch()
+    args_arg = mock_process.start.call_args[0][1]
+
+    assert "--break-every-n-trials" in args_arg
+    assert "7" in args_arg
+    assert "--break-text" in args_arg
+    assert "Take a short break." in args_arg
+
+
 def test_launch_passes_screen_index(qtbot, db_path, tmp_path):
     fixture = _build_fixture(db_path)
     dialog = LaunchDialog(fixture["session"], fixture["instance"].id, fixture["profile"].id, db_path, tmp_path / "runs")
