@@ -94,6 +94,12 @@ square/screen now") and default to a real parallel port at `0x0378` — pass
 port fails to open, run `scripts\install_parallel_port_driver.ps1` **as Administrator** first
 — Windows 11 needs the driver DLL manually placed in `System32`/`SysWOW64`.
 
+`run_fpvs_task_manual.py` also has one dedicated flag per "New features to verify" scenario
+below (`--second-stream`, `--jitter`, `--sweep-steps`, `--baseline`, `--tracked-stream-index`) —
+see its own `--help`/module docstring for the full flag list and an example invocation. This
+means every scenario in that section is runnable through the documented CLI workflow, without
+hand-editing the script or building through the GUI.
+
 ## Reading the event log
 
 Every run writes `data\runs\<instance_id>\<subject_id>\<run_id>\events.csv` (+ matching

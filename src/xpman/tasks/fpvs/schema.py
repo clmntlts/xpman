@@ -267,8 +267,10 @@ class StreamParams(BaseModel):
     main stream's ``base.trial_duration_seconds`` is actually used to time the trial; the same
     field on a second/additional stream has no effect (present only for a uniform shape).
 
-    The frequency tags are recovered in the frequency domain by FFT, and the photodiode tracks the
-    main stream's timing. **Per-stream EEG triggers are optional (v2, default off):** set
+    The frequency tags are recovered in the frequency domain by FFT, and the photodiode
+    hardware-verifies exactly one stream's timing -- see ``FPVSConditionParams.photodiode``'s
+    ``tracked_stream_index`` (default 0 = main; the other streams' timing is presented but not
+    hardware-verified against the diode). **Per-stream EEG triggers are optional (v2, default off):** set
     ``base.base_trigger_code`` / ``oddball.oddball_trigger_code`` to emit an 8-bit code on this
     stream's onsets; leaving both ``None`` sends no trigger for it. When two streams BOTH send
     triggers, frames where both onset together resolve to a single reserved coincidence code (see

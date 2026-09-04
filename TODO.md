@@ -8,6 +8,44 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Manual hardware-verification workflow audit (2026-09-04)
+
+Follow-up to reviewing `docs/verification_protocol.md` + `tests/manual_hardware/*.py` +
+`core/verification_report.py` end-to-end for currency after this session's schema changes.
+Found one real regression (a script that would have failed at the lab) plus two completeness
+gaps that blocked the protocol's own "New features to verify" section from actually being
+runnable through the documented CLI workflow.
+
+- [x] **Fixed a broken manual verification script.** `tests/manual_hardware/
+      run_fpvs_task_manual.py` -- the exact script the protocol tells lab staff to run --
+      constructed `main_stream=StreamParams(base_selector=..., oddball_selector=...)` without
+      `enabled=True`. The stream-unification commit (`efc5c67`, this session) changed
+      `StreamParams`'s own bare default for `enabled` to `False` (only
+      `FPVSConditionParams.main_stream`'s default factory sets it `True`); overriding the whole
+      field drops that default, so `FPVSConditionParams` rejected every invocation outright
+      (`main_stream.enabled must be True`) before opening a window. Never caught because these
+      scripts are deliberately outside pytest ("Not a pytest test", run at the lab). Fixed by
+      passing `enabled=True` explicitly, with a comment explaining why it's needed.
+- [x] **The protocol's "New features to verify" section (jitter, sweep, baseline, dual bilateral
+      streams) had no CLI path to actually run those scenarios** -- `run_fpvs_task_manual.py`
+      only ever exposed base/oddball frequency and trigger-code flags, and the protocol
+      explicitly says not to build Conditions through the GUI for this workflow ("skip
+      tree-building and just run one trial immediately from CLI flags"). Added
+      `--second-stream`/`--tracked-stream-index`/`--jitter`/`--sweep-steps`/`--baseline` (and
+      their sub-options) so every scenario in that section is runnable as documented, without
+      hand-editing the script. `docs/verification_protocol.md` now points at them.
+- [x] **Verification report was blind to every stream but the first in a dual/multi-stream run.**
+      `core/verification_report.py`'s frequency-check echo (protocol item 6) only ever read the
+      top-level `requested/achieved_*_freq_hz` fields, which `paradigm_oddball.py` only populates
+      from stream 0. Added `requested_base_freq_hz`/`requested_oddball_freq_hz` to each stream's
+      entry in the `base_oddball_sequence_start` event's `streams` list, and extended
+      `_extract_frequency_checks` to echo every stream, not just the first -- so a second/
+      additional stream's own requested-vs-achieved frequency is available next to the diode/FFT
+      measurement, not just the main stream's.
+- [x] Fixed a stale docstring: `StreamParams`' class docstring still said "the photodiode tracks
+      the main stream's timing" after the `tracked_stream_index` fix earlier in this session
+      (missed at the time -- caught here while re-reading the schema for this audit).
+
 ## FPVS methodological gaps from lab-readiness review (2026-09-04)
 
 Follow-up to a lab-readiness assessment of the FPVS task (post [[FPVS stream/attention-task schema

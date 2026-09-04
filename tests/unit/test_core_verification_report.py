@@ -222,6 +222,72 @@ def test_frequency_check_empty_with_no_sequence_start_event():
     assert report.frequency_checks == []
 
 
+def test_frequency_check_covers_every_stream_in_a_dual_stream_run():
+    """Dual/multi-stream verification (protocol item 6): the top-level fields only ever echo
+    stream 0 -- the per-stream "streams" list must be echoed too, so a second stream's own
+    requested-vs-achieved frequency is available next to the diode/FFT measurement."""
+    events = [
+        _event(
+            "base_oddball_sequence_start",
+            0.0,
+            {
+                "requested_base_freq_hz": 6.0,
+                "achieved_base_freq_hz": 5.98,
+                "requested_oddball_freq_hz": 1.2,
+                "achieved_oddball_freq_hz": 1.196,
+                "streams": [
+                    {
+                        "stream": 0,
+                        "requested_base_freq_hz": 6.0,
+                        "achieved_base_freq_hz": 5.98,
+                        "requested_oddball_freq_hz": 1.2,
+                        "achieved_oddball_freq_hz": 1.196,
+                    },
+                    {
+                        "stream": 1,
+                        "requested_base_freq_hz": 7.0,
+                        "achieved_base_freq_hz": 7.02,
+                        "requested_oddball_freq_hz": 1.1,
+                        "achieved_oddball_freq_hz": 1.103,
+                    },
+                ],
+            },
+        )
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    by_label = {fc.label: fc for fc in report.frequency_checks}
+    # Stream 0 is not duplicated (already covered by the top-level "base"/"oddball" entries).
+    assert "stream 0 base" not in by_label
+    assert by_label["base"].achieved_hz == 5.98
+    assert by_label["stream 1 base"].requested_hz == 7.0
+    assert by_label["stream 1 base"].achieved_hz == 7.02
+    assert by_label["stream 1 oddball"].requested_hz == 1.1
+    assert by_label["stream 1 oddball"].achieved_hz == 1.103
+
+
+def test_frequency_check_stream_base_only_skips_missing_oddball():
+    events = [
+        _event(
+            "base_oddball_sequence_start",
+            0.0,
+            {
+                "requested_base_freq_hz": 6.0,
+                "achieved_base_freq_hz": 6.0,
+                "streams": [
+                    {"stream": 0, "requested_base_freq_hz": 6.0, "achieved_base_freq_hz": 6.0},
+                    {"stream": 1, "requested_base_freq_hz": 7.0, "achieved_base_freq_hz": 7.0},
+                ],
+            },
+        )
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    by_label = {fc.label: fc for fc in report.frequency_checks}
+    assert "stream 1 base" in by_label
+    assert "stream 1 oddball" not in by_label
+
+
 # ---------------------------------------------------------------------------
 # format() -- smoke tests, not exact-string assertions (the text is meant for humans)
 # ---------------------------------------------------------------------------
