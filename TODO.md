@@ -8,6 +8,50 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## One-command dev environment bootstrap (2026-09-04)
+
+- [x] **Bulletproofing pass on `scripts\setup_dev_env.ps1`**, at the user's explicit request
+      before trusting it. Found and fixed one real bug plus several robustness gaps that static
+      review alone wouldn't have surfaced -- all confirmed by actually running the script
+      end-to-end twice more (an existing checkout re-run, and a genuine fresh `git clone` in an
+      isolated short-path scratch directory, both to a clean exit code 0 with `xpman` importable
+      from the result):
+      - **Real bug:** the pip extras string was built as `".[dev]"` and concatenated directly onto
+        the absolute repo path (`"$RepoRoot$Extras"` → `...\xpman.[dev]`) -- malformed pip syntax
+        that happened to install correctly *only* because Win32's `CreateFile` silently strips a
+        trailing dot from a path component, which pip/pathlib then benefits from. Confirmed via a
+        side-by-side `pip install --dry-run` of both forms. Fixed to the textbook-correct
+        `"[dev]"` (no leading dot), independent of that OS quirk.
+      - Added a missing exit-code check after `py -3.11 -m venv` (a failed/corrupt venv would
+        previously go unnoticed until a confusing downstream pip error) and a following existence
+        check on `.venv\Scripts\python.exe`.
+      - The "is this an xpman checkout" detection was `pyproject.toml` alone -- too weak (a false
+        positive is plausible if the script were ever saved inside some other Python project's own
+        `scripts\` folder). Now also requires `src\xpman` to exist alongside it.
+      - Reusing an already-existing `-Destination` directory (the fresh-clone path) blindly assumed
+        it was a valid clone with no check; now validated the same way, with a clear error instead
+        of a confusing failure three steps later if it isn't.
+      - The two winget-install PATH refreshes REPLACED `$env:Path` from the registry outright,
+        which would silently drop any session-only PATH entries (a portable tool, a conda/pyenv
+        shim) not persisted to the registry. Changed to append.
+      - Documented the two most likely real-world stumbling blocks for a first run on a genuinely
+        bare machine, neither obvious from the script alone: PowerShell's default execution policy
+        blocks unsigned scripts (needs `-ExecutionPolicy Bypass` for this one invocation), and
+        double-clicking a `.ps1` on stock Windows opens it in a text editor rather than running it.
+
+- [x] **`scripts\setup_dev_env.ps1`** — from a bare Windows machine (git and Python 3.11 not even
+      installed yet) or an existing checkout, one idempotent command produces a working `.venv`
+      with the `dev` extra installed and runs the test suite as a real smoke test (matching this
+      project's own "green pip install isn't proof it works" stance — PsychoPy/PySide6 are
+      exactly the kind of native-dependency packages that can install cleanly and still fail to
+      import on a given machine). Installs missing prerequisites (git, Python 3.11) via `winget`,
+      mirroring the pattern `build_installer.ps1` already uses for Inno Setup. Run standalone
+      from an empty folder (no checkout yet) and it clones the repo first. `-SkipTests` and
+      `-IncludeBuildTools` (adds the `build` extra) are the two escape hatches. README.md's Setup
+      section now leads with this instead of the manual venv/pip/pytest steps (kept as a
+      documented fallback). Verified end-to-end against this checkout (existing `.venv` reused,
+      `pip install -e .[dev]` idempotent no-op, full suite: 1232 passed, 1 skipped).
+
 ## Manual hardware-verification workflow audit (2026-09-04)
 
 Follow-up to reviewing `docs/verification_protocol.md` + `tests/manual_hardware/*.py` +
