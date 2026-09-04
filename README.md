@@ -114,6 +114,11 @@ end user's machine. **Not code-signed** — Windows SmartScreen will show an "un
 publisher" warning on first run; a paid certificate would be needed to remove that, not set up
 here.
 
+**Cutting an actual release?** See [`docs/release_process.md`](docs/release_process.md) for the
+full checklist and the machine-specific gotchas that have shipped broken builds before (most
+recently: a conda-based `.venv` freezes into an exe that crashes on every launch, with no error
+at build time).
+
 ## Project layout
 
 See `docs/architecture.md` for the full package layout and the reasoning behind each technology

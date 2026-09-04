@@ -8,6 +8,41 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## 0.3.0 release: two real packaging bugs found only by actually verifying the build (2026-09-05)
+
+Cutting the 0.3.0 release (see [`docs/release_process.md`](docs/release_process.md), new this
+release) surfaced two genuine, previously-unknown packaging bugs -- neither is an xpman code
+issue, both are machine/environment-specific, and both were invisible until the installer was
+actually run (a green `pyinstaller`/Inno Setup exit code caught neither). This is the third time
+in this project's history that skipping real post-build verification would have shipped a broken
+`.exe` (after 0.1.0 and 0.2.0) -- `docs/release_process.md` exists so this stops being a surprise
+each time.
+
+- [x] **A conda-based `.venv` freezes into an exe that crashes on every launch.** This machine's
+      `.venv` turned out to be built from Anaconda's Python (`py -3.11` silently resolved there),
+      not the standalone CPython the README documents as verified. `NameError: name 'windll' is
+      not defined` inside `psychopy\platform_specific\win32.py` on every frozen-exe launch --
+      Anaconda's `_ctypes.pyd` needs a `Library\bin\ffi.dll` that only resolves inside an
+      activated conda environment, not the isolated venv PyInstaller freezes from. Dev work
+      (tests, unfrozen GUI) is completely unaffected; only freezing breaks. Fixed the immediate
+      problem by rebuilding `.venv` from a genuine standalone Python 3.11 (winget), and added a
+      permanent guard: both `setup_dev_env.ps1` (at venv-creation time) and `build_windows_exe.ps1`
+      (at build time, reading `.venv\pyvenv.cfg`) now detect this and fail loudly with the full
+      explanation instead of silently producing a broken build. Full root cause and fix in
+      `docs/release_process.md`'s gotcha #1.
+- [x] **`build_windows_exe.ps1` itself crashed on a machine without PyInstaller pre-installed** --
+      completely unrelated to the conda issue, and would have hit ANY machine building xpman for
+      the first time. `pip show pyinstaller > $null 2>&1` -- redirecting a native command's
+      stderr in Windows PowerShell 5.1 wraps it as a `NativeCommandError`, which
+      `$ErrorActionPreference = "Stop"` then promotes to a terminating exception, even though
+      `pip show`'s "not found" warning on stderr is exactly the expected signal this check exists
+      to detect. Never caught before because every prior build happened to run on a machine that
+      already had PyInstaller installed. Fixed by not redirecting stderr at all.
+- [x] Verified the actual fix end-to-end: a real Run (10 flips, triggers, `trial_end`, `cleanup`)
+      completed through the *installed*, frozen `xpman.exe` in fullscreen mode -- the exact check
+      that would have caught 0.1.0's and 0.2.0's broken releases, and did catch this one on the
+      first attempt.
+
 ## Pre-release panel review: 6 fixes (2026-09-04)
 
 Follow-up to a multi-agent panel review (EEG-hardware-engineer + FPVS-methodology-expert +
