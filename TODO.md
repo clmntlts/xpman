@@ -8,6 +8,36 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Eager image preload + periodic break/instructions screen (2026-09-04)
+
+- [x] **Preload every image at Run launch, not lazily at first use** (consistent trial-to-trial
+      reactivity). `_get_image_stim` built (GPU-uploaded) each `ImageStim` lazily, inside
+      `run_trial`, the first time any trial happened to need it -- so trial-start latency depended
+      on how many *new* images that trial's randomized pool draw touched, not a fixed cost.
+      `FPVSTask.on_before_run` (an existing, previously-unused-by-FPVS hook the engine already
+      calls once per Run, after `prepare()` and before trial 1) now builds every entry
+      `scan_directory` found, up front. Scoped to the whole resource directory, not narrowed to
+      only what this Instance's Conditions actually reference -- `prepare()`/`on_before_run()`
+      don't see the trial sequence, and narrowing would need bigger plumbing; for a resource
+      folder curated per-study this just moves the same total upload cost to one upfront wait.
+      **Found and fixed a latent correctness bug while making this safe**: `_get_image_stim`'s
+      cache was keyed by `entry.path` alone, ignoring the luminance/contrast-equalization
+      `path_overrides` -- two different Conditions in one Run resolving the same shared image to
+      *different* equalization targets (different pool compositions -> different combined-pool
+      means) would have silently served whichever one built first to both, for the rest of the
+      Run. Blind preloading (always calling with no override) would have made this trigger far
+      more often. Fixed by keying on `(entry.path, resolved_source_path)` instead, so a no-override
+      preload and a later equalized build are correctly separate cache entries.
+- [x] **Periodic break / instructions screen**, toggleable and parametrized in the Launch dialog
+      (per-Program, matching how `trial_advance`/`show_trial_info` already work). Extends the
+      existing `runtime/trial_gate.py` between-trials gate (not a new mechanism) with
+      `break_every_n_trials`/`break_text`: at trials `0, N, 2N, ...` it shows the free-form message
+      and -- regardless of the routine manual/auto `trial_advance` mode -- always waits for a
+      keypress, so a break/instructions message can't silently auto-dismiss. Firing at trial 0
+      doubles it as a one-time instructions screen before the run starts, with no separate hook
+      needed. New CLI flags `--break-every-n-trials`/`--break-text` thread it from
+      `LaunchDialog` through `launch_worker.py` to the gate, same path as the existing settings.
+
 ## Wall-clock sync anchor for the raw export (2026-09-04)
 
 - [x] **Cross-system alignment**: every raw-export row's `timestamp` is seconds on PsychoPy's

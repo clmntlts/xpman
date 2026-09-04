@@ -263,6 +263,96 @@ def test_prepare_logs_scan_warnings(mock_window, tmp_path, event_sink):
 
 
 # ---------------------------------------------------------------------------
+# on_before_run() -- eager image preload, so trial 1 isn't the one that pays the GPU-upload cost
+# ---------------------------------------------------------------------------
+
+
+def test_on_before_run_preloads_every_discovered_image(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+    assert task._image_stim_cache == {}  # nothing built yet
+
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")) as mock_stim:
+        task.on_before_run(ctx)
+
+    assert mock_stim.call_count == 6  # 3 objects + 3 faces, every discovered entry
+    assert len(task._image_stim_cache) == 6
+
+
+def test_on_before_run_logs_images_preloaded_event(mock_window, stim_root, event_sink):
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")):
+        task.on_before_run(ctx)
+    event_sink.close()
+
+    import csv
+    import json
+
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    preload_row = next(r for r in rows if r["event_type"] == "images_preloaded")
+    assert json.loads(preload_row["payload_json"])["n_images"] == 6
+
+
+def test_run_trial_after_on_before_run_builds_no_new_image_stims(mock_window, stim_root, event_sink):
+    """The whole point: once on_before_run has warmed the cache, an actual trial must build
+    NOTHING new (a cache hit for every image it needs), not just fewer things than before."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")):
+        task.on_before_run(ctx)
+
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 0.2
+
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")) as mock_stim, patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    mock_stim.assert_not_called()  # every image this trial needed was already cached
+
+
+def test_on_before_run_then_equalized_trial_still_builds_the_equalized_variant(
+    mock_window, split_stim_root, event_sink
+):
+    """A trial whose Condition enables equalization must still get the CORRECT (equalized)
+    pixels, not the no-override texture on_before_run already cached under a different key --
+    the cache-key fix (entry.path, source_path) is what makes preloading safe to do blindly."""
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, split_stim_root, event_sink)
+    task.prepare(ctx)
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")):
+        task.on_before_run(ctx)
+    n_preloaded = len(task._image_stim_cache)
+
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="dark")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="light")
+    params.main_stream.base.trial_duration_seconds = 0.2
+    params.equalization.enabled = True
+
+    with patch("psychopy.visual.ImageStim", return_value=MagicMock(name="ImageStim")), patch(
+        "psychopy.visual.Rect", return_value=MagicMock()
+    ), patch("psychopy.visual.Line", return_value=MagicMock()), patch(
+        "psychopy.hardware.keyboard.Keyboard", return_value=MagicMock(getKeys=MagicMock(return_value=[]))
+    ):
+        task.run_trial(ctx, params.model_dump(), trial_index=0)
+
+    # The equalized variants are ADDITIONAL cache entries, not overwrites of the preloaded ones.
+    assert len(task._image_stim_cache) > n_preloaded
+
+
+# ---------------------------------------------------------------------------
 # run_trial()
 # ---------------------------------------------------------------------------
 

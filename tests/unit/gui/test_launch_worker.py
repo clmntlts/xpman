@@ -96,13 +96,18 @@ def test_parse_args_trial_advance_defaults_and_overrides():
     assert default.trial_advance == "manual"  # legacy default: pause and wait for the key
     assert default.trial_advance_seconds == 2.0
     assert default.show_trial_info is False
+    assert default.break_every_n_trials == 0  # disabled by default
+    assert default.break_text == ""
 
     overridden = parse_args(
-        [*base, "--trial-advance", "auto", "--trial-advance-seconds", "1.5", "--show-trial-info"]
+        [*base, "--trial-advance", "auto", "--trial-advance-seconds", "1.5", "--show-trial-info",
+         "--break-every-n-trials", "5", "--break-text", "Take a break."]
     )
     assert overridden.trial_advance == "auto"
     assert overridden.trial_advance_seconds == 1.5
     assert overridden.show_trial_info is True
+    assert overridden.break_every_n_trials == 5
+    assert overridden.break_text == "Take a break."
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +272,8 @@ def test_gate_factory_receives_args_and_gate_runs_per_trial(db_path, tmp_path):
         ["--db-path", str(db_path), "--instance-id", str(instance_id), "--subject-id", str(subject_id),
          "--data-dir", str(tmp_path / "runs"), "--no-trigger-hardware",
          "--experiment-id", str(exp_ids["B"]), "--trial-advance", "auto",
-         "--trial-advance-seconds", "0", "--show-trial-info"]
+         "--trial-advance-seconds", "0", "--show-trial-info",
+         "--break-every-n-trials", "2", "--break-text", "Rest your eyes."]
     )
     window = _mock_window()
     seen_kwargs = {}
@@ -288,6 +294,8 @@ def test_gate_factory_receives_args_and_gate_runs_per_trial(db_path, tmp_path):
     assert seen_kwargs["seconds"] == 0.0
     assert seen_kwargs["show_info"] is True
     assert seen_kwargs["n_trials"] == 2  # scoped to Exp B
+    assert seen_kwargs["break_every_n_trials"] == 2
+    assert seen_kwargs["break_text"] == "Rest your eyes."
     assert gate_calls == [0, 1]  # invoked before each of Exp B's two trials
 
 

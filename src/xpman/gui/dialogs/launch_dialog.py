@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -137,6 +138,33 @@ class LaunchDialog(QDialog):
         self._show_trial_info_check = QCheckBox("Show trial info text (Trial N of M)")
         self._show_trial_info_check.setChecked(True)
         layout.addWidget(self._show_trial_info_check)
+
+        self._break_enabled_check = QCheckBox("Periodic break / instructions screen")
+        self._break_enabled_check.setToolTip(
+            "Shows the message below and pauses for SPACE every N trials -- always waits for a "
+            "keypress regardless of the between-trials setting above, so it can't be missed. "
+            "Trial 1 always qualifies, so this also serves as a one-time instructions screen "
+            "before the run starts."
+        )
+        self._break_enabled_check.toggled.connect(self._on_break_toggled)
+        layout.addWidget(self._break_enabled_check)
+
+        self._break_every_n_spin = QSpinBox()
+        self._break_every_n_spin.setRange(1, 100000)
+        self._break_every_n_spin.setValue(10)
+        self._break_every_n_spin.setSuffix(" trials")
+        self._break_every_n_spin.setPrefix("Every ")
+        self._break_every_n_spin.setEnabled(False)
+        layout.addWidget(self._break_every_n_spin)
+
+        self._break_text_edit = QPlainTextEdit()
+        self._break_text_edit.setPlaceholderText(
+            "Message shown on the break/instructions screen (e.g. task instructions, or "
+            "\"Take a short break, then press SPACE to continue.\")"
+        )
+        self._break_text_edit.setFixedHeight(70)
+        self._break_text_edit.setEnabled(False)
+        layout.addWidget(self._break_text_edit)
 
         layout.addWidget(QLabel("Monitor (screen index):"))
         self._screen_spin = QSpinBox()
@@ -332,6 +360,9 @@ class LaunchDialog(QDialog):
         args += ["--trial-advance-seconds", str(self._trial_advance_seconds.value())]
         if self._show_trial_info_check.isChecked():
             args.append("--show-trial-info")
+        if self._break_enabled_check.isChecked():
+            args += ["--break-every-n-trials", str(self._break_every_n_spin.value())]
+            args += ["--break-text", self._break_text_edit.toPlainText()]
         args += self._build_trigger_args()
 
         # Persist the chosen backend so the lab's usual setup is preselected next launch.
@@ -356,6 +387,10 @@ class LaunchDialog(QDialog):
     def _on_trial_advance_changed(self) -> None:
         self._trial_advance_seconds.setEnabled(self._trial_advance_combo.currentData() == "auto")
 
+    def _on_break_toggled(self, checked: bool) -> None:
+        self._break_every_n_spin.setEnabled(checked)
+        self._break_text_edit.setEnabled(checked)
+
     def _set_controls_enabled(self, enabled: bool) -> None:
         self._launch_button.setEnabled(enabled)
         self._subject_combo.setEnabled(enabled)
@@ -365,6 +400,9 @@ class LaunchDialog(QDialog):
             enabled and self._trial_advance_combo.currentData() == "auto"
         )
         self._show_trial_info_check.setEnabled(enabled)
+        self._break_enabled_check.setEnabled(enabled)
+        self._break_every_n_spin.setEnabled(enabled and self._break_enabled_check.isChecked())
+        self._break_text_edit.setEnabled(enabled and self._break_enabled_check.isChecked())
         self._screen_spin.setEnabled(enabled)
         self._fullscreen_check.setEnabled(enabled)
         self._trigger_backend_combo.setEnabled(enabled)

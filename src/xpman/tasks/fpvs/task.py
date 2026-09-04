@@ -209,13 +209,18 @@ def _get_image_stim(
     ``path_overrides`` (from luminance/contrast equalization, see ``equalization_cache``) swaps
     which file's PIXELS get loaded without touching ``entry`` itself -- ``entry.path.name`` stays
     the original filename everywhere else (onset logging, identity), so equalization is invisible
-    to everything downstream of the stimulus's actual pixel content. Cached by ``entry.path``
-    (the original identity), so the GPU texture is still shared correctly across a Run regardless.
+    to everything downstream of the stimulus's actual pixel content. Cached by
+    ``(entry.path, source_path)`` -- i.e. by the ACTUAL pixel source, not just ``entry.path`` --
+    so two different Conditions in one Run that reference the same entry but resolve it to
+    different equalization targets (e.g. different pool compositions -> different combined-pool
+    means) get two genuinely distinct cached textures instead of one silently winning for both;
+    the no-override case is its own key too, distinct from any override. A trial that gets a
+    cache hit here still logs/identifies the stimulus by ``entry.path.name`` unchanged.
     """
-    key = str(entry.path)
+    source_path = (path_overrides or {}).get(entry.path)
+    key = (str(entry.path), str(source_path) if source_path is not None else None)
     stim = cache.get(key)
     if stim is None:
-        source_path = (path_overrides or {}).get(entry.path)
         stim = _build_image_stim(window, entry, source_path)
         cache[key] = stim
     return stim
@@ -446,10 +451,12 @@ class FPVSTask(TaskModule):
         #: every trial (issue #18). Populated lazily in run_trial via _pool_mean_luminance_for.
         self._pool_luminance_cache: dict[tuple[str | None, str | None], float | None] = {}
         self._response_collector: ResponseCollector | None = None
-        #: Cache of built ImageStim (GPU texture) keyed by image path, reused across trials --
-        #: building one uploads a texture, so rebuilding the whole pool every trial is what makes
-        #: each trial slow to start. Cleared in prepare() (one window per Run).
-        self._image_stim_cache: dict[str, object] = {}
+        #: Cache of built ImageStim (GPU texture) keyed by (entry.path, resolved source path) --
+        #: see _get_image_stim -- reused across trials: building one uploads a texture, so
+        #: rebuilding the whole pool every trial is what makes each trial slow to start. Cleared
+        #: in prepare() (one window per Run); pre-warmed for every discovered entry (no override)
+        #: in on_before_run() so trial 1 isn't the one that pays every image's upload cost.
+        self._image_stim_cache: dict[tuple[str, str | None], object] = {}
 
     def prepare(self, ctx: TaskContext) -> None:
         """Scan the resource directory once and measure the monitor's actual refresh rate
@@ -556,6 +563,28 @@ class FPVSTask(TaskModule):
         ctx.event_sink.log(
             "prepare", {"task_id": self.task_id, "n_images_found": len(self._image_entries)}
         )
+
+    def on_before_run(self, ctx: TaskContext) -> None:
+        """Build (GPU-upload) every discovered image's ``ImageStim`` up front, once, before trial 1
+        -- not lazily on whichever trial first happens to need each one.
+
+        Without this, ``_get_image_stim`` builds-and-caches on first use *inside* ``run_trial``,
+        so trial-start latency depends on how many images that trial's randomized pool draw
+        happens to need that weren't already touched by an earlier trial -- inconsistent
+        reactivity trial to trial. Front-loading it here instead means every trial (including
+        trial 1) starts from an already-warm cache.
+
+        Builds every entry ``scan_directory`` found in the resource directory (not narrowed to
+        only the images this Instance's Conditions will actually reference -- prepare()/
+        on_before_run() don't see the trial sequence) with NO equalization override -- per-
+        Condition equalization targets aren't known this early either. A trial whose Condition
+        enables equalization for a given image still pays that image's build cost on first use,
+        exactly as before (see _get_image_stim's cache-key docstring: an override is cached
+        separately from the no-override entry, so this never serves the wrong pixels).
+        """
+        for entry in self._image_entries:
+            _get_image_stim(self._image_stim_cache, ctx.window, entry)
+        ctx.event_sink.log("images_preloaded", {"n_images": len(self._image_entries)})
 
     def _pool_mean_luminance_for(
         self, entries: list[ImageEntry], selector: StimulusSelector
