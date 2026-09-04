@@ -2132,6 +2132,29 @@ def test_dual_stream_base_only_sibling_shows_base_stimuli_and_zero_oddballs(tmp_
     assert result.per_stream[0].achieved_oddball_freq_hz == pytest.approx(1.2)
 
 
+def test_dual_stream_base_only_sibling_reports_null_not_zero_achieved_oddball_freq(tmp_path, trigger, clock):
+    """Regression: the base_oddball_sequence_start event's per-stream 'achieved_oddball_freq_hz'
+    used to echo the internal 0.0 sentinel verbatim for a base-only filler stream, while its sibling
+    'requested_oddball_freq_hz' correctly showed null for the same stream -- a real Run's raw export
+    showed this exact asymmetry ("requested": null, "achieved": 0.0), which reads as "a real oddball
+    response measured at 0.0 Hz" rather than "this stream has no oddball at all". Both fields must
+    now agree: null for a base-only stream, real numbers for an oddball-carrying one."""
+    sink = EventSink(tmp_path / "e.csv", tmp_path / "e.parquet")
+    _run_two_stream_optional_base_only_sibling(
+        sink, _callonflip_recording_window(trigger), sibling_base_only=True, trigger=trigger, clock=clock,
+    )
+    sink.close()
+    with sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    start = next(json.loads(r["payload_json"]) for r in rows if r["event_type"] == "base_oddball_sequence_start")
+    streams = {s["stream"]: s for s in start["streams"]}
+    assert streams[1]["requested_oddball_freq_hz"] is None
+    assert streams[1]["achieved_oddball_freq_hz"] is None  # not 0.0
+    # The oddball-carrying sibling is unaffected: both fields still report real numbers.
+    assert streams[0]["requested_oddball_freq_hz"] == pytest.approx(1.2)
+    assert streams[0]["achieved_oddball_freq_hz"] == pytest.approx(1.2)
+
+
 def test_dual_stream_base_only_sibling_leaves_stream0_byte_for_byte(tmp_path, trigger, clock):
     # Stream 0's onsets must be IDENTICAL whether the sibling is base-only or a full oddball stream --
     # the base-only handling only ever changes the base-only stream, never its neighbour.

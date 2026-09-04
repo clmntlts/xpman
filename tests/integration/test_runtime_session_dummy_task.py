@@ -230,9 +230,20 @@ def test_full_run_via_launch_run(session, registry, mock_window, tmp_path):
     from xpman.core.rng import derive_seed
 
     run_started = next(r for r in rows if r["event_type"] == "run_started")
-    logged_seed = json.loads(run_started["payload_json"])["rng_seed"]
+    run_started_payload = json.loads(run_started["payload_json"])
+    logged_seed = run_started_payload["rng_seed"]
     instance = get_instance(session, instance_id)
     assert logged_seed == derive_seed(instance, subject_id)
+
+    # Wall-clock sync anchor (cross-system alignment for the raw export): pairs this event's own
+    # monotonic `timestamp` column with a real UTC instant, so any other event's wall-clock time is
+    # derivable via a single offset. Loosely bounded (not exact) -- it's a real datetime.now() call,
+    # not something to pin to a fixed value.
+    from datetime import datetime, timezone
+
+    anchor = datetime.fromisoformat(run_started_payload["wall_clock_utc"])
+    assert anchor.tzinfo is not None
+    assert abs((datetime.now(timezone.utc) - anchor).total_seconds()) < 60
 
     # #22: the engine brackets each trial with trial_start/trial_end markers carrying the
     # authoritative trial_index (matching the Result row) + condition_id, so a raw onset/flip in

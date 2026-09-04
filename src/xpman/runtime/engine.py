@@ -186,6 +186,19 @@ def execute_run(
         abort_check=abort_check,
     )
     trial_sequence = _build_trial_sequence(frozen_program, rng, experiment_id=experiment_id)
+    # Wall-clock sync anchor (#raw-export cross-system alignment): every OTHER event's timestamp
+    # is seconds on PsychoPy's monotonic clock, zeroed at an arbitrary process-start instant with
+    # no logged relationship to real time -- there was no way to align the raw export against
+    # another system's own timestamped log (video, eye-tracker, ...) without one. This event's own
+    # `timestamp` column IS the monotonic reading at this exact instant (event_sink.log() defaults
+    # to clock.get_time() when no explicit timestamp is passed, same as here), so pairing it with a
+    # wall-clock reading taken right alongside it gives a single (monotonic, wall-clock) anchor
+    # point: any other event's wall-clock time = wall_clock_utc + (event.timestamp - this
+    # event's timestamp). Soft, software-clock precision (fine for aligning a video/eye-tracker
+    # log) -- NOT a substitute for the photodiode+trigger hardware sync EEG timing actually needs
+    # (see docs/verification_protocol.md); two independent OS clocks drift regardless of how
+    # carefully either is timestamped.
+    wall_clock_utc = datetime.now(timezone.utc)
     event_sink.log(
         "run_started",
         {
@@ -193,6 +206,7 @@ def execute_run(
             "n_trials": len(trial_sequence),
             "experiment_id": experiment_id,
             "rng_seed": rng_seed,
+            "wall_clock_utc": wall_clock_utc.isoformat(),
         },
     )
 

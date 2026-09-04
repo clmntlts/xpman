@@ -8,7 +8,7 @@ is exercised against the actual on-disk format runtime.logging_sink writes.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pyarrow.parquet as pq
 import pytest
@@ -18,7 +18,9 @@ from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import freeze_program
 from xpman.core.models import Base, Result, Run, RunStatus
 from xpman.core.raw_export import (
+    event_wall_clock_time,
     export_run_raw_bundle,
+    find_wall_clock_anchor,
     get_run_manifest,
     get_run_raw_event_rows,
     read_raw_event_rows,
@@ -76,6 +78,7 @@ def _insert_run(session, instance_id, subject_id, *, status=RunStatus.COMPLETED)
 #: have caught the real bug (#raw-export-int-overflow): pa.Table.from_pylist only raises
 #: `OverflowError: int too big to convert` once a value actually exceeds int64 range.
 _REALISTIC_RNG_SEED = int.from_bytes(b"xpman-test-fixture-seed-material", byteorder="big")
+_FIXTURE_WALL_CLOCK_UTC = datetime(2026, 9, 4, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _write_real_events(data_dir, instance_id, subject_id, run_id) -> None:
@@ -83,7 +86,11 @@ def _write_real_events(data_dir, instance_id, subject_id, run_id) -> None:
     representative mix of event types/payload shapes (mirrors what task.py actually logs)."""
     run_dir = data_dir / str(instance_id) / str(subject_id) / str(run_id)
     sink = EventSink(run_dir / "events.csv", run_dir / "events.parquet")
-    sink.log("run_started", {"rng_seed": _REALISTIC_RNG_SEED})
+    sink.log(
+        "run_started",
+        {"rng_seed": _REALISTIC_RNG_SEED, "wall_clock_utc": _FIXTURE_WALL_CLOCK_UTC.isoformat()},
+        timestamp=0.0,
+    )
     sink.log("trial_start", {"trial_index": 0, "condition_id": 1}, timestamp=1.0)
     sink.log("stimulus_onset", {"stim_index": 0, "is_oddball": False, "image": "img001.png", "pos": [0.0, 0.0]}, timestamp=1.1)
     sink.log("trigger_sent", {"code": 1, "stim_index": 0, "is_oddball": False}, timestamp=1.1)
@@ -161,6 +168,43 @@ def test_read_raw_event_rows_stringifies_ints_outside_int64_range(tmp_path):
     assert rows[0]["n_trials"] == 5  # an ordinary in-range int is untouched, stays a real int
 
 
+# ---------------------------------------------------------------------------
+# Wall-clock sync anchor (cross-system alignment)
+# ---------------------------------------------------------------------------
+
+
+def test_find_wall_clock_anchor_reads_run_started_field(tmp_path):
+    events_dir = tmp_path / "run"
+    sink = EventSink(events_dir / "events.csv", events_dir / "events.parquet")
+    anchor_utc = datetime(2026, 9, 4, 12, 0, 0, tzinfo=timezone.utc)
+    sink.log("run_started", {"rng_seed": 1, "wall_clock_utc": anchor_utc.isoformat()}, timestamp=5.0)
+    sink.log("flip", {}, timestamp=6.5)
+    sink.close()
+
+    rows = read_raw_event_rows(events_dir / "events.csv")
+    anchor = find_wall_clock_anchor(rows)
+    assert anchor == (5.0, anchor_utc)
+
+
+def test_find_wall_clock_anchor_none_when_absent():
+    """Backward compatibility: a raw export from before this feature (or one with no run_started
+    event at all) must not crash -- just report "no anchor available"."""
+    assert find_wall_clock_anchor([{"event_type": "flip", "timestamp": 1.0}]) is None
+    assert find_wall_clock_anchor([{"event_type": "run_started", "timestamp": 0.0}]) is None
+    assert find_wall_clock_anchor([]) is None
+
+
+def test_event_wall_clock_time_converts_relative_to_anchor():
+    anchor_utc = datetime(2026, 9, 4, 12, 0, 0, tzinfo=timezone.utc)
+    anchor = (5.0, anchor_utc)
+    # Same instant as the anchor itself.
+    assert event_wall_clock_time(5.0, anchor) == anchor_utc
+    # 1.5s after the anchor's own monotonic timestamp -> 1.5s after its wall-clock instant too.
+    assert event_wall_clock_time(6.5, anchor) == datetime(2026, 9, 4, 12, 0, 1, 500000, tzinfo=timezone.utc)
+    # Before the anchor (e.g. a pre_stimulus_interval_start logged fractionally earlier) works too.
+    assert event_wall_clock_time(4.0, anchor) == datetime(2026, 9, 4, 11, 59, 59, tzinfo=timezone.utc)
+
+
 def test_get_run_raw_event_rows_end_to_end(session, tmp_path):
     fixture = _build_fixture(session)
     run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
@@ -184,6 +228,12 @@ def test_get_run_raw_event_rows_end_to_end(session, tmp_path):
     columns = set(rows[0].keys())
     assert all(set(r.keys()) == columns for r in rows)
     assert "timestamp" in columns and "event_type" in columns
+
+    # The wall-clock anchor survives the full read/normalize pipeline, and converts a later
+    # event's timestamp to the right absolute instant.
+    anchor = find_wall_clock_anchor(rows)
+    assert anchor == (0.0, _FIXTURE_WALL_CLOCK_UTC)
+    assert event_wall_clock_time(2.0, anchor) == _FIXTURE_WALL_CLOCK_UTC + timedelta(seconds=2.0)
 
 
 def test_get_run_raw_event_rows_missing_run_raises_lookup_error(session, tmp_path):

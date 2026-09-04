@@ -13,6 +13,10 @@ data/*.db.bak
 data/runs/
 # Stray per-run exports written next to the DB during manual/dev launches
 data/run_*_results.csv
+# Raw-data export bundle (core.raw_export.export_run_raw_bundle / GUI's "Export Raw Data...")
+data/run_*_events.csv
+data/run_*_events.parquet
+data/run_*_manifest.json
 
 # Editors
 .vscode/
