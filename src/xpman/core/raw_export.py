@@ -52,13 +52,30 @@ def resolve_run_events_csv(data_dir: str | Path | None, run: Run) -> Path | None
     return None
 
 
+#: pyarrow's widest integer column type is a signed 64-bit int -- a value outside this range makes
+#: `pa.Table.from_pylist` raise `OverflowError: int too big to convert` (not an Arrow-specific
+#: error) while inferring/building that column, which previously surfaced to the researcher as an
+#: opaque "Export failed" dialog (main_window.py's `_export_raw` wraps whatever
+#: export_run_raw_bundle raises). The concrete trigger: `run_started`'s `rng_seed` (see
+#: `core.rng.derive_seed`) is a FULL SHA-256 digest interpreted as an integer -- up to 256 bits, by
+#: deliberate design (collision-avoidance across a lab's lifetime of Instance/Subject/Experiment
+#: triples) -- so every real Run's raw-export bundle hit this. Stringifying any oversized int here
+#: (not just rng_seed specifically) future-proofs against any other event ever logging one.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
 def _stringify(value: Any) -> Any:
     """CSV/Parquet-safe scalarization: a list/dict payload value (e.g. a stimulus ``pos``, or a
-    multi-stream trigger's ``streams`` list) becomes its JSON text, so the flattened file stays
-    plain-text-parseable and every column ends up a single, consistent scalar type. Everything
-    else (str/int/float/bool/None) passes through unchanged."""
+    multi-stream trigger's ``streams`` list) becomes its JSON text, and an integer outside
+    Parquet's 64-bit range (e.g. ``run_started``'s full-SHA-256 ``rng_seed``) becomes its decimal
+    string, so the flattened file stays plain-text-parseable and every column ends up a single,
+    consistent, Arrow-representable scalar type. Everything else (str/int64-range int/float/bool/
+    None) passes through unchanged."""
     if isinstance(value, (list, dict)):
         return json.dumps(value)
+    if isinstance(value, int) and not isinstance(value, bool) and not (_INT64_MIN <= value <= _INT64_MAX):
+        return str(value)
     return value
 
 

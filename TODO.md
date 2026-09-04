@@ -8,6 +8,25 @@ Grouped by area, roughly priority-ordered within each group.
 See [docs/architecture.md](docs/architecture.md) for the phased roadmap this expands on,
 and [docs/open_questions.md](docs/open_questions.md) for behavioral unknowns specifically.
 
+## Raw-data export crash: "int too big to convert" (2026-09-04)
+
+- [x] **Fixed a real bug hit live in the GUI** ("Export raw data..." → "Could not export raw
+      data: int too big to convert" on every real Run). Root cause: `run_started`'s `rng_seed`
+      field is a FULL SHA-256 digest interpreted as an integer (`core.rng.derive_seed`, up to 256
+      bits, by deliberate design -- collision-avoidance across a lab's lifetime of Instance/
+      Subject/Experiment triples), but `core.raw_export.export_run_raw_bundle`'s
+      `pa.Table.from_pylist(rows)` call needs every column value to fit pyarrow's widest integer
+      type (signed 64-bit) -- raising a bare `OverflowError: int too big to convert` on the very
+      first real Run's bundle, every time. `_stringify()` (already used to JSON-encode list/dict
+      payload values for the same CSV/Parquet-safety reason) now also stringifies any int outside
+      int64 range, whatever field it's on -- not a special case for `rng_seed`, so any other event
+      that ever logs an oversized int is covered too. The CSV export was never affected (`csv`
+      just calls `str()` on anything); only the Parquet path crashed.
+      Never caught by the existing test suite because its own fixture (`_write_real_events`,
+      `tests/unit/test_core_raw_export.py`) used a small placeholder `rng_seed` instead of a
+      realistic `derive_seed()`-shaped value -- fixed the fixture too, and added a dedicated
+      regression test plus a round-trip assertion in the full-bundle export test.
+
 ## One-command dev environment bootstrap (2026-09-04)
 
 - [x] **Bulletproofing pass on `scripts\setup_dev_env.ps1`**, at the user's explicit request
