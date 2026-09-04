@@ -67,7 +67,13 @@ if (-not (Test-Path $Python)) {
     exit 1
 }
 
-& $Python -m pip show pyinstaller > $null 2>&1
+# NOTE: deliberately does not redirect stderr (no `2>&1`/`2>`) -- in Windows PowerShell 5.1,
+# redirecting a native command's stderr wraps each line as a NativeCommandError, which
+# $ErrorActionPreference = "Stop" (set above) then promotes to a terminating exception -- even
+# though `pip show`'s "WARNING: Package(s) not found" on stderr with a non-zero exit code is the
+# EXPECTED, handled "not installed yet" signal this check exists to detect. Piping stdout to
+# Out-Null only touches the success stream, leaving stderr alone.
+& $Python -m pip show pyinstaller | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing build dependencies (pip install -e .[build])..."
     & $Python -m pip install -e "$RepoRoot[build]"
