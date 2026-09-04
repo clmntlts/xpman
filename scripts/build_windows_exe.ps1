@@ -67,6 +67,34 @@ if (-not (Test-Path $Python)) {
     exit 1
 }
 
+# Fail loud, not silently-broken: a .venv created from an Anaconda/Miniconda base Python produces
+# a frozen exe that crashes on EVERY launch with "NameError: name 'windll' is not defined" deep
+# inside psychopy.platform_specific.win32 -- confirmed 2026-09-04. Root cause: Anaconda's
+# _ctypes.pyd depends on a Library\bin\ffi.dll that only resolves inside an activated conda
+# environment, not the isolated venv PyInstaller actually bundles from -- so ctypes.windll fails
+# to construct with ImportError: DLL load failed while importing _ctypes, which psychopy's own
+# win32.py then swallows into a broken, half-initialized module. This has nothing to do with
+# xpman's own code and no amount of --hidden-import fixes it; the only fix is a .venv built from a
+# genuine standalone CPython (python.org, or winget's Python.Python.3.11) instead. `py -3.11` can
+# silently resolve to Anaconda's registration if Anaconda registered itself with the py launcher
+# -- check the ACTUAL interpreter this .venv was built from, not just that `py -3.11` was used.
+$PyvenvCfg = "$RepoRoot\.venv\pyvenv.cfg"
+if (Test-Path $PyvenvCfg) {
+    $HomeLine = Select-String -Path $PyvenvCfg -Pattern '^home\s*=\s*(.+)$' | Select-Object -First 1
+    if ($HomeLine -and $HomeLine.Matches[0].Groups[1].Value -imatch 'conda') {
+        Write-Error @"
+.venv was created from a conda-based Python ($($HomeLine.Matches[0].Groups[1].Value)) --
+this WILL produce a frozen exe that crashes on every launch (NameError: name 'windll' is not
+defined, inside psychopy.platform_specific.win32). See this script's comment above for the full
+root cause. Fix: delete .venv, install a standalone Python 3.11 (winget install --id
+Python.Python.3.11, or python.org directly) NOT via the 'py' launcher if it resolves to Anaconda
+(check with 'py -0p' first), then recreate .venv from that interpreter's full path explicitly and
+re-run scripts\setup_dev_env.ps1 or the manual pip install steps.
+"@
+        exit 1
+    }
+}
+
 # NOTE: deliberately does not redirect stderr (no `2>&1`/`2>`) -- in Windows PowerShell 5.1,
 # redirecting a native command's stderr wraps each line as a NativeCommandError, which
 # $ErrorActionPreference = "Stop" (set above) then promotes to a terminating exception -- even

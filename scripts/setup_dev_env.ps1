@@ -150,6 +150,31 @@ if (-not $HavePy311) {
 }
 Write-Host "Using $(py -3.11 --version)"
 
+# `py -3.11` can silently resolve to an Anaconda/Miniconda registration instead of a standalone
+# CPython -- harmless for plain dev use (tests/GUI run fine either way), but PACKAGING a frozen
+# exe from a conda-based .venv crashes on EVERY launch with a ctypes.windll/_ctypes import failure
+# deep inside psychopy (confirmed 2026-09-04; see build_windows_exe.ps1's own guard for the full
+# root cause). Detect it here, before it gets baked into .venv, since that failure mode is opaque
+# and easy to mistake for an xpman bug otherwise.
+$Py311Exe = (py -3.11 -c "import sys; print(sys.executable)").Trim()
+if ($Py311Exe -imatch "conda") {
+    if ($IncludeBuildTools) {
+        Write-Error @"
+'py -3.11' resolves to a conda-based Python ($Py311Exe). -IncludeBuildTools means you intend to
+package a frozen exe from this .venv, which WILL crash on every launch -- see
+build_windows_exe.ps1's header comment for the full root cause. Install a standalone Python 3.11
+that isn't conda-based (winget install --id Python.Python.3.11 already ran above if none was
+found at all, but a conda one was found FIRST and py -3.11 preferred it) and either fix the py
+launcher's resolution order or create .venv explicitly from the standalone interpreter's full
+path instead of relying on 'py -3.11'.
+"@
+        exit 1
+    }
+    Write-Host "WARNING: 'py -3.11' resolves to a conda-based Python ($Py311Exe). Fine for plain " -ForegroundColor Yellow
+    Write-Host "dev use (this script), but do NOT use this .venv to package a frozen exe -- it " -ForegroundColor Yellow
+    Write-Host "will crash on every launch (see build_windows_exe.ps1's header comment)." -ForegroundColor Yellow
+}
+
 # -- Step 3: create .venv (skip if it already exists -- idempotent) --------------------------
 if (Test-Path "$RepoRoot\.venv") {
     Write-Host ".venv already exists -- reusing it."

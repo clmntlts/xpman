@@ -86,6 +86,14 @@ library source (PsychoPy, pyserial) before fixing, not just trusted from the rev
 - A stale assumption in `install_parallel_port_driver.ps1`'s comments (psychopy bundling
   `inpoutx64.dll`) -- verified false against the pinned psychopy version; the script's fallback
   behavior was already correct, only the comment was wrong.
+- **The packaged installer's `xpman.exe` crashed on every launch** (`NameError: name 'windll' is
+  not defined`, deep inside a swallowed exception in `psychopy.platform_specific.win32`) when
+  built from a `.venv` created against an Anaconda-based Python instead of a standalone CPython.
+  Not an xpman code issue -- `build_windows_exe.ps1` and `setup_dev_env.ps1` now detect and fail
+  loudly on a conda-based `.venv` instead of silently producing a broken build; see
+  `docs/release_process.md` for the full story.
+- `build_windows_exe.ps1` itself failed outright on any machine building xpman for the first time
+  (no PyInstaller pre-installed) due to a PowerShell native-command stderr-redirection pitfall.
 
 ### Documentation
 
