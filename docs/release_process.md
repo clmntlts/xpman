@@ -133,3 +133,22 @@ for actual EEG sessions anyway (see the Launch dialog's own tooltip). If a verif
 to hang, check elapsed wall-clock time vs. the process's actual CPU time (`Get-Process ... | select
 CPU`) -- a large gap between them (blocked/waiting, not computing) is the signature of this, not a
 real bug in xpman.
+
+### 4. Invoking a `.ps1` script's `-File` argument through the Bash tool corrupts the path
+
+**Symptom:** `powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1` (or any script
+under `scripts\`) fails immediately with `L'argument «...» du paramètre -File n'existe pas` (or the
+English equivalent), naming a mangled path with every backslash silently removed (e.g.
+`scriptsbuild_installer.ps1` instead of `scripts\build_installer.ps1`) -- even though the exact same
+command, run by hand or via the PowerShell tool, works fine.
+
+**Root cause:** when a Windows-style backslash path is passed as a plain double-quoted argument
+through a POSIX shell (this project's Bash tool runs Git Bash), `\b`, `\B`, etc. are not
+backslash-preserving the way they are in `cmd.exe`/PowerShell -- the shell consumes each backslash
+as an escape character before a non-special following character, silently dropping it. The path
+`powershell.exe` actually receives has already lost every backslash by the time it parses `-File`.
+
+**Fix:** invoke `.ps1` build scripts via the **PowerShell tool**, not the Bash tool -- it passes the
+path through natively with no POSIX-shell reinterpretation. If a script absolutely must be launched
+from Bash, use forward slashes instead (`-File "scripts/build_installer.ps1"` -- PowerShell accepts
+either separator), which sidesteps the backslash-eating behavior entirely.
