@@ -7,6 +7,31 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 > specification and covered by automated tests, but has **not** been measured on a real EEG rig.
 > See `docs/verification_protocol.md`; run that lab session before relying on the timing.
 
+## [0.4.0] — 2026-09-05
+
+GUI redesign: pure visual/UX pass, no functional change -- every action still calls the exact
+same handler it already did. No schema change, no breaking change; an older Instance loads and
+runs identically.
+
+### Added
+
+- **A light, clinical/instrument-grade app theme** (`theme.py`/`assets/theme.qss`) applied
+  app-wide -- consistent colors/spacing/typography across the tree, buttons, fields, tables,
+  menus, and all 16 dialogs, replacing default-Qt-grey and a handful of ad hoc inline styles.
+- **~25 vendored icons** (Lucide, ISC-licensed) across the tree, action bar, and buttons.
+- **A persistent action bar** above the detail panel, showing the relevant New/Edit/
+  Duplicate/Delete/Launch/etc. actions for whatever's selected in the tree -- a second,
+  discoverable entry point alongside the existing right-click context menu, not a replacement.
+  Both now render from one shared table (`MainWindow._actions_for`) so they can never drift out
+  of sync with each other.
+- **Per-kind tree icons** and visually distinct group-header rows (e.g. "Subjects (2)") vs.
+  clickable entity rows.
+
+### Changed
+
+- Detail panel and `ExperimentOverviewWidget` now use card-style framing, alternating table
+  rows, and icon-decorated buttons.
+
 ## [0.3.0] — 2026-09-04
 
 FPVS methodology + reliability release. No breaking changes -- an older Instance still loads and

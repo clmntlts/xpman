@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xpman"
-version = "0.3.0"
+version = "0.4.0"
 description = "Open, dongle-free EEG/vision-science experiment runner (FPVS and other periodic-stimulation paradigms)."
 readme = "README.md"
 license = {text = "MIT"}
