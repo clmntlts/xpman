@@ -48,6 +48,9 @@ fpvs = "xpman.tasks.fpvs.task:FPVSTask"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"xpman.gui" = ["assets/*.qss", "assets/icons/*.svg", "assets/icons/LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
 

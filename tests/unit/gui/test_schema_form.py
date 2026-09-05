@@ -540,7 +540,10 @@ def test_invalid_field_widget_gets_visual_marker(qtbot):
     form.validation_errors()
 
     assert widget._spin.styleSheet() != ""
-    assert "cc3333" in widget._spin.styleSheet()  # red border color from INVALID_STYLESHEET
+    from xpman.gui.theme import PALETTE
+
+    # destructive-red border color from INVALID_STYLESHEET (theme.PALETTE["destructive"])
+    assert PALETTE["destructive"].lstrip("#") in widget._spin.styleSheet()
     # isVisible() is always False here since the form itself was never shown (no window to be
     # visible in) -- isHidden() reflects the label's own show()/hide() calls independent of that.
     assert not widget._error_label.isHidden()

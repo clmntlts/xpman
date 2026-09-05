@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
@@ -409,6 +410,57 @@ def test_node_at_returns_none_for_invalid_index(session):
     ids = _build_full_fixture(session)
     model = ExperimentTreeModel(session, ids["profile_id"])
     assert model.node_at(model.index(99, 0)) is None
+
+
+# ---------------------------------------------------------------------------
+# Icon / group-header styling roles
+# ---------------------------------------------------------------------------
+
+
+def test_entity_node_has_non_null_decoration_icon(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    profile_index = model.index(0, 0)
+    programs_group = model.index(1, 0, profile_index)
+    program_index = model.index(0, 0, programs_group)
+
+    icon = model.data(program_index, Qt.ItemDataRole.DecorationRole)
+    assert icon is not None
+    assert not icon.isNull()
+
+
+def test_placeholder_node_has_no_decoration_icon(session):
+    profile = repo.create_profile(session, name="Empty Profile")
+    session.commit()
+    model = ExperimentTreeModel(session, profile.id)
+    profile_index = model.index(0, 0)
+    subjects_group = model.index(0, 0, profile_index)
+    placeholder_index = model.index(0, 0, subjects_group)
+    assert model.node_at(placeholder_index).kind == "placeholder"
+
+    assert model.data(placeholder_index, Qt.ItemDataRole.DecorationRole) is None
+
+
+def test_group_header_has_muted_foreground_entity_row_does_not(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    profile_index = model.index(0, 0)
+    programs_group = model.index(1, 0, profile_index)
+    program_index = model.index(0, 0, programs_group)
+
+    assert model.data(programs_group, Qt.ItemDataRole.ForegroundRole) is not None
+    assert model.data(program_index, Qt.ItemDataRole.ForegroundRole) is None
+
+
+def test_group_header_font_is_bold(session):
+    ids = _build_full_fixture(session)
+    model = ExperimentTreeModel(session, ids["profile_id"])
+    profile_index = model.index(0, 0)
+    programs_group = model.index(1, 0, profile_index)
+
+    font = model.data(programs_group, Qt.ItemDataRole.FontRole)
+    assert font is not None
+    assert font.bold()
 
 
 # ---------------------------------------------------------------------------

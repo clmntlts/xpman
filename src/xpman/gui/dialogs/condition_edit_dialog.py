@@ -28,7 +28,7 @@ class ConditionEditDialog(QDialog):
     def __init__(self, session: Session, condition_id: int, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("xpman -- Edit Condition")
-        self.resize(360, 140)
+        self.resize(360, 160)
         self._session = session
         self._condition_id = condition_id
 

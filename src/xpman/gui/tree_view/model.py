@@ -34,13 +34,37 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
+from PySide6.QtGui import QColor, QFont
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
 from xpman.core.models import Block, Condition, Experiment, Instance, Profile, Program, Run, Subject, Trial
+from xpman.gui.icons import get_icon
+from xpman.gui.theme import PALETTE
 
 __all__ = ["TreeNode", "ExperimentTreeModel", "NodeKey"]
+
+#: Icon (see xpman.gui.icons/assets/icons) shown per node kind, purely presentational -- see
+#: data()'s DecorationRole branch. Kinds not listed here (currently none) fall back to "folder".
+_ICON_FOR_KIND: dict[str, str] = {
+    "profile": "user",
+    "subjects_group": "user",
+    "subject": "user",
+    "programs_group": "folder",
+    "program": "folder",
+    "experiments_group": "layers",
+    "experiment": "layers",
+    "conditions_group": "activity",
+    "condition": "activity",
+    "blocks_group": "grid",
+    "block": "grid",
+    "trial": "flag",
+    "instances_group": "box",
+    "instance": "box",
+    "runs_group": "check-circle",
+    "run": "check-circle",
+}
 
 #: Stable identity of a tree position across full model rebuilds: the path of
 #: ``(kind, id)`` pairs from the profile row down to the node itself. Group nodes have
@@ -385,6 +409,21 @@ class ExperimentTreeModel(QAbstractItemModel):
             return item.node.name
         if role == Qt.ItemDataRole.UserRole:
             return item.node
+        if role == Qt.ItemDataRole.DecorationRole:
+            icon_name = _ICON_FOR_KIND.get(item.node.kind, "folder") if item.node.kind != "placeholder" else None
+            return get_icon(icon_name, color=PALETTE["text_muted"]) if icon_name is not None else None
+        # Group-header rows (e.g. "Subjects (2)") are organizational, not clickable entities --
+        # id is None for both group headers and the synthetic "(none yet)" placeholder, so kind
+        # distinguishes them (see TreeNode's docstring). Render group headers as muted/small/bold
+        # so they read as section labels rather than another entity row.
+        if item.node.id is None and item.node.kind != "placeholder":
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QColor(PALETTE["text_muted"])
+            if role == Qt.ItemDataRole.FontRole:
+                font = QFont()
+                font.setBold(True)
+                font.setPointSize(max(font.pointSize() - 1, 1))
+                return font
         return None
 
     def headerData(

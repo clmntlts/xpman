@@ -43,7 +43,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-INVALID_STYLESHEET = "border: 1px solid #cc3333; background-color: #fff0f0;"
+from xpman.gui.theme import PALETTE
+
+INVALID_STYLESHEET = (
+    f"border: 1px solid {PALETTE['destructive']}; background-color: {PALETTE['destructive_soft']};"
+)
 
 # Spinboxes need *some* finite range; pydantic constraints only bound one side (e.g. ``gt=0``
 # has no upper bound). These stand in for "effectively unbounded" so the widget is still usable.
@@ -87,7 +91,7 @@ class _ErrorLabelMixin(QWidget):
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         outer.addLayout(self._content_layout)
         self._error_label = QLabel("")
-        self._error_label.setStyleSheet("color: #cc3333; font-size: 10px;")
+        self._error_label.setStyleSheet(f"color: {PALETTE['destructive']}; font-size: 10px;")
         self._error_label.setWordWrap(True)
         self._error_label.hide()
         outer.addWidget(self._error_label)

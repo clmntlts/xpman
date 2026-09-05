@@ -28,7 +28,7 @@ class ConditionCreateDialog(QDialog):
     def __init__(self, session: Session, experiment_id: int, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("xpman -- New Condition")
-        self.resize(360, 140)
+        self.resize(360, 160)
         self._session = session
         self._experiment_id = experiment_id
         self.created_condition_id: int | None = None
