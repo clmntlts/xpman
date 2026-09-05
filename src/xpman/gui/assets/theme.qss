@@ -1,0 +1,296 @@
+/* xpman app-wide theme: light, clinical/instrument-grade.
+ * Dollar-brace placeholders (e.g. one named "accent") are substituted by
+ * xpman.gui.theme.load_stylesheet() against xpman.gui.theme.PALETTE via string.Template -- do
+ * not use bare curly-brace (str.format) syntax here, it collides with QSS's own `{ }` rule-body
+ * braces. (This comment spells the pattern out in words rather than showing it literally, since
+ * string.Template.substitute() would otherwise try to resolve a literal example as a real
+ * placeholder and raise KeyError.) */
+
+QMainWindow, QDialog {
+    background: ${bg};
+}
+
+QWidget {
+    font-family: "Segoe UI";
+    font-size: 13px;
+    color: ${text};
+}
+
+/* -- Tree ------------------------------------------------------------------------------- */
+
+QTreeView {
+    background: ${surface};
+    alternate-background-color: ${surface_alt};
+    border: 1px solid ${border};
+    show-decoration-selected: 1;
+}
+
+QTreeView::item {
+    padding: 4px 6px;
+    border: none;
+}
+
+QTreeView::item:selected {
+    background: ${accent_soft};
+    color: ${text};
+}
+
+QTreeView::item:hover:!selected {
+    background: ${surface_alt};
+}
+
+QTreeView::branch {
+    background: transparent;
+}
+
+QHeaderView::section {
+    background: ${surface_alt};
+    border: none;
+    border-bottom: 1px solid ${border};
+    padding: 4px 6px;
+    font-weight: 600;
+    color: ${text};
+}
+
+/* -- Scroll area -------------------------------------------------------------------------- */
+
+QScrollArea {
+    border: none;
+    background: ${bg};
+}
+
+QScrollArea > QWidget > QWidget {
+    background: ${bg};
+}
+
+/* The detail panel's outer frame -- visually separates it from the splitter/window background
+ * it sits against (both otherwise share the same ${bg}). */
+QFrame[role="card"] {
+    background: ${surface};
+    border: none;
+}
+
+/* -- Buttons -------------------------------------------------------------------------------
+ * Default/secondary look below; `variant="primary"`/`variant="destructive"` are Qt dynamic
+ * properties set in Python (button.setProperty("variant", "primary")), not separate classes. */
+
+QPushButton, QToolButton {
+    background: ${surface};
+    border: 1px solid ${border};
+    border-radius: 4px;
+    padding: 6px 14px;
+    color: ${text};
+}
+
+QPushButton:hover, QToolButton:hover {
+    border-color: ${border_strong};
+}
+
+QPushButton:pressed, QToolButton:pressed {
+    background: ${surface_alt};
+}
+
+QPushButton:disabled, QToolButton:disabled {
+    color: ${text_muted};
+    background: ${surface_alt};
+    border-color: ${border};
+}
+
+QPushButton[variant="primary"], QToolButton[variant="primary"] {
+    background: ${accent};
+    border: 1px solid ${accent};
+    color: #ffffff;
+    font-weight: 600;
+}
+
+QPushButton[variant="primary"]:hover, QToolButton[variant="primary"]:hover {
+    background: ${accent_hover};
+    border-color: ${accent_hover};
+}
+
+QPushButton[variant="primary"]:disabled, QToolButton[variant="primary"]:disabled {
+    background: ${surface_alt};
+    border-color: ${border};
+    color: ${text_muted};
+}
+
+QPushButton[variant="destructive"], QToolButton[variant="destructive"] {
+    background: ${destructive_soft};
+    border: 1px solid ${destructive};
+    color: ${destructive};
+}
+
+QPushButton[variant="destructive"]:hover, QToolButton[variant="destructive"]:hover {
+    background: ${destructive};
+    border-color: ${destructive};
+    color: #ffffff;
+}
+
+QPushButton[variant="destructive"]:pressed, QToolButton[variant="destructive"]:pressed {
+    background: ${destructive_hover};
+    border-color: ${destructive_hover};
+    color: #ffffff;
+}
+
+/* -- Form fields ---------------------------------------------------------------------------- */
+
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    background: ${surface};
+    border: 1px solid ${border};
+    border-radius: 3px;
+    padding: 4px 6px;
+    selection-background-color: ${accent_soft};
+}
+
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid ${accent};
+    background: ${accent_soft};
+}
+
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
+    background: ${surface_alt};
+    color: ${text_muted};
+}
+
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid ${border_strong};
+    border-radius: 2px;
+    background: ${surface};
+}
+
+QCheckBox::indicator:checked {
+    background: ${accent};
+    border-color: ${accent};
+}
+
+QCheckBox::indicator:disabled {
+    background: ${surface_alt};
+    border-color: ${border};
+}
+
+/* -- Tables --------------------------------------------------------------------------------- */
+
+QTableWidget {
+    background: ${surface};
+    gridline-color: ${border};
+    border: 1px solid ${border};
+    alternate-background-color: ${surface_alt};
+}
+
+QTableWidget::item {
+    padding: 3px 6px;
+}
+
+QTableWidget::item:selected {
+    background: ${accent_soft};
+    color: ${text};
+}
+
+/* -- Group boxes / cards ---------------------------------------------------------------------
+ * Covers ExperimentOverviewWidget's QGroupBox sections and forms.widgets.CollapsibleGroupBox. */
+
+QGroupBox {
+    border: 1px solid ${border};
+    border-radius: 6px;
+    margin-top: 10px;
+    background: ${surface};
+    padding-top: 8px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: ${text_muted};
+    font-weight: 600;
+    font-size: 11px;
+}
+
+/* -- Section-header labels -------------------------------------------------------------------
+ * Set via label.setProperty("role", "heading"/"subheading"/"placeholder"/"error"/"field-label"/
+ * "value") instead of ad hoc inline setStyleSheet calls. */
+
+QLabel[role="heading"] {
+    font-weight: 600;
+    font-size: 14px;
+    color: ${text};
+    padding-bottom: 2px;
+}
+
+QLabel[role="subheading"] {
+    font-weight: 600;
+    font-size: 11px;
+    color: ${text_muted};
+}
+
+QLabel[role="placeholder"] {
+    color: ${text_muted};
+    font-style: italic;
+}
+
+QLabel[role="error"] {
+    color: ${destructive};
+}
+
+QLabel[role="field-label"] {
+    font-weight: 600;
+    font-size: 11px;
+    color: ${text_muted};
+}
+
+QLabel[role="value"] {
+    color: ${text};
+}
+
+/* -- Menus, dialogs, status bar, splitter ------------------------------------------------- */
+
+QMenu {
+    background: ${surface};
+    border: 1px solid ${border};
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 5px 24px 5px 10px;
+    border-radius: 3px;
+}
+
+QMenu::item:selected {
+    background: ${accent_soft};
+    color: ${text};
+}
+
+QMenu::item:disabled {
+    color: ${text_muted};
+}
+
+QMenu::separator {
+    height: 1px;
+    background: ${border};
+    margin: 4px 8px;
+}
+
+QMessageBox {
+    background: ${surface};
+}
+
+QMessageBox QPushButton {
+    min-width: 72px;
+}
+
+QStatusBar {
+    background: ${surface_alt};
+    border-top: 1px solid ${border};
+    color: ${text_muted};
+}
+
+QSplitter::handle {
+    background: ${border};
+    width: 1px;
+}
+
+QSplitter::handle:hover {
+    background: ${border_strong};
+}

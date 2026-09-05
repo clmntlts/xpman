@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
+from xpman.gui.icons import get_icon
+from xpman.gui.theme import PALETTE
 
 __all__ = ["ExperimentOverviewWidget"]
 
@@ -43,6 +45,7 @@ def _make_table(columns: list[str]) -> QTableWidget:
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setAlternatingRowColors(True)
     return table
 
 
@@ -70,10 +73,13 @@ class ExperimentOverviewWidget(QWidget):
         self._experiment_id = experiment_id
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
         # -- Conditions -------------------------------------------------------------------
         conditions_box = QGroupBox("Conditions")
         conditions_layout = QVBoxLayout(conditions_box)
+        conditions_layout.setContentsMargins(10, 14, 10, 10)
+        conditions_layout.setSpacing(8)
         self._conditions_table = _make_table(["Name"])
         for condition in repo.list_conditions(session, experiment_id=experiment_id):
             row = self._conditions_table.rowCount()
@@ -84,19 +90,25 @@ class ExperimentOverviewWidget(QWidget):
         conditions_layout.addWidget(self._conditions_table)
 
         condition_buttons = QHBoxLayout()
+        condition_buttons.setSpacing(6)
         new_condition_button = QPushButton("New Condition...")
+        new_condition_button.setIcon(get_icon("plus", color=PALETTE["accent"]))
+        new_condition_button.setProperty("variant", "primary")
         new_condition_button.clicked.connect(
             lambda: self.createConditionRequested.emit(self._experiment_id)
         )
         condition_buttons.addWidget(new_condition_button)
 
         self._duplicate_condition_button = QPushButton("Duplicate")
+        self._duplicate_condition_button.setIcon(get_icon("copy"))
         self._duplicate_condition_button.clicked.connect(
             lambda: self._emit_for_selected(self._conditions_table, self.duplicateConditionRequested)
         )
         condition_buttons.addWidget(self._duplicate_condition_button)
 
         self._delete_condition_button = QPushButton("Delete")
+        self._delete_condition_button.setIcon(get_icon("trash", color=PALETTE["destructive"]))
+        self._delete_condition_button.setProperty("variant", "destructive")
         self._delete_condition_button.clicked.connect(
             lambda: self._emit_for_selected(self._conditions_table, self.deleteConditionRequested)
         )
@@ -108,6 +120,8 @@ class ExperimentOverviewWidget(QWidget):
         # -- Blocks -----------------------------------------------------------------------
         blocks_box = QGroupBox("Blocks")
         blocks_layout = QVBoxLayout(blocks_box)
+        blocks_layout.setContentsMargins(10, 14, 10, 10)
+        blocks_layout.setSpacing(8)
         self._blocks_table = _make_table(["Name", "Repeat", "Trials"])
         for block in repo.list_blocks(session, experiment_id=experiment_id):
             row = self._blocks_table.rowCount()
@@ -121,23 +135,30 @@ class ExperimentOverviewWidget(QWidget):
         blocks_layout.addWidget(self._blocks_table)
 
         block_buttons = QHBoxLayout()
+        block_buttons.setSpacing(6)
         new_block_button = QPushButton("New Block...")
+        new_block_button.setIcon(get_icon("plus", color=PALETTE["accent"]))
+        new_block_button.setProperty("variant", "primary")
         new_block_button.clicked.connect(lambda: self.createBlockRequested.emit(self._experiment_id))
         block_buttons.addWidget(new_block_button)
 
         self._duplicate_block_button = QPushButton("Duplicate")
+        self._duplicate_block_button.setIcon(get_icon("copy"))
         self._duplicate_block_button.clicked.connect(
             lambda: self._emit_for_selected(self._blocks_table, self.duplicateBlockRequested)
         )
         block_buttons.addWidget(self._duplicate_block_button)
 
         self._manage_trials_button = QPushButton("Manage Trials...")
+        self._manage_trials_button.setIcon(get_icon("list"))
         self._manage_trials_button.clicked.connect(
             lambda: self._emit_for_selected(self._blocks_table, self.manageTrialsRequested)
         )
         block_buttons.addWidget(self._manage_trials_button)
 
         self._delete_block_button = QPushButton("Delete")
+        self._delete_block_button.setIcon(get_icon("trash", color=PALETTE["destructive"]))
+        self._delete_block_button.setProperty("variant", "destructive")
         self._delete_block_button.clicked.connect(
             lambda: self._emit_for_selected(self._blocks_table, self.deleteBlockRequested)
         )

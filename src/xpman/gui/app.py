@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 from xpman.core.db import ensure_schema, get_engine, get_sessionmaker
 from xpman.gui.dialogs.profile_select_dialog import ProfileSelectDialog
 from xpman.gui.main_window import MainWindow
+from xpman.gui.theme import build_palette, load_stylesheet
 from xpman.tasks.registry import discover_tasks
 
 
@@ -48,6 +49,8 @@ DEFAULT_DATA_DIR = DEFAULT_DB_PATH.parent / "runs"
 
 def main(db_path: Path = DEFAULT_DB_PATH, data_dir: Path = DEFAULT_DATA_DIR) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setPalette(build_palette())
+    app.setStyleSheet(load_stylesheet())
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Bring the database up to the current schema (creates it from scratch if missing, applies any

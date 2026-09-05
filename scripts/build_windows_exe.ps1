@@ -180,6 +180,12 @@ $PyInstallerArgs = @(
     # sys._MEIPASS/{alembic.ini,migrations/}, exactly where _schema_base_dir() looks when frozen.
     "--add-data", "alembic.ini;.",
     "--add-data", "migrations;migrations",
+    # The GUI's theme stylesheet + vendored icon SVGs (xpman.gui.theme/xpman.gui.icons) are loaded
+    # at runtime via importlib.resources, which PyInstaller's static import analysis can't see --
+    # they're plain data files, not imported modules. Destination mirrors the package's own import
+    # path (xpman/gui/assets) so importlib.resources.files("xpman.gui.assets") resolves the same
+    # way frozen as it does from a normal installed package.
+    "--add-data", "src/xpman/gui/assets;xpman/gui/assets",
     # The migration version scripts do `from alembic import op` when alembic loads them dynamically
     # (see the logging.config note in $HiddenImports). Bundle all of alembic's submodules so op/
     # context/ddl-dialects are present -- the app statically imports only alembic.command.

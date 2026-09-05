@@ -38,6 +38,7 @@ class ExperimentTreeView(QTreeView):
         self.setUniformRowHeights(True)
         self.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
         self.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
+        self.setAlternatingRowColors(True)
 
         self._model = ExperimentTreeModel(session, profile_id, parent=self)
         self.setModel(self._model)

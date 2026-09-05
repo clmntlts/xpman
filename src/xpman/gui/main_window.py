@@ -17,11 +17,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QModelIndex, QPoint, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -50,6 +52,7 @@ from xpman.core.export import (
 from xpman.core.instance import get_instance
 from xpman.core.raw_export import export_run_raw_bundle
 from xpman.core.raw_export import resolve_run_events_csv as _resolve_run_events_csv_path
+from xpman.gui.action_bar import ActionBar, NodeAction
 from xpman.gui.commit import safe_commit
 from xpman.gui.dialogs.block_create_dialog import BlockCreateDialog
 from xpman.gui.dialogs.block_edit_dialog import BlockEditDialog
@@ -68,6 +71,8 @@ from xpman.gui.dialogs.subject_create_dialog import SubjectCreateDialog
 from xpman.gui.dialogs.subject_edit_dialog import SubjectEditDialog
 from xpman.gui.experiment_overview import ExperimentOverviewWidget
 from xpman.gui.forms.schema_form import SchemaForm
+from xpman.gui.icons import get_icon
+from xpman.gui.theme import PALETTE
 from xpman.gui.tree_view import ExperimentTreeView, TreeNode
 from xpman.tasks.registry import TaskRegistry, UnknownTaskError
 
@@ -127,17 +132,22 @@ class MainWindow(QMainWindow):
         self._tree.customContextMenuRequested.connect(self._show_tree_context_menu)
 
         self._detail_title = QLabel("Nothing selected")
-        self._detail_title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self._detail_title.setProperty("role", "heading")
+
+        self._action_bar = ActionBar()
 
         self._detail_scroll = QScrollArea()
         self._detail_scroll.setWidgetResizable(True)
         self._detail_scroll.setWidget(self._placeholder_widget("Select an item in the tree to view its details."))
 
         self._save_button = QPushButton("Save")
+        self._save_button.setIcon(get_icon("save", color=PALETTE["accent"]))
+        self._save_button.setProperty("variant", "primary")
         self._save_button.setEnabled(False)
         self._save_button.clicked.connect(self._on_save)
 
         self._preview_button = QPushButton("Preview Stimuli")
+        self._preview_button.setIcon(get_icon("eye"))
         self._preview_button.setToolTip(
             "Show which stimulus images this condition's selectors match. Uses the values "
             "currently in the form, including unsaved edits."
@@ -146,13 +156,17 @@ class MainWindow(QMainWindow):
         self._preview_button.clicked.connect(self._on_preview_button)
 
         self._error_label = QLabel("")
-        self._error_label.setStyleSheet("color: #cc3333;")
+        self._error_label.setProperty("role", "error")
         self._error_label.setWordWrap(True)
         self._error_label.hide()
 
-        detail_panel = QWidget()
+        detail_panel = QFrame()
+        detail_panel.setProperty("role", "card")
         detail_layout = QVBoxLayout(detail_panel)
+        detail_layout.setContentsMargins(16, 12, 16, 12)
+        detail_layout.setSpacing(10)
         detail_layout.addWidget(self._detail_title)
+        detail_layout.addWidget(self._action_bar)
         detail_layout.addWidget(self._detail_scroll, stretch=1)
         detail_layout.addWidget(self._error_label)
         button_row = QHBoxLayout()
@@ -175,6 +189,7 @@ class MainWindow(QMainWindow):
     def _on_node_selected(self, node: TreeNode) -> None:
         self._current_node = node
         self._error_label.hide()
+        self._update_action_bar()
 
         try:
             if node.kind == "experiment" and node.id is not None:
@@ -246,7 +261,7 @@ class MainWindow(QMainWindow):
             container_layout = QVBoxLayout(container)
             container_layout.addWidget(overview)
             heading = QLabel("Parameters")
-            heading.setStyleSheet("font-weight: bold;")
+            heading.setProperty("role", "subheading")
             container_layout.addWidget(heading)
             form = SchemaForm(model_cls, initial_values=self._current_parameters_json(node))
             container_layout.addWidget(form)
@@ -309,6 +324,7 @@ class MainWindow(QMainWindow):
 
         export_row = QHBoxLayout()
         export_csv_button = QPushButton("Export All Results (CSV)...")
+        export_csv_button.setIcon(get_icon("download"))
         export_csv_button.setToolTip(
             "One combined, tidy table across every Run of this Instance (every subject who has "
             "run it) -- for group-level analysis, instead of hand-joining per-run exports."
@@ -317,6 +333,7 @@ class MainWindow(QMainWindow):
         export_csv_button.clicked.connect(lambda: self._on_export_instance_results(instance_id, "csv"))
         export_row.addWidget(export_csv_button)
         export_parquet_button = QPushButton("Export All Results (Parquet)...")
+        export_parquet_button.setIcon(get_icon("download"))
         export_parquet_button.setEnabled(run_count > 0)
         export_parquet_button.clicked.connect(lambda: self._on_export_instance_results(instance_id, "parquet"))
         export_row.addWidget(export_parquet_button)
@@ -402,6 +419,7 @@ class MainWindow(QMainWindow):
         table = QTableWidget(len(rows), len(table_columns))
         table.setHorizontalHeaderLabels(table_columns)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
         for row_index, row in enumerate(rows):
             for col_index, column in enumerate(table_columns):
                 table.setItem(row_index, col_index, QTableWidgetItem(str(row.get(column, ""))))
@@ -412,6 +430,7 @@ class MainWindow(QMainWindow):
 
         export_row = QHBoxLayout()
         events_button = QPushButton("Trigger / Event Log...")
+        events_button.setIcon(get_icon("file-text"))
         events_button.setToolTip(
             "View the triggers this run sent (and other logged events) -- works without EEG "
             "hardware, since triggers are logged whether the real port or the null trigger was used."
@@ -419,12 +438,15 @@ class MainWindow(QMainWindow):
         events_button.clicked.connect(lambda: self._on_view_events(run_id))
         export_row.addWidget(events_button)
         export_csv_button = QPushButton("Export CSV...")
+        export_csv_button.setIcon(get_icon("download"))
         export_csv_button.clicked.connect(lambda: self._on_export_run(run_id, "csv"))
         export_row.addWidget(export_csv_button)
         export_parquet_button = QPushButton("Export Parquet...")
+        export_parquet_button.setIcon(get_icon("download"))
         export_parquet_button.clicked.connect(lambda: self._on_export_run(run_id, "parquet"))
         export_row.addWidget(export_parquet_button)
         export_raw_button = QPushButton("Export Raw Data...")
+        export_raw_button.setIcon(get_icon("download"))
         export_raw_button.setToolTip(
             "Everything actually recorded for this Run: every timestamped event (flips, "
             "onsets, trigger sends, trial/phase boundaries) plus a manifest of Run/Subject/"
@@ -515,7 +537,7 @@ class MainWindow(QMainWindow):
         label = QLabel(message)
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("color: #777777;")
+        label.setProperty("role", "placeholder")
         return label
 
     def _set_detail_widget(self, widget: QWidget) -> None:
@@ -582,103 +604,177 @@ class MainWindow(QMainWindow):
     def _build_context_menu(self, index: QModelIndex) -> QMenu | None:
         """Build (but don't show) the context menu for ``index``. Split out from
         ``_show_tree_context_menu`` so tests can inspect exactly which actions get offered for
-        a given node without needing real pixel coordinates or a blocking modal ``exec()``."""
+        a given node without needing real pixel coordinates or a blocking modal ``exec()``.
+
+        Driven by :meth:`_actions_for` -- the single source of truth for "which actions exist
+        for this node kind" also consumed by the :class:`~xpman.gui.action_bar.ActionBar` (see
+        ``_update_action_bar``), so the two entry points can never drift out of sync with
+        each other."""
         node = self._tree.model_.node_at(index)
         if node is None:
             return None
 
         menu = QMenu(self)
+        for action in self._actions_for(index):
+            if action.separator_before:
+                menu.addSeparator()
+            qaction = menu.addAction(action.label, action.handler)
+            qaction.setIcon(get_icon(action.icon))
+            qaction.setEnabled(action.enabled)
+        return menu
+
+    def _actions_for(self, index: QModelIndex) -> list[NodeAction]:
+        """The actions offered for the node at ``index``, in display order -- a literal,
+        1:1 transcription of what ``_build_context_menu`` used to build inline (same labels,
+        same order, same enabled/visibility conditions), now a plain data table so both the
+        context menu and the action bar render from it instead of duplicating this logic."""
+        node = self._tree.model_.node_at(index)
+        if node is None:
+            return []
+
+        actions: list[NodeAction] = []
 
         if node.kind in ("profile", "subjects_group"):
-            menu.addAction("New Subject...", self._create_subject)
+            actions.append(NodeAction("New Subject...", "plus", self._create_subject, variant="primary"))
         if node.kind in ("profile", "programs_group"):
-            menu.addAction("New Program...", self._create_program)
+            actions.append(NodeAction("New Program...", "plus", self._create_program, variant="primary"))
         if node.kind == "subject":
-            menu.addAction("Edit Subject...", lambda: self._edit_subject(node))
-            menu.addSeparator()
-            menu.addAction("Delete Subject", lambda: self._delete_subject(node))
+            actions.append(NodeAction("Edit Subject...", "edit", lambda: self._edit_subject(node)))
+            actions.append(
+                NodeAction(
+                    "Delete Subject", "trash", lambda: self._delete_subject(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
 
         if node.kind == "program":
-            menu.addAction("New Experiment...", lambda: self._create_experiment(node.id))
-            menu.addAction("Create Instance...", lambda: self._create_instance(node.id))
-            menu.addSeparator()
-            menu.addAction("Edit Program...", lambda: self._edit_program(node))
-            menu.addAction("Duplicate", lambda: self._duplicate_program(node))
-            menu.addSeparator()
-            menu.addAction("Delete Program", lambda: self._delete_program(node))
+            actions.append(NodeAction("New Experiment...", "plus", lambda: self._create_experiment(node.id)))
+            actions.append(NodeAction("Create Instance...", "box", lambda: self._create_instance(node.id)))
+            actions.append(
+                NodeAction("Edit Program...", "edit", lambda: self._edit_program(node), separator_before=True)
+            )
+            actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_program(node)))
+            actions.append(
+                NodeAction(
+                    "Delete Program", "trash", lambda: self._delete_program(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
         elif node.kind == "experiments_group":
             parent_id = self._parent_node_id(index)
             if parent_id is not None:
-                menu.addAction("New Experiment...", lambda: self._create_experiment(parent_id))
+                actions.append(
+                    NodeAction("New Experiment...", "plus", lambda: self._create_experiment(parent_id), variant="primary")
+                )
         elif node.kind == "instances_group":
             parent_id = self._parent_node_id(index)
             if parent_id is not None:
-                menu.addAction("Create Instance...", lambda: self._create_instance(parent_id))
+                actions.append(
+                    NodeAction("Create Instance...", "box", lambda: self._create_instance(parent_id), variant="primary")
+                )
 
         if node.kind == "instance":
+            # "Launch..." only offered when db_path is known (see __init__) -- launching spawns
+            # a separate process that needs to reconnect to a real, shared database file;
+            # there's nothing sensible to launch against an in-memory-only session.
             if self._db_path is not None:
-                # Only offered when db_path is known (see __init__) -- launching spawns a
-                # separate process that needs to reconnect to a real, shared database file;
-                # there's nothing sensible to launch against an in-memory-only session.
-                menu.addAction("Launch...", lambda: self._launch_instance(node.id))
-                menu.addSeparator()
-            menu.addAction("Delete Instance", lambda: self._delete_instance(node))
+                actions.append(NodeAction("Launch...", "play", lambda: self._launch_instance(node.id), variant="primary"))
+            actions.append(
+                NodeAction(
+                    "Delete Instance", "trash", lambda: self._delete_instance(node),
+                    variant="destructive", separator_before=self._db_path is not None,
+                )
+            )
 
         if node.kind == "experiment":
-            menu.addAction("New Condition...", lambda: self._create_condition(node.id))
-            menu.addAction("New Block...", lambda: self._create_block(node.id))
-            menu.addSeparator()
-            menu.addAction("Edit Experiment...", lambda: self._edit_experiment(node))
-            menu.addAction("Duplicate", lambda: self._duplicate_experiment(node))
-            menu.addSeparator()
-            menu.addAction("Delete Experiment", lambda: self._delete_experiment(node))
+            actions.append(NodeAction("New Condition...", "plus", lambda: self._create_condition(node.id)))
+            actions.append(NodeAction("New Block...", "plus", lambda: self._create_block(node.id)))
+            actions.append(
+                NodeAction("Edit Experiment...", "edit", lambda: self._edit_experiment(node), separator_before=True)
+            )
+            actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_experiment(node)))
+            actions.append(
+                NodeAction(
+                    "Delete Experiment", "trash", lambda: self._delete_experiment(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
         elif node.kind == "conditions_group":
             parent_id = self._parent_node_id(index)
             if parent_id is not None:
-                menu.addAction("New Condition...", lambda: self._create_condition(parent_id))
+                actions.append(
+                    NodeAction("New Condition...", "plus", lambda: self._create_condition(parent_id), variant="primary")
+                )
         elif node.kind == "blocks_group":
             parent_id = self._parent_node_id(index)
             if parent_id is not None:
-                menu.addAction("New Block...", lambda: self._create_block(parent_id))
+                actions.append(
+                    NodeAction("New Block...", "plus", lambda: self._create_block(parent_id), variant="primary")
+                )
 
         if node.kind == "condition":
-            menu.addAction("Edit Condition...", lambda: self._edit_condition(node))
-            menu.addAction("Check Triggers...", lambda: self._check_triggers(node))
-            menu.addAction("Preview Stimuli...", lambda: self._preview_stimuli(node))
-            menu.addAction("Duplicate", lambda: self._duplicate_condition(node))
-            menu.addSeparator()
-            menu.addAction("Delete Condition", lambda: self._delete_condition(node))
+            actions.append(NodeAction("Edit Condition...", "edit", lambda: self._edit_condition(node)))
+            actions.append(NodeAction("Check Triggers...", "zap", lambda: self._check_triggers(node)))
+            actions.append(NodeAction("Preview Stimuli...", "eye", lambda: self._preview_stimuli(node)))
+            actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_condition(node)))
+            actions.append(
+                NodeAction(
+                    "Delete Condition", "trash", lambda: self._delete_condition(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
 
         if node.kind == "block":
-            menu.addAction("Manage Trials...", lambda: self._manage_trials(node.id))
-            menu.addSeparator()
-            menu.addAction("Edit Block...", lambda: self._edit_block(node))
-            menu.addAction("Duplicate", lambda: self._duplicate_block(node))
+            actions.append(NodeAction("Manage Trials...", "list", lambda: self._manage_trials(node.id)))
+            actions.append(
+                NodeAction("Edit Block...", "edit", lambda: self._edit_block(node), separator_before=True)
+            )
+            actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_block(node)))
             block = repo.get_block(self._session, node.id)
             siblings = repo.list_blocks(self._session, experiment_id=block.experiment_id)
-            self._add_reorder_actions(menu, node, siblings, self._move_block)
-            menu.addSeparator()
-            menu.addAction("Delete Block", lambda: self._delete_block(node))
+            actions.extend(self._reorder_node_actions(node, siblings, self._move_block))
+            actions.append(
+                NodeAction(
+                    "Delete Block", "trash", lambda: self._delete_block(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
 
         if node.kind == "trial":
             trial = repo.get_trial(self._session, node.id)
             siblings = repo.list_trials(self._session, block_id=trial.block_id)
-            self._add_reorder_actions(menu, node, siblings, self._move_trial)
-            menu.addSeparator()
-            menu.addAction("Delete Trial", lambda: self._delete_trial(node))
+            actions.extend(self._reorder_node_actions(node, siblings, self._move_trial))
+            actions.append(
+                NodeAction(
+                    "Delete Trial", "trash", lambda: self._delete_trial(node),
+                    variant="destructive", separator_before=True,
+                )
+            )
 
-        return menu
+        return actions
 
-    def _add_reorder_actions(self, menu: QMenu, node: TreeNode, siblings: list, mover) -> None:
-        """Add enabled/disabled "Move Up"/"Move Down" actions for ``node`` within ``siblings``
-        (already ordered by ``(order_index, id)`` -- see ``repo.list_blocks``/``list_trials``).
-        Disabled rather than omitted at the first/last position so the menu shape doesn't jump
-        around depending on position -- more predictable for a user right-clicking repeatedly."""
+    def _reorder_node_actions(
+        self, node: TreeNode, siblings: list, mover: Callable[[TreeNode, int], None]
+    ) -> list[NodeAction]:
+        """"Move Up"/"Move Down" actions for ``node`` within ``siblings`` (already ordered by
+        ``(order_index, id)`` -- see ``repo.list_blocks``/``list_trials``), disabled rather than
+        omitted at the first/last position so the menu/bar shape doesn't jump around depending
+        on position -- more predictable for a user acting repeatedly."""
         idx = next(i for i, sibling in enumerate(siblings) if sibling.id == node.id)
-        up_action = menu.addAction("Move Up", lambda: mover(node, -1))
-        up_action.setEnabled(idx > 0)
-        down_action = menu.addAction("Move Down", lambda: mover(node, 1))
-        down_action.setEnabled(idx < len(siblings) - 1)
+        return [
+            NodeAction("Move Up", "chevron-up", lambda: mover(node, -1), enabled=idx > 0),
+            NodeAction("Move Down", "chevron-down", lambda: mover(node, 1), enabled=idx < len(siblings) - 1),
+        ]
+
+    def _update_action_bar(self) -> None:
+        """Refresh the :class:`~xpman.gui.action_bar.ActionBar` for whatever's now selected --
+        driven by the exact same :meth:`_actions_for` table the context menu uses, minus
+        "Preview Stimuli..." for Condition nodes specifically: that action already has two
+        homes (the context menu, and the dedicated Preview button shown while a Condition's
+        form is open), and a third copy in the bar would just be clutter."""
+        index = self._tree.currentIndex()
+        actions = [a for a in self._actions_for(index) if a.label != "Preview Stimuli..."]
+        self._action_bar.set_actions(actions)
 
     # -- create actions -----------------------------------------------------------------------
 
