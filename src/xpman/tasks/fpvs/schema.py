@@ -523,25 +523,22 @@ class FPVSConditionParams(BaseModel):
     # validation -- a Condition-level duplicate would be redundant.
 
     @model_validator(mode="after")
-    def _check_behavioural_tasks_dont_share_keys(self) -> "FPVSConditionParams":
-        # All key presses come from ONE keyboard and are routed to a task by key name (see
-        # task.py run_trial). If two *enabled* behavioural overlays share a key, the same press is
-        # scored by both -- an unrecoverable ambiguity, so reject it at save/freeze time rather than
-        # silently double-counting. (A single enabled task, or none, is always fine.) Iterates
-        # active_overlays generically, so any new attention task is covered without editing here.
-        enabled: list[tuple[str, set[str]]] = [
-            (overlay.spawn_key, set(overlay.params.keys)) for overlay in self.active_overlays()
-        ]
-        for i in range(len(enabled)):
-            for j in range(i + 1, len(enabled)):
-                (name_a, keys_a), (name_b, keys_b) = enabled[i], enabled[j]
-                shared = keys_a & keys_b
-                if shared:
-                    raise ValueError(
-                        f"the enabled '{name_a}' and '{name_b}' tasks share key(s) {sorted(shared)} "
-                        "-- one press would be scored by both. Give each enabled behavioural task "
-                        "its own key(s), or enable only one."
-                    )
+    def _check_at_most_one_attention_task(self) -> "FPVSConditionParams":
+        # The behavioural attention overlays (distractor, go/no-go, ...) are NOT additive: each draws
+        # at fixation/markers and collects key presses from the ONE shared keyboard, and the trigger
+        # path emits at most one overlay code per frame -- so running two together would confound both
+        # the behaviour (a press is ambiguous) and the EEG. Enforce mutual exclusivity: at most one
+        # attention task enabled per Condition, rejected at save/freeze time. (This subsumes the old
+        # "don't share a response key" rule -- with only one enabled, no sharing is possible.) Checked
+        # generically over active_overlays, so any future attention task is covered automatically.
+        active = self.active_overlays()
+        if len(active) > 1:
+            names = ", ".join(sorted(overlay.spawn_key for overlay in active))
+            raise ValueError(
+                f"more than one attention task is enabled ({names}) -- they cannot run together, so "
+                "enable only one per Condition (a key press would be scored by both, and only one "
+                "overlay trigger can fire per frame). Disable the others."
+            )
         return self
 
     @model_validator(mode="after")

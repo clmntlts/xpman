@@ -164,14 +164,17 @@ def test_familiarization_is_a_leading_phase_with_a_once_note():
     assert any("once" in n.lower() for n in schematic.notes)
 
 
-def test_overlays_describe_distractor_and_go_nogo():
-    params = FPVSConditionParams(
-        distractor=DistractorParams(enabled=True, keys=["a"]),
-        go_nogo=GoNoGoParams(enabled=True, keys=["b"]),
-    )
-    overlays = build_trial_schematic(params).overlays
-    assert any("Distractor" in o for o in overlays)
-    assert any("Go/no-go" in o for o in overlays)
+def test_overlays_describe_each_attention_task():
+    # Attention tasks are mutually exclusive (at most one enabled per Condition), so preview each on
+    # its own rather than both together.
+    distractor_overlays = build_trial_schematic(
+        FPVSConditionParams(distractor=DistractorParams(enabled=True, keys=["a"]))
+    ).overlays
+    assert any("Distractor" in o for o in distractor_overlays)
+    go_nogo_overlays = build_trial_schematic(
+        FPVSConditionParams(go_nogo=GoNoGoParams(enabled=True, keys=["b"]))
+    ).overlays
+    assert any("Go/no-go" in o for o in go_nogo_overlays)
 
 
 def test_task_hook_returns_pair_and_none_on_invalid():

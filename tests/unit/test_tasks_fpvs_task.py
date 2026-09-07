@@ -1596,15 +1596,18 @@ def test_check_triggers_no_uneven_warning_for_single_evenly_spaced_oddball():
     assert not any("UNEVENLY" in w for w in task.check_triggers(params.model_dump()))
 
 
-def test_check_triggers_warns_when_both_distractor_and_go_nogo_enabled():
-    task = FPVSTask()
+def test_two_attention_tasks_enabled_is_a_hard_error():
+    # Mutual exclusivity is enforced at the MODEL level (not a soft advisory): a Condition with two
+    # attention tasks enabled cannot even be constructed/validated. This replaces the old "both
+    # enabled" warning -- there is nothing softer left to warn about.
+    from pydantic import ValidationError
+
     params = _clean_condition()
     params.distractor.enabled = True
-    params.distractor.response_window_seconds = 0.5
     params.go_nogo.enabled = True
-    params.go_nogo.response_window_seconds = 0.5
-    params.go_nogo.keys = ["p"]  # distinct keys so only the "one task at a time" advisory fires
-    assert any("one behavioural task at a time" in w for w in task.check_triggers(params.model_dump()))
+    params.go_nogo.keys = ["p"]  # distinct keys -- still rejected: the tasks are not additive
+    with pytest.raises(ValidationError, match="more than one attention task"):
+        type(params).model_validate(params.model_dump())
 
 
 def test_check_triggers_clean_when_go_nogo_well_configured():
@@ -1967,13 +1970,13 @@ class _SharedBufferKeyboard:
         return matched
 
 
-def test_run_trial_distractor_responses_are_collected_even_with_go_nogo_task_on(
+def test_run_trial_distractor_responses_are_collected(
     mock_window, stim_root, event_sink
 ):
-    """Regression: two Keyboard instances share PsychoPy's device buffer, so a second behavioural
-    task's collector getKeys(clear=True) used to drain the distractor presses before they were read
-    -- every distractor response was silently lost. With go_nogo ALSO enabled (on a DIFFERENT key --
-    shared keys are a hard error), a distractor press must still be a hit."""
+    """A buffered key press within an event's response window is scored as a distractor hit. Guards
+    the ONE shared keyboard collector (used for whichever single attention task is enabled): an
+    earlier two-Keyboard design drained PsychoPy's device buffer before the presses were read, so
+    every distractor response was silently lost."""
     from types import SimpleNamespace
 
     task = FPVSTask()
@@ -1984,8 +1987,6 @@ def test_run_trial_distractor_responses_are_collected_even_with_go_nogo_task_on(
     params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
     params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
     params.main_stream.base.trial_duration_seconds = 5.0
-    params.go_nogo.enabled = True  # the second collector that used to drain the buffer first
-    params.go_nogo.keys = ["a"]  # distinct from the distractor key (shared keys now rejected)
     params.distractor.enabled = True
     params.distractor.min_interval_seconds = 1.0
     params.distractor.max_interval_seconds = 1.0

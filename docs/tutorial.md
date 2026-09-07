@@ -516,15 +516,17 @@ hardware timing verification (e.g. taping a photodiode sensor to it):
 (flips every N screen frames regardless of stimulus), `oddball_onset_only` (flips only on
 oddball images — useful for marking just the oddball events on an EEG channel).
 
-> **Note:** the two behavioural tasks (`distractor`, `go_nogo`) share one keyboard, routed
-> by key. Both *enabled* with a shared key is **rejected** at save/freeze time (a press can't be
-> attributed to both) — give each enabled task its own key(s), or enable only one.
+> **Note — only one attention task at a time.** The behavioural attention tasks (`distractor`,
+> `go_nogo`, and any future one) are **not additive**: at most **one** may be enabled per Condition.
+> They share one keyboard and the trigger path sends at most one overlay code per frame, so running
+> two together would make a key press ambiguous and confound the tagged EEG. Enabling a second is
+> **rejected** at save/freeze time (the form shows a validation error) — disable one to proceed.
 
 **Distractor task** (`distractor`) — an optional *attention-control* task: at pseudo-random
 moments during the stimulation, a brief change appears **at the fixation point** and the subject
 presses a key when they detect it. This keeps attention on fixation (orthogonal to the category
-being frequency-tagged) and gives a behavioural vigilance measure. Off by default; when on, and
-`go_nogo` is also on, give the two tasks different keys.
+being frequency-tagged) and gives a behavioural vigilance measure. Off by default; only one
+attention task may be enabled per Condition (see the note above).
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
@@ -546,8 +548,8 @@ enabling it never changes the stimulus order.
 **Spatial go/no-go task** (`go_nogo`) — an alternative *attention-control* task: several markers
 sit at fixed positions (independent of the central images). At random moments they "signal" (turn
 `signal_color`). The rule is a **conjunction**: when **all** markers signal together it's a **GO**
-(respond); when a **single** marker signals it's a **NO-GO** (withhold). Use this OR the central
-`distractor`, not both.
+(respond); when a **single** marker signals it's a **NO-GO** (withhold). Use this **or** the central
+`distractor`, never both — only one attention task may be enabled per Condition (see the note above).
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -777,7 +779,11 @@ This requires writing Python, unlike everything else in this tutorial.
   flexible base/oddball ordering patterns (BBBO…), the stepped **frequency sweep**, the per-trial
   **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions (size
   modulation, intra-category oddball, etc.) are listed in `TODO.md`.
-- Real hardware timing verification against the lab's EEG rig hasn't been run yet — see
-  `docs/verification_protocol.md`.
+- Hardware timing verification against a real EEG rig is an ongoing manual step — see
+  [`docs/verification_protocol.md`](verification_protocol.md) and the turnkey
+  [`docs/lab_test_tutorial.md`](lab_test_tutorial.md). After a run, cross-check that xpman's
+  triggers actually landed on the BioSemi recording — with the right codes, timing, and no dropped
+  frames — using the **integration verifier** (`xpman-verify`): it turns the run's `.bdf` +
+  `events.csv` into one interactive report. See [`docs/integration_verifier.md`](integration_verifier.md).
 
 The full, up-to-date list lives in [`TODO.md`](../TODO.md) at the repo root.
