@@ -63,6 +63,9 @@ def mock_window():
 
     window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
     window.flip.side_effect = _flip
+    # DummyTask.prepare() now measures the refresh once (to pace colour flips to flip_rate_hz);
+    # a real Window returns a float here, so the mock must too (default 60 Hz).
+    window.getActualFrameRate.return_value = 60.0
     return window
 
 

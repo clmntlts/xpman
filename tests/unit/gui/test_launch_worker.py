@@ -170,6 +170,9 @@ def _mock_window():
 
     window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
     window.flip.side_effect = _flip
+    # DummyTask.prepare() now measures the refresh once (to pace colour flips to flip_rate_hz);
+    # without an explicit float here the MagicMock's __float__ returns 1.0, making the run 0 frames.
+    window.getActualFrameRate.return_value = 60.0
     return window
 
 

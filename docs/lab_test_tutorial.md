@@ -179,6 +179,13 @@ mistimed trigger at a glance).
 Note: these are xpman's **software** timestamps. The **electrical** latency is what your photodiode
 capture gives — the point of the session is to confirm the two agree and the jitter is tight.
 
+**Or do both at once — the integration verifier.** Feed the run's `.bdf` *and* its `events.csv` to
+`xpman-verify` and it puts the two systems on one timeline automatically: a trigger codebook (every
+code reconciled BDF ↔ xpman), the photodiode↔trigger plot with per-code toggles, dropped frames, and
+the PC↔BioSemi clock alignment (slope + residual). Double-click `xpman-verify.exe` and pick the two
+files, or run `xpman-verify-report --bdf ... --events-csv ... --out report.html`. See
+[`integration_verifier.md`](integration_verifier.md).
+
 ---
 
 ## 7. Pass / fail — fill this in
