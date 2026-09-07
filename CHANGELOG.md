@@ -7,6 +7,47 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 > specification and covered by automated tests, but has **not** been measured on a real EEG rig.
 > See `docs/verification_protocol.md`; run that lab session before relying on the timing.
 
+## [0.5.0] — 2026-09-07
+
+Extensibility and data-safety release. The two attentional tasks are refactored onto a shared,
+pluggable overlay layer so new behavioural tasks can be added without touching the FPVS engine,
+and a standalone integration verifier ships for checking a recording's triggers/timing against
+the events log. No breaking schema change; an older Instance loads and runs identically.
+
+### Added
+
+- **Pluggable behavioural-overlay layer** (`tasks/fpvs/overlay_base.py`): a shared
+  `BehaviouralOverlayParams`/`OverlayEvent`/`ResponseMatch` vocabulary, a `match_responses_to_events`
+  scorer, and `OverlayController`/`BehaviouralOverlay` protocols. The distractor and go/no-go tasks
+  are now adapters over this layer, and the oddball engine iterates a generic `overlays` list, so a
+  third behavioural task can be added without modifying the paradigm loop.
+- **Integration verifier** (`xpman.verification`): a standalone tool (`xpman-verify` /
+  `xpman-verify-report`, plus a packaged `.exe`) that takes a `.bdf` recording and an `events.csv`
+  and produces an interactive HTML report aligning the recorded trigger stream against the expected
+  event log — trigger codebook, per-code counts, and clock alignment.
+
+### Changed
+
+- **Attentional tasks are now mutually exclusive.** A condition may enable at most one attention
+  task; a schema validator (`_check_at_most_one_attention_task`) rejects a configuration that turns
+  on more than one, since they are not additive.
+- Instance export/manifest now re-verifies the frozen Instance's checksum and refuses on mismatch,
+  and `delete_instance` refuses to cascade away an Instance that still has Runs unless `force=True`,
+  so collected data can't be silently destroyed.
+
+### Fixed
+
+- `DummyTask` flip pacing now measures the true refresh rate and toggles every
+  `round(refresh / flip_rate_hz)` frames, so `flip_rate_hz` sets an actual rate rather than only a
+  flip count.
+- Crash-safety: the run's trial-sequence build, `run_started` marker, and events-log path are now
+  created inside the execute-run `try`, so a failure mid-setup is recorded rather than lost.
+- Instance-freeze dialog now disables **Ok** while blocking validation errors are present.
+
+### Documentation
+
+- Documented the integration verifier and the pluggable behavioural-task workflow.
+
 ## [0.4.0] — 2026-09-05
 
 GUI redesign: pure visual/UX pass, no functional change -- every action still calls the exact

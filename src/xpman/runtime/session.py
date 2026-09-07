@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 #: Fallback recorded on a Run when xpman isn't installed as a distribution (e.g. running straight
 #: from a source checkout), so ``importlib.metadata`` can't find a version. Bump alongside the
 #: package version. See ``_resolve_versions`` and ``core.models.Run.xpman_version``.
-XPMAN_VERSION = "0.4.0"
+XPMAN_VERSION = "0.5.0"
 
 
 def _resolve_versions() -> dict[str, str | None]:
