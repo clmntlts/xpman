@@ -458,16 +458,24 @@ def list_runs(session: Session, *, instance_id: int | None = None, subject_id: i
 # ---------------------------------------------------------------------------
 
 
-def delete_instance(session: Session, instance_id: int) -> None:
+def delete_instance(session: Session, instance_id: int, *, force: bool = False) -> None:
     """Delete an Instance row.
 
-    WARNING: ``Instance.runs`` cascades to Runs and their Results (see ``core.models``), so
-    this destroys any collected data for that Instance. Callers that want to preserve results
-    (the GUI does) must check ``list_runs(session, instance_id=...)`` is empty first and refuse
-    otherwise -- there is no way in the current schema to keep a Run interpretable once its
-    Instance snapshot is gone.
+    ``Instance.runs`` cascades to Runs and their Results (see ``core.models``), so deleting an
+    Instance destroys any collected data for it. To make that impossible by accident, this now
+    REFUSES (raises ``ValueError``) when the Instance has any Runs -- unless ``force=True`` is passed
+    as a deliberate override. The GUI already pre-checks and refuses; this guard enforces the same
+    invariant for every other caller (scripts, future features) so the documented rule can't be
+    silently bypassed. There is no way in the current schema to keep a Run interpretable once its
+    Instance snapshot is gone, so preserving Runs means keeping the Instance.
     """
     instance = _require(session, Instance, instance_id)
+    if not force and list_runs(session, instance_id=instance_id):
+        raise ValueError(
+            f"Instance {instance_id} has Run(s) with collected Results -- deleting it would cascade "
+            "and destroy that data. Refusing; delete the Runs explicitly first, or pass force=True "
+            "to override deliberately."
+        )
     session.delete(instance)
     session.flush()
 
