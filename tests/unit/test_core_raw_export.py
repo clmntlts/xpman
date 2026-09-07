@@ -280,6 +280,18 @@ def test_get_run_manifest_missing_run_raises_lookup_error(session):
         get_run_manifest(session, 999999)
 
 
+def test_get_run_manifest_refuses_corrupted_instance(session):
+    # A tampered/corrupted frozen snapshot no longer matches its checksum -> refuse to export the
+    # (now-untrustworthy) frozen parameters under an authoritative-looking fingerprint.
+    fixture = _build_fixture(session)
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    fixture["instance"].checksum = "tampered-checksum"
+    session.commit()
+
+    with pytest.raises(ValueError, match="integrity check"):
+        get_run_manifest(session, run.id)
+
+
 # ---------------------------------------------------------------------------
 # export_run_raw_bundle (end-to-end)
 # ---------------------------------------------------------------------------

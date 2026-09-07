@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 from sqlalchemy.orm import Session
 
 from xpman.core import repository as repo
-from xpman.core.instance import get_instance
+from xpman.core.instance import get_instance, verify_instance_integrity
 from xpman.core.models import Run
 
 #: Columns always present first, in this order, ahead of the alphabetical union of every
@@ -197,6 +197,18 @@ def get_run_manifest(session: Session, run_id: int) -> dict[str, Any]:
         raise LookupError(f"Run with id={run_id!r} not found")
 
     instance = get_instance(session, run.instance_id)
+    # Refuse to export a corrupted snapshot: the frozen Condition parameters below come straight from
+    # instance.frozen_json, and its checksum is written into the manifest as if authoritative. If the
+    # stored snapshot no longer matches its checksum (disk corruption, tampering, a bad manual edit),
+    # exporting it would hand out the WRONG parameters under a trustworthy-looking fingerprint -- so
+    # fail loudly instead. (instance is None only for an orphaned Run whose Instance was deleted;
+    # nothing to verify then, and there are no frozen params to bundle.)
+    if instance is not None and not verify_instance_integrity(instance):
+        raise ValueError(
+            f"Instance {run.instance_id} (run {run_id}) failed its integrity check: the frozen "
+            "snapshot no longer matches its stored checksum. Refusing to export possibly-corrupted "
+            "parameters -- the Instance's frozen_json or checksum has been altered."
+        )
     subject = repo.get_subject(session, run.subject_id) if run.subject_id is not None else None
 
     condition_ids = sorted({r.condition_id for r in run.results if r.condition_id is not None})
