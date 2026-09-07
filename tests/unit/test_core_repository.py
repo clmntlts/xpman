@@ -189,6 +189,39 @@ def test_delete_instance_removes_the_row(session):
     assert get_instance(session, instance.id) is None
 
 
+def test_delete_instance_with_runs_is_refused_unless_forced(session):
+    from datetime import datetime, timezone
+
+    from xpman.core.instance import freeze_program, get_instance
+    from xpman.core.models import Run, RunStatus
+
+    profile = repo.create_profile(session, name="Dr. Test")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="Ada", last_name="Lovelace")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="P1", resource_main_directory="C:/",
+        task_name="dummy", task_schema_version="1",
+    )
+    session.commit()
+    instance = freeze_program(session, program.id, name="I1")
+    session.commit()
+    session.add(Run(
+        instance_id=instance.id, subject_id=subject.id, started_at=datetime.now(timezone.utc),
+        xpman_version="0.1.0", status=RunStatus.COMPLETED,
+    ))
+    session.commit()
+
+    # Refuses while Runs (and their Results) exist -> the collected data is preserved.
+    with pytest.raises(ValueError, match="would cascade"):
+        repo.delete_instance(session, instance.id)
+    session.rollback()
+    assert get_instance(session, instance.id) is not None
+
+    # force=True is the deliberate override.
+    repo.delete_instance(session, instance.id, force=True)
+    session.commit()
+    assert get_instance(session, instance.id) is None
+
+
 def test_delete_instance_unknown_id_raises(session):
     with pytest.raises(LookupError):
         repo.delete_instance(session, 999999)
