@@ -28,6 +28,44 @@ if TYPE_CHECKING:
     from xpman.tasks.registry import TaskRegistry
 
 
+def blocking_freeze_errors(
+    session: Session, program_id: int, registry: "TaskRegistry"
+) -> list[str]:
+    """Problems that make the frozen Instance permanently UNRUNNABLE and so must BLOCK freezing --
+    unlike the advisory warnings from :func:`validate_program_for_freeze` (missing resource dir,
+    empty block, ...), which have legitimate override stories.
+
+    The only blocking case: a Condition whose ``parameters_json`` fails its task's schema
+    validation. Such an Instance would fail ``model_validate`` at *every* launch (reported as a
+    setup error) and can never be edited (Instances are immutable), so freezing it is always a
+    mistake -- and freezing can be reached WITHOUT the validating SchemaForm Save (e.g. cloning a
+    Condition copies its params verbatim). Empty list == safe to freeze. Raises ``LookupError`` only
+    if ``program_id`` doesn't exist; an unknown/uninstalled task returns [] (params can't be checked
+    here, and that is already surfaced as an advisory warning).
+    """
+    program = repo.get_program(session, program_id)
+    if program is None:
+        raise LookupError(f"no Program with id {program_id}")
+    try:
+        task = registry.get(program.task_name)
+    except KeyError:  # UnknownTaskError subclasses KeyError -- can't validate params without the schema
+        return []
+    model_cls = task.schema.condition_params_model()
+    errors: list[str] = []
+    for experiment in repo.list_experiments(session, program_id=program_id):
+        for condition in repo.list_conditions(session, experiment_id=experiment.id):
+            try:
+                model_cls.model_validate(condition.parameters_json or {})
+            except ValidationError as exc:
+                first = exc.errors()[0]
+                loc = ".".join(str(part) for part in first["loc"])
+                errors.append(
+                    f'Condition "{condition.name}": parameters do not validate '
+                    f"({loc}: {first['msg']})"
+                )
+    return errors
+
+
 def validate_program_for_freeze(
     session: Session, program_id: int, registry: "TaskRegistry"
 ) -> list[str]:

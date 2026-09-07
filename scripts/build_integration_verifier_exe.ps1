@@ -68,7 +68,12 @@ $PyInstallerArgs = @(
     "-m", "PyInstaller",
     "--name", "xpman-verify",
     "--onefile",
-    "--windowed",
+    # --console (not --windowed): the exe is dual-mode -- no args opens the file-picker GUI, with
+    # args it runs headless as a CLI (integration_report.main, which print()s its summary and errors).
+    # A --windowed build has no stdout/stderr, so CLI mode would silently discard all of that. The
+    # trade-off is a console window alongside the GUI on a plain double-click, acceptable for a lab
+    # utility and far better than a scriptable CLI whose output vanishes.
+    "--console",
     "--noconfirm",
     # Bundle Plotly where default_plotly_path() looks under sys._MEIPASS when frozen.
     "--add-data", "src/xpman/verification/assets/plotly.min.js;xpman/verification/assets"

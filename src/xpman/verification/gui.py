@@ -139,7 +139,13 @@ def main() -> None:
             messagebox.showerror("Could not generate report", error)
             return
         bad = [c for c in summary["codebook"] if c["ok"] is False]
-        ok = summary["reconciled"] and summary["n_dropped"] == 0 and not bad
+        al = summary.get("align")
+        align_ok = al is None or (
+            al.get("count_match", True)
+            and abs(al.get("slope", 1.0) - 1.0) < 1e-3
+            and al.get("resid_sd_ms", 0.0) < 2.0
+        )
+        ok = summary["reconciled"] and summary["n_dropped"] == 0 and not bad and align_ok
         result.config(
             text=("✓ Report generated — " if ok else "⚠ Report generated (check flagged rows) — ")
                  + f"{summary['n_distinct_codes']} codes, {summary['n_bdf_triggers']} triggers, "
