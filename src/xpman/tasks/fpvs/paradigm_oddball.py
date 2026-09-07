@@ -53,8 +53,7 @@ if TYPE_CHECKING:
     from xpman.hardware.clock import Clock
     from xpman.hardware.trigger import TriggerSender
     from xpman.runtime.logging_sink import EventSink
-    from xpman.tasks.fpvs.distractor import DistractorController
-    from xpman.tasks.fpvs.go_nogo import GoNoGoController
+    from xpman.tasks.fpvs.overlay_base import OverlayController
     from xpman.tasks.fpvs.photodiode import PhotodiodePatch
 
 
@@ -363,8 +362,7 @@ def _present_stimulus(
     modulation_fn: Callable[[int, int], float] | None = None,
     flip_log: "list[tuple[str, dict, float]] | None" = None,
     position: "tuple[float, float] | None" = None,
-    distractor: "DistractorController | None" = None,
-    go_nogo: "GoNoGoController | None" = None,
+    overlays: "list[OverlayController]" = (),
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
     ``(frames_actually_presented, aborted, onset_time)``. ``frames_actually_presented == 0``
@@ -406,24 +404,24 @@ def _present_stimulus(
         # giving a ~1-frame pulse; it's idempotent (setData(0) on an already-0 port), so it is safe
         # every non-onset frame. The sequence's final onset (no following frame to clear it) is
         # reset by the trailing clear_code in the caller. See TriggerSender.set_code/clear_code.
-        distractor_event = (
-            distractor.event_starting_at(global_frame_index) if distractor is not None else None
-        )
-        go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
-        go_nogo_code = go_nogo.trigger_code_for(go_nogo_event) if go_nogo_event is not None else None
         # Resolve to EXACTLY ONE port registration per frame via the SAME function the dual-stream
         # engine uses, so both paths fail loud identically. A base/oddball onset carrying a code and an
         # overlay code on the same frame is a collision: resolve_frame_trigger RAISES rather than
         # silently dropping the overlay marker (issue #17) -- a dropped marker is invisible until
         # analysis. The scheduler places triggered overlays off base-onset frames precisely so this
-        # can't happen, so a raise means that guarantee broke. Distractor takes priority over go/no-go
-        # for the overlay code (as before; they're advised mutually exclusive). Non-colliding frames
-        # are byte-for-byte unchanged -- guarded by the callOnFlip + golden regression tests.
-        overlay_code = None
-        if distractor_event is not None and distractor.trigger_code is not None:
-            overlay_code = distractor.trigger_code
-        elif go_nogo_event is not None and go_nogo_code is not None:
-            overlay_code = go_nogo_code
+        # can't happen, so a raise means that guarantee broke. The first overlay (in list order) to
+        # supply a code wins (earlier overlays take priority, as before; they're advised mutually
+        # exclusive). Non-colliding frames are byte-for-byte unchanged -- guarded by the callOnFlip +
+        # golden regression tests.
+        firing_overlays = [
+            (overlay, event)
+            for overlay in overlays
+            if (event := overlay.event_starting_at(global_frame_index)) is not None
+        ]
+        overlay_code = next(
+            (code for overlay, event in firing_overlays if (code := overlay.trigger_code_for(event)) is not None),
+            None,
+        )
         frame_onset = [StreamOnset(0, trigger_code, is_oddball)] if is_onset else []
         action = resolve_frame_trigger(frame_onset, overlay_code=overlay_code)
         if action[0] == "set_code":
@@ -447,14 +445,11 @@ def _present_stimulus(
         stim.draw()
         if photodiode is not None:
             photodiode.draw()
-        # Distractor overlay drawn LAST, on top of image + photodiode, only while an event is active
-        # (attention-control task -- see distractor.py). Touches only the fixation region.
-        if distractor is not None and distractor.is_active(global_frame_index):
-            distractor.draw()
-        # Go/no-go markers: persistent markers every frame, signalling ones recoloured on top (see
-        # go_nogo.py). Its own draw method handles the always-visible vs active-signal split.
-        if go_nogo is not None:
-            go_nogo.draw_frame(global_frame_index)
+        # Overlays drawn LAST, on top of image + photodiode. Each overlay's draw_frame decides what it
+        # shows on this frame (distractor draws only on active frames; go/no-go draws persistent markers
+        # plus any active signal), so the engine just calls every overlay uniformly.
+        for overlay in overlays:
+            overlay.draw_frame(global_frame_index)
 
         flip_time = window.flip()
         if flip_time is None:
@@ -494,33 +489,16 @@ def _present_stimulus(
                 },
                 timestamp=flip_time,
             )
-        # A distractor event onset can land on ANY frame (not just a stimulus onset), so it is
-        # logged separately here, stamped with flip_time on the SAME timeline as stimulus onsets.
-        # Its onset_time is written back onto the event for later RT scoring in task.py.
-        if distractor_event is not None:
-            distractor_event.onset_time = flip_time
+        # An overlay event onset can land on ANY frame (not just a stimulus onset), so each firing
+        # overlay is logged separately here, stamped with flip_time on the SAME timeline as stimulus
+        # onsets. Its onset_time is written back onto the event for later RT scoring in task.py, and
+        # each overlay supplies its own event_type + payload (index/frame_index/trigger_code, plus
+        # kind/signaling for go/no-go).
+        for overlay, event in firing_overlays:
+            event.onset_time = flip_time
             event_sink.log(
-                "distractor_onset",
-                {
-                    "index": distractor_event.index,
-                    "frame_index": global_frame_index,
-                    "trigger_code": distractor.trigger_code,
-                },
-                timestamp=flip_time,
-            )
-        # Go/no-go event onset, likewise logged on this frame with flip_time (and onset_time written
-        # back for RT/SDT scoring in task.py). Records the GO/NO-GO kind + which markers signalled.
-        if go_nogo_event is not None:
-            go_nogo_event.onset_time = flip_time
-            event_sink.log(
-                "go_nogo_onset",
-                {
-                    "index": go_nogo_event.index,
-                    "kind": go_nogo_event.kind,
-                    "signaling": list(go_nogo_event.signaling),
-                    "frame_index": global_frame_index,
-                    "trigger_code": go_nogo_code,
-                },
+                overlay.onset_event_type,
+                overlay.onset_payload(event, global_frame_index),
                 timestamp=flip_time,
             )
         flip_record = (
@@ -958,8 +936,7 @@ def _present_oddball_segment(
     abort_check: Callable[[], bool],
     rng: "numpy.random.Generator | None",
     position_provider: Callable[[], tuple[float, float]] | None,
-    distractor: "DistractorController | None",
-    go_nogo: "GoNoGoController | None",
+    overlays: "list[OverlayController]",
     onsets: list[OnsetRecord],
     flip_log: "list[tuple[str, dict, float]]",
 ) -> _SegmentRun:
@@ -1013,8 +990,7 @@ def _present_oddball_segment(
             modulation_fn=plan.modulation_fn,
             flip_log=flip_log,
             position=stim_position,
-            distractor=distractor,
-            go_nogo=go_nogo,
+            overlays=overlays,
         )
         global_frame_index += frames_this_stim
         frames_presented += frames_this_stim
@@ -1053,8 +1029,7 @@ def _run_oddball_segments(
     n_fade_out_frames: int,
     rng: "numpy.random.Generator | None",
     position_provider: Callable[[], tuple[float, float]] | None,
-    distractor: "DistractorController | None",
-    go_nogo: "GoNoGoController | None",
+    overlays: "list[OverlayController]" = (),
 ) -> BaseOddballSequenceResult:
     """Present an ordered list of constant-frequency ``segments`` of a single ``stream`` back-to-back,
     keeping a continuous ``global_frame_index``, one onset list, and ONE buffered ``flip_log`` flushed
@@ -1150,8 +1125,7 @@ def _run_oddball_segments(
                 abort_check=abort_check,
                 rng=rng,
                 position_provider=position_provider,
-                distractor=distractor,
-                go_nogo=go_nogo,
+                overlays=overlays,
                 onsets=onsets,
                 flip_log=flip_log,
             )
@@ -1269,8 +1243,7 @@ def _run_dual_stream(
     n_fade_in_frames: int,
     n_fade_out_frames: int,
     rng: "numpy.random.Generator | None",
-    distractor: "DistractorController | None",
-    go_nogo: "GoNoGoController | None",
+    overlays: "list[OverlayController]" = (),
     position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None,
     stream_segment_timeline: "list[list[Segment]] | None" = None,
 ) -> BaseOddballSequenceResult:
@@ -1542,15 +1515,15 @@ def _run_dual_stream(
                 # off ONE stream's cadence only and the second stream onsets at a different rate -- so in a
                 # dual stream overlay_code is only ever set when the overlay is UNtriggered. resolve_frame_trigger
                 # is still the backstop: it raises if a stream onset code and an overlay code ever coincide.
-                overlay_code: int | None = None
-                distractor_event = distractor.event_starting_at(global_frame_index) if distractor is not None else None
-                go_nogo_event = go_nogo.event_starting_at(global_frame_index) if go_nogo is not None else None
-                if distractor_event is not None and distractor is not None and distractor.trigger_code is not None:
-                    overlay_code = distractor.trigger_code
-                elif go_nogo_event is not None and go_nogo is not None:
-                    gcode = go_nogo.trigger_code_for(go_nogo_event)
-                    if gcode is not None:
-                        overlay_code = gcode
+                firing_overlays = [
+                    (overlay, event)
+                    for overlay in overlays
+                    if (event := overlay.event_starting_at(global_frame_index)) is not None
+                ]
+                overlay_code = next(
+                    (code for overlay, event in firing_overlays if (code := overlay.trigger_code_for(event)) is not None),
+                    None,
+                )
 
                 action = resolve_frame_trigger(frame_onsets, reserved=reserved_codes, overlay_code=overlay_code)
                 if action[0] == "set_code":
@@ -1579,10 +1552,11 @@ def _run_dual_stream(
                     rt.current_stim.draw()
                 if photodiode is not None:
                     photodiode.draw()
-                if distractor is not None and distractor.is_active(global_frame_index):
-                    distractor.draw()
-                if go_nogo is not None:
-                    go_nogo.draw_frame(global_frame_index)
+                # Overlays drawn LAST, on top of every stream + photodiode. Each overlay's draw_frame
+                # decides what it shows on this frame (distractor draws only on active frames; go/no-go
+                # draws persistent markers plus any active signal), so the engine calls them uniformly.
+                for overlay in overlays:
+                    overlay.draw_frame(global_frame_index)
 
                 flip_time = window.flip()
                 if flip_time is None:
@@ -1623,23 +1597,14 @@ def _run_dual_stream(
                         },
                         timestamp=flip_time,
                     )
-                if distractor_event is not None:
-                    distractor_event.onset_time = flip_time
+                # Each firing overlay logs its own onset (event_type + payload), writing onset_time back
+                # for later RT/SDT scoring. The payload now includes trigger_code (via onset_payload),
+                # unifying the dual-stream onset payloads with the single-stream ones.
+                for overlay, event in firing_overlays:
+                    event.onset_time = flip_time
                     event_sink.log(
-                        "distractor_onset",
-                        {"index": distractor_event.index, "frame_index": global_frame_index},
-                        timestamp=flip_time,
-                    )
-                if go_nogo_event is not None:
-                    go_nogo_event.onset_time = flip_time
-                    event_sink.log(
-                        "go_nogo_onset",
-                        {
-                            "index": go_nogo_event.index,
-                            "kind": go_nogo_event.kind,
-                            "signaling": list(go_nogo_event.signaling),
-                            "frame_index": global_frame_index,
-                        },
+                        overlay.onset_event_type,
+                        overlay.onset_payload(event, global_frame_index),
                         timestamp=flip_time,
                     )
                 flip_log.append(("flip", {"frame_index": global_frame_index}, flip_time))
@@ -1755,8 +1720,7 @@ def run_base_oddball_sequence(
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
     position_provider: Callable[[], tuple[float, float]] | None = None,
-    distractor: "DistractorController | None" = None,
-    go_nogo: "GoNoGoController | None" = None,
+    overlays: "list[OverlayController]" = (),
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -1772,10 +1736,11 @@ def run_base_oddball_sequence(
     positions) to get the ``(x, y)`` pixel offset applied via ``stim.set_position`` before that
     stimulus's frames; each onset logs the position. ``None`` leaves every stimulus centered.
 
-    ``distractor`` (attention-control task): when given, its overlay is drawn on top of the stream
-    during active frames, each event onset is logged (``distractor_onset``), and an optional
-    per-event trigger is sent (on non-base-onset frames, so it never collides with the base/oddball
-    trigger). ``None`` runs no distractor. See ``distractor.py``.
+    ``overlays`` (behavioural attention tasks -- distractor, go/no-go, ...): each active
+    ``OverlayController`` is drawn on top of the stream (its own ``draw_frame`` decides which
+    frames), each event onset is logged (``<task>_onset``, via the controller's ``onset_payload``),
+    and an optional per-event trigger is sent on non-base-onset frames so it never collides with the
+    base/oddball trigger. Empty by default (no overlay). See ``overlay_base.py``.
 
     Raises:
         ValueError: either ``base_stimuli`` or ``oddball_stimuli`` is empty, or
@@ -1820,6 +1785,5 @@ def run_base_oddball_sequence(
         n_fade_out_frames=n_fade_out_frames,
         rng=rng,
         position_provider=position_provider,
-        distractor=distractor,
-        go_nogo=go_nogo,
+        overlays=overlays,
     )

@@ -34,6 +34,9 @@ def mock_window():
 
     window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
     window.flip.side_effect = _flip
+    # DummyTask.prepare() now measures the refresh once (to pace colour flips to flip_rate_hz);
+    # a real Window returns a float here, so the mock must too (default 60 Hz).
+    window.getActualFrameRate.return_value = 60.0
     return window
 
 
@@ -136,9 +139,10 @@ def test_run_trial_alternates_colors(ctx):
 
     # fillColor is set via attribute assignment (stim.fillColor = ...), so a MagicMock only
     # retains the *final* value, not a call history -- assert on that final value plus the
-    # draw() call count (one draw per flip). 4 flips from is_white=False: white, black, white,
-    # black -- ends "black".
-    assert stim.draw.call_count == 4
+    # draw() call count. The window now flips (and draws) EVERY frame: 0.4 s * 60 Hz = 24 frames.
+    # Colour toggles once per half-cycle (round(60/10)=6 frames): 4 toggles from is_white=False
+    # (white, black, white, black) -- ends "black".
+    assert stim.draw.call_count == 24
     assert stim.fillColor == "black"
 
 
@@ -158,7 +162,11 @@ def test_run_trial_respects_abort_check(ctx, event_sink):
             ctx_aborting, {"flip_rate_hz": 10, "duration_seconds": 1.0, "trigger_code": 9}, 0
         )
 
-    assert result.outcome_summary["flips_completed"] == 2
+    # abort_check returns True on its 3rd call, so the loop renders frames 0 and 1 then breaks:
+    # 2 frames rendered, of which only frame 0 is a colour-toggle onset (1 trigger). The run
+    # requested 10 Hz * 1.0 s = 10 toggles and 60 frames, so it's aborted.
+    assert result.outcome_summary["frames_rendered"] == 2
+    assert result.outcome_summary["flips_completed"] == 1
     assert result.outcome_summary["flips_requested"] == 10
     assert result.outcome_summary["aborted"] is True
 
@@ -208,11 +216,10 @@ def test_events_logged_to_sink(ctx, event_sink):
     event_types = [r["event_type"] for r in rows]
     # trial_start/trial_end are emitted by runtime.engine (issue #22), not the task, so a
     # direct task drive like this one -- bypassing the engine -- sees only the task's own events.
-    assert event_types == [
-        "prepare",
-        "flip",
-        "trigger_sent",
-        "flip",
-        "trigger_sent",
-        "cleanup",
-    ]
+    # The window flips every frame (0.2 s * 60 Hz = 12 flips); colour toggles + triggers fire once
+    # per half-cycle (round(60/10)=6 frames), i.e. 10 Hz * 0.2 s = 2 times.
+    assert event_types[0] == "prepare"
+    assert "refresh_rate_measured" in event_types
+    assert event_types[-1] == "cleanup"
+    assert event_types.count("flip") == 12
+    assert event_types.count("trigger_sent") == 2

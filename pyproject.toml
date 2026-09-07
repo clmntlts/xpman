@@ -40,6 +40,11 @@ build = [
 
 [project.scripts]
 xpman = "xpman.gui.app:main"
+# Integration verifier: a tkinter file-picker GUI (xpman-verify) and its CLI (xpman-verify-report)
+# that turn a BioSemi .bdf + xpman events.csv into one interactive HTML report. See
+# docs/integration_verifier.md and scripts/build_integration_verifier_exe.ps1.
+xpman-verify = "xpman.verification.gui:main"
+xpman-verify-report = "xpman.verification.integration_report:main"
 
 [project.entry-points."xpman.tasks"]
 dummy = "xpman.tasks.dummy.task:DummyTask"
@@ -50,6 +55,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "xpman.gui" = ["assets/*.qss", "assets/icons/*.svg", "assets/icons/LICENSE"]
+# Vendored Plotly for fully-offline integration reports. Not tracked in git (see .gitignore);
+# present on disk for editable installs and bundled explicitly by the exe build script.
+"xpman.verification" = ["assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]

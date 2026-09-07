@@ -55,18 +55,6 @@ from xpman.tasks.fpvs.sweep import (
     plan_sweep_overlay_windows,
     plan_sweep_segments,
 )
-from xpman.tasks.fpvs.distractor import (
-    DistractorController,
-    build_distractor_stimulus,
-    schedule_distractor_events,
-    score_distractor_responses,
-)
-from xpman.tasks.fpvs.go_nogo import (
-    GoNoGoController,
-    build_go_nogo_stimuli,
-    schedule_go_nogo_events,
-    score_go_nogo,
-)
 from xpman.tasks.fpvs.equalization_cache import resolve_equalized_pool
 from xpman.tasks.fpvs.modulation import Waveform
 from xpman.tasks.fpvs.photodiode import PhotodiodePatch
@@ -281,7 +269,12 @@ def _run_familiarization(
     the real sequence when enabled; ``None`` keeps it centered."""
     ctx.event_sink.log(
         "familiarization_start",
-        {"frequency_hz": fam.frequency_hz, "duration_seconds": fam.duration_seconds},
+        # start_trigger_code makes this marker self-describing: it records the exact TTL code sent
+        # on the port below (None when no trigger is configured), so the event log alone -- without
+        # the frozen Condition params -- reconciles against the amplifier's Status channel. Onset
+        # triggers already carry their code (trigger_sent); segment-boundary triggers now do too.
+        {"frequency_hz": fam.frequency_hz, "duration_seconds": fam.duration_seconds,
+         "start_trigger_code": fam.start_trigger_code},
     )
     if fam.start_trigger_code is not None:
         ctx.trigger.send_trigger(fam.start_trigger_code)
@@ -304,7 +297,7 @@ def _run_familiarization(
 
     if fam.stop_trigger_code is not None:
         ctx.trigger.send_trigger(fam.stop_trigger_code)
-    ctx.event_sink.log("familiarization_end", {})
+    ctx.event_sink.log("familiarization_end", {"stop_trigger_code": fam.stop_trigger_code})
 
     present_fixation_only(
         window=ctx.window,
@@ -335,7 +328,9 @@ def _run_baseline(
     ``run_base_sequence`` exactly as ``_run_familiarization`` does."""
     ctx.event_sink.log(
         "baseline_start",
-        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds},
+        # start_trigger_code recorded so the marker is self-describing (see _run_familiarization).
+        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds,
+         "start_trigger_code": baseline.start_trigger_code},
     )
     if baseline.start_trigger_code is not None:
         ctx.trigger.send_trigger(baseline.start_trigger_code)
@@ -358,7 +353,7 @@ def _run_baseline(
 
     if baseline.stop_trigger_code is not None:
         ctx.trigger.send_trigger(baseline.stop_trigger_code)
-    ctx.event_sink.log("baseline_end", {"phase": phase})
+    ctx.event_sink.log("baseline_end", {"phase": phase, "stop_trigger_code": baseline.stop_trigger_code})
 
     present_fixation_only(
         window=ctx.window,
@@ -907,46 +902,28 @@ class FPVSTask(TaskModule):
                 + [frames_per_cycle(refresh, s.base.base_freq_hz) for s in _active_extra_streams]
             )
 
-        distractor_controller = None
-        if params.distractor.enabled:
-            distractor_rng = ctx.rng.spawn(1)[0]
-            events = schedule_distractor_events(
-                _effective_frames,
-                _overlay_cadence,
-                params.distractor,
-                distractor_rng,
-                refresh,
-                segments=overlay_segments,
+        # Behavioural attention overlays (distractor, go/no-go, ...). Built generically from
+        # params.active_overlays() so a new attention task needs no edits here. Each active overlay
+        # gets its OWN decoupled ctx.rng.spawn(1) sub-stream, drawn in active_overlays() order --
+        # byte-for-byte the pre-refactor per-task spawn order, so seeded schedules stay reproducible
+        # and the stimulus order is never perturbed. Each overlay's keys are partitioned out of the
+        # ONE shared keyboard collector and scored against its own events below. See overlay_base.py.
+        # (Known latent issue, unchanged here: which sub-stream each overlay draws still depends on
+        # how many earlier overlays are enabled -- fixable with a stable per-overlay key, deferred.)
+        overlay_controllers = []
+        scored_overlays = []  # (overlay, controller) in active order, for scoring below
+        for overlay in params.active_overlays():
+            overlay_events = overlay.schedule(
+                _effective_frames, _overlay_cadence, ctx.rng.spawn(1)[0], refresh, overlay_segments
             )
-            distractor_stim = build_distractor_stimulus(ctx.window, params.distractor, params.fixation)
-            distractor_controller = DistractorController(
-                events, distractor_stim, params.distractor.trigger_code
-            )
-
-        # Go/no-go spatial task: same decoupled-RNG + off-main-sequence-timeline pattern. Its own
-        # spawn(1) sub-stream (independent of the distractor's) so enabling it never perturbs order.
-        go_nogo_controller = None
-        if params.go_nogo.enabled:
-            go_nogo_rng = ctx.rng.spawn(1)[0]
-            gn_events = schedule_go_nogo_events(
-                _effective_frames,
-                _overlay_cadence,
-                params.go_nogo,
-                go_nogo_rng,
-                refresh,
-                segments=overlay_segments,
-            )
-            gn_base, gn_signal = build_go_nogo_stimuli(ctx.window, params.go_nogo)
-            go_nogo_controller = GoNoGoController(
-                gn_events, gn_base, gn_signal, params.go_nogo.go_trigger_code, params.go_nogo.nogo_trigger_code
-            )
+            overlay_controllers.append(overlay.build_controller(ctx.window, overlay_events))
+            scored_overlays.append((overlay, overlay_controllers[-1]))
 
         # ONE keyboard collector for the whole Run (created on the first trial, reused after --
         # PsychoPy's key buffer attaches more reliably than a fresh Keyboard per trial). It captures
         # EVERY key; the distractor/go-no-go tasks are then scored by partitioning the presses by
         # key name below (two Keyboard instances would fight over PsychoPy's single shared device
         # buffer, silently losing one task's presses). See ResponseCollector.
-        distractor_keys = list(params.distractor.keys) if params.distractor.enabled else []
         if self._response_collector is None:
             self._response_collector = ResponseCollector(enabled=True)
             ctx.event_sink.log("keyboard_ready", {"backend": self._response_collector.backend})
@@ -1187,8 +1164,7 @@ class FPVSTask(TaskModule):
                 n_fade_in_frames=n_fade_in_frames,
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
-                distractor=distractor_controller,
-                go_nogo=go_nogo_controller,
+                overlays=overlay_controllers,
                 position_providers=multi_position_providers,
                 stream_segment_timeline=multi_timeline,
             )
@@ -1222,8 +1198,7 @@ class FPVSTask(TaskModule):
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
                 position_provider=position_provider,
-                distractor=distractor_controller,
-                go_nogo=go_nogo_controller,
+                overlays=overlay_controllers,
             )
         else:
             sequence_result = run_base_oddball_sequence(
@@ -1244,8 +1219,7 @@ class FPVSTask(TaskModule):
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
                 position_provider=position_provider,
-                distractor=distractor_controller,
-                go_nogo=go_nogo_controller,
+                overlays=overlay_controllers,
             )
 
         # Per-trial baseline (base-only reference), 'after' phase: after the oddball stream and before
@@ -1306,58 +1280,27 @@ class FPVSTask(TaskModule):
             end = _seq_onsets[-1].time + _one_stim_s + response_window_seconds
             return [r for r in presses if start <= r.time <= end]
 
-        # Distractor task scoring (signal detection), if it ran. Its presses come from the SAME
-        # single collector (partitioned by key), and are scored against the distractor events (not
-        # stimulus onsets). Only fired events count, so an aborted trial doesn't inflate the miss
-        # count. See distractor.py.
-        distractor_score = None
-        if distractor_controller is not None:
-            distractor_responses = _during_main_sequence(
-                [r for r in all_presses if r.key_name in set(distractor_keys)],
-                params.distractor.response_window_seconds,
+        # Behavioural overlay scoring (signal detection), for each attention task that ran. Presses
+        # come from the ONE shared keyboard collector, partitioned by each overlay's own keys and
+        # bounded to the main sequence's span (see _during_main_sequence). Scored against each
+        # overlay's events (not stimulus onsets); only fired events count, so an aborted trial does
+        # not inflate misses. Each overlay logs its own '<task>_scored' event. See overlay_base.py.
+        overlay_scores: dict = {}  # spawn_key -> score, for the overlays that ran
+        for overlay, controller in scored_overlays:
+            overlay_responses = _during_main_sequence(
+                [r for r in all_presses if r.key_name in set(overlay.params.keys)],
+                overlay.params.response_window_seconds,
             )
-            distractor_score = score_distractor_responses(
-                distractor_responses, distractor_controller.events, params.distractor
-            )
-            ctx.event_sink.log(
-                "distractor_scored",
-                {
-                    "n_events": distractor_score.n_events,
-                    "n_hits": distractor_score.n_hits,
-                    "n_misses": distractor_score.n_misses,
-                    "n_false_alarms": distractor_score.n_false_alarms,
-                    "hit_rate": distractor_score.hit_rate,
-                    "mean_rt_seconds": distractor_score.mean_rt_seconds,
-                    "median_rt_seconds": distractor_score.median_rt_seconds,
-                },
-            )
+            overlay_score = overlay.score(overlay_responses, controller.events)
+            overlay_scores[overlay.spawn_key] = overlay_score
+            ctx.event_sink.log(overlay.scored_event_type, overlay.scored_payload(overlay_score))
 
-        # Go/no-go scoring (signal detection over go/no-go trials), if it ran. Same single collector,
-        # partitioned by the go/no-go keys; scored against the go/no-go events. See go_nogo.py.
-        go_nogo_score = None
-        if go_nogo_controller is not None:
-            go_nogo_responses = _during_main_sequence(
-                [r for r in all_presses if r.key_name in set(params.go_nogo.keys)],
-                params.go_nogo.response_window_seconds,
-            )
-            go_nogo_score = score_go_nogo(
-                go_nogo_responses, go_nogo_controller.events, params.go_nogo
-            )
-            ctx.event_sink.log(
-                "go_nogo_scored",
-                {
-                    "n_go": go_nogo_score.n_go,
-                    "n_nogo": go_nogo_score.n_nogo,
-                    "n_hits": go_nogo_score.n_hits,
-                    "n_misses": go_nogo_score.n_misses,
-                    "n_false_alarms": go_nogo_score.n_false_alarms,
-                    "n_correct_rejections": go_nogo_score.n_correct_rejections,
-                    "hit_rate": go_nogo_score.hit_rate,
-                    "false_alarm_rate": go_nogo_score.false_alarm_rate,
-                    "d_prime": go_nogo_score.d_prime,
-                    "mean_rt_seconds": go_nogo_score.mean_rt_seconds,
-                },
-            )
+        # Each overlay's contribution to outcome_summary, over ALL overlays incl. disabled ones (a
+        # disabled task reports '<task>_enabled' False with null metrics, exactly as before) so the
+        # flat results table stays stable regardless of which tasks are on.
+        overlay_outcome: dict = {}
+        for overlay in params.all_overlays():
+            overlay_outcome.update(overlay.outcome_fields(overlay_scores.get(overlay.spawn_key)))
 
         # Frequency sanity check against the *real* refresh rate (only known now, at run time).
         requested = sequence_result.requested_base_freq_hz
@@ -1477,30 +1420,9 @@ class FPVSTask(TaskModule):
                 "familiarization": ran_familiarization,
                 "baseline": params.baseline.position if params.baseline.enabled else None,
                 "aborted": sequence_result.aborted,
-                "distractor_enabled": params.distractor.enabled,
-                "distractor_n_events": distractor_score.n_events if distractor_score else None,
-                "distractor_n_hits": distractor_score.n_hits if distractor_score else None,
-                "distractor_n_misses": distractor_score.n_misses if distractor_score else None,
-                "distractor_n_false_alarms": (
-                    distractor_score.n_false_alarms if distractor_score else None
-                ),
-                "distractor_hit_rate": distractor_score.hit_rate if distractor_score else None,
-                "distractor_mean_rt_seconds": (
-                    distractor_score.mean_rt_seconds if distractor_score else None
-                ),
-                "go_nogo_enabled": params.go_nogo.enabled,
-                "go_nogo_n_go": go_nogo_score.n_go if go_nogo_score else None,
-                "go_nogo_n_nogo": go_nogo_score.n_nogo if go_nogo_score else None,
-                "go_nogo_n_hits": go_nogo_score.n_hits if go_nogo_score else None,
-                "go_nogo_n_misses": go_nogo_score.n_misses if go_nogo_score else None,
-                "go_nogo_n_false_alarms": go_nogo_score.n_false_alarms if go_nogo_score else None,
-                "go_nogo_n_correct_rejections": (
-                    go_nogo_score.n_correct_rejections if go_nogo_score else None
-                ),
-                "go_nogo_hit_rate": go_nogo_score.hit_rate if go_nogo_score else None,
-                "go_nogo_false_alarm_rate": go_nogo_score.false_alarm_rate if go_nogo_score else None,
-                "go_nogo_d_prime": go_nogo_score.d_prime if go_nogo_score else None,
-                "go_nogo_mean_rt_seconds": go_nogo_score.mean_rt_seconds if go_nogo_score else None,
+                # Per-overlay attention-task fields (distractor_*/go_nogo_*/..., incl. <task>_enabled),
+                # contributed generically by each overlay -- see overlay_outcome above.
+                **overlay_outcome,
         }
 
         # Additive, default-off per-stream / per-segment detail for the flat results table (#10). A
