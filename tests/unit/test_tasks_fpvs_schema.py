@@ -1050,32 +1050,35 @@ def test_many_stacked_features_with_all_distinct_codes_is_accepted():
     assert params.distractor.enabled and params.baseline.enabled and params.familiarization.enabled
 
 
-def test_two_enabled_behavioural_tasks_sharing_a_key_is_rejected():
+def test_two_enabled_attention_tasks_is_rejected():
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
 
-    # distractor + go_nogo both on "space" -> a press would be scored by both -> rejected.
-    with pytest.raises(ValidationError, match="share key"):
+    # The attention tasks are NOT additive: at most one may be enabled per Condition. Two enabled is
+    # rejected regardless of keys (even distinct keys), since only one overlay trigger can fire per
+    # frame and a press would be scored by both.
+    with pytest.raises(ValidationError, match="more than one attention task"):
         FPVSConditionParams(
-            distractor=DistractorParams(enabled=True, keys=["space"]),
+            distractor=DistractorParams(enabled=True, keys=["a"]),
             go_nogo=GoNoGoParams(enabled=True, keys=["space"]),
         )
 
 
-def test_distinct_keys_or_disabled_tasks_are_allowed():
+def test_one_or_no_enabled_attention_task_is_allowed():
     from xpman.tasks.fpvs.distractor import DistractorParams
     from xpman.tasks.fpvs.go_nogo import GoNoGoParams
 
-    # Distinct keys: fine.
-    FPVSConditionParams(
-        distractor=DistractorParams(enabled=True, keys=["a"]),
-        go_nogo=GoNoGoParams(enabled=True, keys=["space"]),
-    )
-    # Same key but one task disabled: fine (only one collects).
+    # Exactly one enabled: fine.
     FPVSConditionParams(
         distractor=DistractorParams(enabled=True, keys=["space"]),
         go_nogo=GoNoGoParams(enabled=False, keys=["space"]),
     )
+    FPVSConditionParams(
+        distractor=DistractorParams(enabled=False),
+        go_nogo=GoNoGoParams(enabled=True, keys=["space"]),
+    )
+    # None enabled: fine (default).
+    FPVSConditionParams()
 
 
 def test_v4_condition_without_go_nogo_or_pattern_validates_defaults():
