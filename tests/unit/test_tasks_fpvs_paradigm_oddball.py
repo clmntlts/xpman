@@ -1192,7 +1192,7 @@ def test_distractor_overlay_drawn_on_active_frames_and_onsets_logged(
         trigger=trigger,
         clock=clock,
         event_sink=event_sink,
-        distractor=controller,
+        overlays=[controller],
     )
     event_sink.close()
     # Overlay drawn exactly on the active frames (3 + 3), not otherwise.
@@ -1219,7 +1219,7 @@ def test_distractor_trigger_sent_on_event_onset(mock_window, event_sink, clock):
         trigger=rec,
         clock=clock,
         event_sink=event_sink,
-        distractor=controller,
+        overlays=[controller],
     )
     # The distractor code fired exactly once (its single event onset), alongside the base/oddball
     # codes -- proving the distractor pulse coexists with the stimulus triggers.
@@ -1581,8 +1581,7 @@ def test_run_oddball_segments_two_segments_continuous_frames_one_flush(
         n_fade_out_frames=0,
         rng=None,
         position_provider=None,
-        distractor=None,
-        go_nogo=None,
+        overlays=[],
     )
     assert result.n_stimuli_shown == 9  # 3 + 6
     assert result.n_frames_presented == 60
@@ -1629,8 +1628,7 @@ def test_run_oddball_segments_single_segment_emits_no_sweep_events(
         n_fade_out_frames=0,
         rng=None,
         position_provider=None,
-        distractor=None,
-        go_nogo=None,
+        overlays=[],
     )
     event_sink.close()
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -1726,8 +1724,7 @@ def test_dual_stream_combines_coincident_triggers_and_flips_once_per_frame(event
         n_fade_in_frames=0,
         n_fade_out_frames=0,
         rng=None,
-        distractor=None,
-        go_nogo=None,
+        overlays=[],
     )
     codes = [op[1][0] for op in window.callonflip_ops if op[0] == "set_code"]
     assert codes.count(200) == 2  # coincident base+base at frames 0 and 10 -> reserved (F,F)
@@ -1758,8 +1755,7 @@ def test_dual_stream_logs_each_stream_onset_with_position(mock_window, event_sin
         n_fade_in_frames=0,
         n_fade_out_frames=0,
         rng=None,
-        distractor=None,
-        go_nogo=None,
+        overlays=[],
     )
     event_sink.close()
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -1797,7 +1793,7 @@ def test_dual_stream_no_reserved_table_never_double_pulses_and_logs_empty_mappin
         trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=None,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None,
+        rng=None, overlays=[],
     )
     # No stream code anywhere -> only clear_code ops, never a set_code.
     assert all(op[0] == "clear_code" for op in window.callonflip_ops)
@@ -1818,7 +1814,7 @@ def test_dual_stream_coincidence_emits_single_reserved_code_and_provenance_decod
         trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None,
+        rng=None, overlays=[],
     )
     # Exactly ONE callOnFlip registration per frame (never two pulses on one frame): 30 frames.
     assert len(window.callonflip_ops) == 30
@@ -1864,7 +1860,7 @@ def test_dual_stream_per_stream_jitter_offsets_each_stream_own_center(
         trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None, position_providers=providers,
+        rng=None, overlays=[], position_providers=providers,
     )
     event_sink.close()
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -1899,7 +1895,7 @@ def _dual_jitter_positions(seed, event_sink, trigger, clock):
         trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None, position_providers=providers,
+        rng=None, overlays=[], position_providers=providers,
     )
     event_sink.close()
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -1933,7 +1929,7 @@ def test_dual_stream_no_providers_stays_at_fixed_positions(mock_window, event_si
         trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None, position_providers=None,
+        rng=None, overlays=[], position_providers=None,
     )
     event_sink.close()
     with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -1958,7 +1954,7 @@ def test_dual_stream_single_element_timeline_equals_legacy_stream_segments(tmp_p
             window=window, streams=streams, refresh_rate_hz=60.0, trigger=trigger, clock=clock,
             event_sink=sink, photodiode=None, photodiode_params=PhotodiodeParams(), tracked_stream_index=0,
             reserved_codes=_RESERVED, abort_check=lambda: False, starting_frame_index=0,
-            n_fade_in_frames=0, n_fade_out_frames=0, rng=None, distractor=None, go_nogo=None,
+            n_fade_in_frames=0, n_fade_out_frames=0, rng=None, overlays=[],
         )
         if timeline:
             _run_dual_stream(stream_segments=segments, stream_segment_timeline=[segments], **kw)
@@ -2003,7 +1999,7 @@ def test_dual_stream_shared_timeline_presents_both_streams_across_segments(event
         stream_segment_timeline=timeline, refresh_rate_hz=60.0, trigger=trigger, clock=clock,
         event_sink=event_sink, photodiode=None, photodiode_params=PhotodiodeParams(), tracked_stream_index=0,
         reserved_codes=_RESERVED, abort_check=lambda: False, starting_frame_index=0,
-        n_fade_in_frames=0, n_fade_out_frames=0, rng=None, distractor=None, go_nogo=None,
+        n_fade_in_frames=0, n_fade_out_frames=0, rng=None, overlays=[],
     )
     assert result.n_frames_presented == 60
     event_sink.close()
@@ -2049,7 +2045,7 @@ def test_single_stream_overlay_collision_fails_loud(
             trigger=trigger,
             clock=clock,
             event_sink=event_sink,
-            distractor=controller,
+            overlays=[controller],
         )
 
 
@@ -2094,7 +2090,7 @@ def _run_two_stream_optional_base_only_sibling(sink, window, *, sibling_base_onl
         refresh_rate_hz=60.0, trigger=trigger, clock=clock, event_sink=sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None,
+        rng=None, overlays=[],
     )
     sink.close()
     with sink.csv_path.open(newline="", encoding="utf-8") as f:
@@ -2196,7 +2192,7 @@ def test_quad_stream_one_oddball_three_base_only_fillers_distinct_positions(tmp_
         refresh_rate_hz=60.0, trigger=trigger, clock=clock, event_sink=sink, photodiode=None,
         photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
         abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
-        rng=None, distractor=None, go_nogo=None,
+        rng=None, overlays=[],
     )
     sink.close()
     with sink.csv_path.open(newline="", encoding="utf-8") as f:

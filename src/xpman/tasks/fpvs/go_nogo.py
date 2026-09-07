@@ -24,13 +24,17 @@ import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from xpman.tasks.fpvs._event_schedule import (
     SegmentWindow,
     iter_event_windows_over_segments,
 )
 from xpman.tasks.fpvs.fixation import FixationParams, build_fixation_stimulus
+from xpman.tasks.fpvs.overlay_base import (
+    BehaviouralOverlayParams,
+    match_responses_to_events,
+)
 
 if TYPE_CHECKING:
     import numpy.random
@@ -45,10 +49,13 @@ def _default_markers() -> list[FixationParams]:
     return [FixationParams(position_pix=(-150.0, 0.0)), FixationParams(position_pix=(150.0, 0.0))]
 
 
-class GoNoGoParams(BaseModel):
-    """Spatial go/no-go attention task. Disabled by default; when off the trial is unchanged."""
+class GoNoGoParams(BehaviouralOverlayParams):
+    """Spatial go/no-go attention task. Disabled by default; when off the trial is unchanged.
 
-    enabled: bool = Field(default=False, description="Show the spatial go/no-go task during stimulation.")
+    Inherits the settings common to every behavioural overlay (``enabled``, timing, response window,
+    keys) from :class:`BehaviouralOverlayParams`; adds the go/no-go-specific appearance + trigger
+    fields below."""
+
     markers: list[FixationParams] = Field(
         default_factory=_default_markers,
         description="Fixation-like markers at configurable positions. Each is a FixationParams; edit "
@@ -58,19 +65,9 @@ class GoNoGoParams(BaseModel):
         json_schema_extra={"min_items": 2},
     )
     signal_color: str = Field(default="red", description="Colour a marker takes when it 'signals'.")
-    event_duration_seconds: float = Field(default=0.2, gt=0, description="How long each signal lasts.")
-    min_interval_seconds: float = Field(default=1.0, gt=0, description="Minimum gap between events.")
-    max_interval_seconds: float = Field(default=3.0, gt=0, description="Maximum gap between events.")
-    guard_seconds: float = Field(
-        default=1.0, ge=0, description="No event within this of the stimulation's start/end."
-    )
     go_probability: float = Field(
         default=0.5, gt=0.0, lt=1.0, description="Fraction of events that are GO (all markers signal)."
     )
-    response_window_seconds: float = Field(
-        default=1.0, gt=0, description="A key press within this after an event's onset counts as a response."
-    )
-    keys: list[str] = Field(default_factory=lambda: ["space"], description="Key(s) counted as a response.")
     go_trigger_code: int | None = Field(
         default=None, ge=1, le=255, description="Optional EEG trigger sent on each GO event onset."
     )
@@ -82,11 +79,6 @@ class GoNoGoParams(BaseModel):
     def _check(self) -> "GoNoGoParams":
         if len(self.markers) < 2:
             raise ValueError("go/no-go needs at least 2 markers (a conjunction of >=2 positions)")
-        if self.min_interval_seconds > self.max_interval_seconds:
-            raise ValueError(
-                f"min_interval_seconds ({self.min_interval_seconds!r}) must be <= "
-                f"max_interval_seconds ({self.max_interval_seconds!r})"
-            )
         return self
 
 
@@ -174,29 +166,17 @@ def score_go_nogo(
     the earliest unmatched event whose ``[onset, onset+window]`` window contains it. A matched GO =
     **hit**; unmatched GO = **miss**; matched NO-GO = **false alarm**; unmatched NO-GO = **correct
     rejection**; any response matched to no event = spontaneous **false alarm**. Pure."""
-    fired = [e for e in events if e.onset_time is not None]
-    window = params.response_window_seconds
-    order = sorted(range(len(responses)), key=lambda i: responses[i].time)
-    matched: set[int] = set()
+    match = match_responses_to_events(responses, events, params.response_window_seconds)
 
     n_hits = n_misses = n_fa_nogo = n_correct_rejections = 0
     rts: list[float] = []
-    for event in sorted(fired, key=lambda e: e.onset_time):  # type: ignore[arg-type,return-value]
-        onset = event.onset_time
-        hit_index = None
-        for i in order:
-            if i in matched:
-                continue
-            if onset <= responses[i].time <= onset + window:  # type: ignore[operator]
-                hit_index = i
-                break
-        responded = hit_index is not None
-        if responded:
-            matched.add(hit_index)  # type: ignore[arg-type]
+    for i, event in enumerate(match.fired_events):
+        responded = match.responded[i]
+        rt = match.event_rts[i]
         if event.kind == "go":
             if responded:
                 n_hits += 1
-                rts.append(responses[hit_index].time - onset)  # type: ignore[operator,index]
+                rts.append(rt)  # type: ignore[arg-type]
             else:
                 n_misses += 1
         else:  # nogo
@@ -205,7 +185,7 @@ def score_go_nogo(
             else:
                 n_correct_rejections += 1
 
-    n_spontaneous_fa = len(responses) - len(matched)
+    n_spontaneous_fa = match.n_responses - match.n_matched
     n_go = n_hits + n_misses
     n_nogo = n_fa_nogo + n_correct_rejections
     hit_rate = (n_hits / n_go) if n_go else None
@@ -240,6 +220,9 @@ class GoNoGoController:
     frame), which markers signal on a given frame (drawn on top in ``signal_color``), and each
     event's onset frame + trigger code. Precomputes per-frame lookups (few events, short signals)."""
 
+    #: Event-log ``event_type`` for this overlay's onsets (logged generically by the engine).
+    onset_event_type = "go_nogo_onset"
+
     def __init__(
         self,
         events: list[GoNoGoEvent],
@@ -265,6 +248,15 @@ class GoNoGoController:
     def trigger_code_for(self, event: GoNoGoEvent) -> int | None:
         return self._go_trigger_code if event.kind == "go" else self._nogo_trigger_code
 
+    def onset_payload(self, event: GoNoGoEvent, frame_index: int) -> dict:
+        return {
+            "index": event.index,
+            "kind": event.kind,
+            "signaling": event.signaling,
+            "frame_index": frame_index,
+            "trigger_code": self.trigger_code_for(event),
+        }
+
     def draw_frame(self, frame_index: int) -> None:
         """Draw every persistent marker, then redraw the signalling ones in ``signal_color`` on top.
         Called once per frame (persistent markers are always visible)."""
@@ -288,3 +280,73 @@ def build_go_nogo_stimuli(
         for marker in params.markers
     ]
     return base_stims, signal_stims
+
+
+class GoNoGoOverlay:
+    """Adapter exposing the spatial go/no-go task as a pluggable
+    :class:`~xpman.tasks.fpvs.overlay_base.BehaviouralOverlay`, so the engine + run wiring drive it
+    generically. Holds the Condition's go/no-go params; the schedule/controller/score functions
+    above do the work."""
+
+    spawn_key = "go_nogo"
+    scored_event_type = "go_nogo_scored"
+
+    def __init__(self, params: GoNoGoParams) -> None:
+        self._params = params
+
+    @property
+    def params(self) -> GoNoGoParams:
+        return self._params
+
+    def schedule(
+        self,
+        total_frames: int,
+        frames_per_stim: "int | tuple[int, ...]",
+        rng: "numpy.random.Generator",
+        refresh_hz: float,
+        segments: "list[SegmentWindow] | None",
+    ) -> list[GoNoGoEvent]:
+        return schedule_go_nogo_events(
+            total_frames, frames_per_stim, self._params, rng, refresh_hz, segments=segments
+        )
+
+    def build_controller(
+        self, window: "psychopy.visual.Window", events: list[GoNoGoEvent]
+    ) -> GoNoGoController:
+        base_stims, signal_stims = build_go_nogo_stimuli(window, self._params)
+        return GoNoGoController(
+            events, base_stims, signal_stims,
+            self._params.go_trigger_code, self._params.nogo_trigger_code,
+        )
+
+    def score(self, responses: "list[ResponseRecord]", events: list[GoNoGoEvent]) -> GoNoGoScore:
+        return score_go_nogo(responses, events, self._params)
+
+    def scored_payload(self, score: GoNoGoScore) -> dict:
+        return {
+            "n_go": score.n_go,
+            "n_nogo": score.n_nogo,
+            "n_hits": score.n_hits,
+            "n_misses": score.n_misses,
+            "n_false_alarms": score.n_false_alarms,
+            "n_correct_rejections": score.n_correct_rejections,
+            "hit_rate": score.hit_rate,
+            "false_alarm_rate": score.false_alarm_rate,
+            "d_prime": score.d_prime,
+            "mean_rt_seconds": score.mean_rt_seconds,
+        }
+
+    def outcome_fields(self, score: "GoNoGoScore | None") -> dict:
+        return {
+            "go_nogo_enabled": self._params.enabled,
+            "go_nogo_n_go": score.n_go if score else None,
+            "go_nogo_n_nogo": score.n_nogo if score else None,
+            "go_nogo_n_hits": score.n_hits if score else None,
+            "go_nogo_n_misses": score.n_misses if score else None,
+            "go_nogo_n_false_alarms": score.n_false_alarms if score else None,
+            "go_nogo_n_correct_rejections": score.n_correct_rejections if score else None,
+            "go_nogo_hit_rate": score.hit_rate if score else None,
+            "go_nogo_false_alarm_rate": score.false_alarm_rate if score else None,
+            "go_nogo_d_prime": score.d_prime if score else None,
+            "go_nogo_mean_rt_seconds": score.mean_rt_seconds if score else None,
+        }

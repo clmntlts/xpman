@@ -27,13 +27,17 @@ import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field
 
 from xpman.tasks.fpvs._event_schedule import (
     SegmentWindow,
     iter_event_windows_over_segments,
 )
 from xpman.tasks.fpvs.fixation import FixationParams, FixationShape, build_fixation_stimulus
+from xpman.tasks.fpvs.overlay_base import (
+    BehaviouralOverlayParams,
+    match_responses_to_events,
+)
 
 if TYPE_CHECKING:
     import numpy.random
@@ -43,41 +47,20 @@ if TYPE_CHECKING:
     from xpman.tasks.fpvs.response import ResponseRecord
 
 
-class DistractorParams(BaseModel):
+class DistractorParams(BehaviouralOverlayParams):
     """Attention-control distractor task. All overridable per Condition; disabled by default, in
-    which case the trial runs exactly as before (no overlay, no schedule, no extra trigger)."""
+    which case the trial runs exactly as before (no overlay, no schedule, no extra trigger).
 
-    enabled: bool = Field(
-        default=False, description="Show a fixation-change detection task during the stimulation."
-    )
+    Inherits the shared overlay settings (``enabled``, timing/interval fields, ``response_window_seconds``,
+    ``keys`` and the interval-range validator) from :class:`BehaviouralOverlayParams`; adds only the
+    distractor-specific appearance fields and trigger code below."""
+
     change_type: Literal["color", "dot", "size"] = Field(
         default="color",
         description=(
             "What briefly changes at fixation: 'color' recolours the fixation marker (legacy "
             "behaviour), 'dot' shows a small disc over fixation, 'size' briefly enlarges the marker."
         ),
-    )
-    event_duration_seconds: float = Field(
-        default=0.2, gt=0, description="How long each distractor change stays on screen."
-    )
-    min_interval_seconds: float = Field(
-        default=1.0, gt=0, description="Minimum gap between consecutive distractor events."
-    )
-    max_interval_seconds: float = Field(
-        default=3.0, gt=0, description="Maximum gap between consecutive distractor events."
-    )
-    guard_seconds: float = Field(
-        default=1.0,
-        ge=0,
-        description="No distractor event within this of the stimulation's start or end.",
-    )
-    response_window_seconds: float = Field(
-        default=1.0,
-        gt=0,
-        description="A key press within this window after an event's onset counts as a hit.",
-    )
-    keys: list[str] = Field(
-        default_factory=lambda: ["space"], description="Key name(s) counted as a distractor response."
     )
     color: str = Field(default="red", description="Changed fixation colour (change_type='color').")
     dot_radius_pix: float = Field(default=10.0, gt=0, description="Disc radius (change_type='dot').")
@@ -94,16 +77,6 @@ class DistractorParams(BaseModel):
             "it never collides with the base/oddball trigger. None sends no distractor trigger."
         ),
     )
-
-    @model_validator(mode="after")
-    def _check_interval_range(self) -> "DistractorParams":
-        # Mirror PositionJitterParams._check_ranges: a reversed range would silently degenerate.
-        if self.min_interval_seconds > self.max_interval_seconds:
-            raise ValueError(
-                f"min_interval_seconds ({self.min_interval_seconds!r}) must be <= "
-                f"max_interval_seconds ({self.max_interval_seconds!r})"
-            )
-        return self
 
 
 @dataclass
@@ -179,34 +152,21 @@ def score_distractor_responses(
 
     Only events that actually fired (``onset_time`` set) are scored -- an aborted trial may leave
     later events unfired, and those must not be counted as misses.
+
+    Built on the shared :func:`match_responses_to_events` core; this function only summarises the
+    match into the distractor's signal-detection counts.
     """
-    fired = [e for e in events if e.onset_time is not None]
-    window = params.response_window_seconds
-    ordered_responses = sorted(range(len(responses)), key=lambda i: responses[i].time)
-    matched: set[int] = set()
-    rts: list[float] = []
-
-    for event in sorted(fired, key=lambda e: e.onset_time):  # type: ignore[arg-type,return-value]
-        onset = event.onset_time
-        for i in ordered_responses:
-            if i in matched:
-                continue
-            if onset <= responses[i].time <= onset + window:  # type: ignore[operator]
-                matched.add(i)
-                rts.append(responses[i].time - onset)  # type: ignore[operator]
-                break
-
-    n_events = len(fired)
-    n_hits = len(rts)
-    n_false_alarms = len(responses) - len(matched)
+    match = match_responses_to_events(responses, events, params.response_window_seconds)
+    n_events = len(match.fired_events)
+    n_hits = len(match.rts)
     return DistractorScore(
         n_events=n_events,
         n_hits=n_hits,
         n_misses=n_events - n_hits,
-        n_false_alarms=n_false_alarms,
+        n_false_alarms=match.n_responses - match.n_matched,
         hit_rate=(n_hits / n_events) if n_events else None,
-        mean_rt_seconds=statistics.fmean(rts) if rts else None,
-        median_rt_seconds=statistics.median(rts) if rts else None,
+        mean_rt_seconds=statistics.fmean(match.rts) if match.rts else None,
+        median_rt_seconds=statistics.median(match.rts) if match.rts else None,
     )
 
 
@@ -217,6 +177,9 @@ class DistractorController:
     Precomputes per-frame lookups (event counts are small, durations short -- a few hundred frame
     keys at most), so ``is_active``/``event_starting_at`` are O(1) on the timing-critical path.
     """
+
+    #: The event-log ``event_type`` for this overlay's onsets (see ``OverlayController``).
+    onset_event_type = "distractor_onset"
 
     def __init__(
         self,
@@ -242,6 +205,23 @@ class DistractorController:
         """Draw the distractor overlay. Only call on active frames (``is_active`` True)."""
         if self._stimulus is not None:
             self._stimulus.draw()
+
+    def draw_frame(self, frame_index: int) -> None:
+        """Draw the overlay only on frames within an event (nothing on inactive frames)."""
+        if self.is_active(frame_index):
+            self.draw()
+
+    def trigger_code_for(self, event: DistractorEvent) -> int | None:
+        """The EEG trigger code for ``event`` (the same code for every distractor event)."""
+        return self.trigger_code
+
+    def onset_payload(self, event: DistractorEvent, frame_index: int) -> dict:
+        """The event-log payload for this onset -- the same keys the task logged before the refactor."""
+        return {
+            "index": event.index,
+            "frame_index": frame_index,
+            "trigger_code": self.trigger_code,
+        }
 
 
 class _DotStimulus:
@@ -296,3 +276,66 @@ def build_distractor_stimulus(
             }
         )
     return build_fixation_stimulus(window, modified)
+
+
+class DistractorOverlay:
+    """Adapter exposing the distractor as a pluggable :class:`~xpman.tasks.fpvs.overlay_base.
+    BehaviouralOverlay`, so the presentation engine and run wiring drive it generically (no
+    per-task branches). Holds the Condition's distractor params + the fixation params; the concrete
+    schedule/controller/score functions above do the work."""
+
+    spawn_key = "distractor"
+    scored_event_type = "distractor_scored"
+
+    def __init__(self, params: DistractorParams, fixation: FixationParams) -> None:
+        self._params = params
+        self._fixation = fixation
+
+    @property
+    def params(self) -> DistractorParams:
+        return self._params
+
+    def schedule(
+        self,
+        total_frames: int,
+        frames_per_stim: "int | tuple[int, ...]",
+        rng: "numpy.random.Generator",
+        refresh_hz: float,
+        segments: "list[SegmentWindow] | None",
+    ) -> list[DistractorEvent]:
+        return schedule_distractor_events(
+            total_frames, frames_per_stim, self._params, rng, refresh_hz, segments=segments
+        )
+
+    def build_controller(
+        self, window: "psychopy.visual.Window", events: list[DistractorEvent]
+    ) -> DistractorController:
+        stimulus = build_distractor_stimulus(window, self._params, self._fixation)
+        return DistractorController(events, stimulus, self._params.trigger_code)
+
+    def score(self, responses: "list[ResponseRecord]", events: list[DistractorEvent]) -> DistractorScore:
+        return score_distractor_responses(responses, events, self._params)
+
+    def scored_payload(self, score: DistractorScore) -> dict:
+        return {
+            "n_events": score.n_events,
+            "n_hits": score.n_hits,
+            "n_misses": score.n_misses,
+            "n_false_alarms": score.n_false_alarms,
+            "hit_rate": score.hit_rate,
+            "mean_rt_seconds": score.mean_rt_seconds,
+            "median_rt_seconds": score.median_rt_seconds,
+        }
+
+    def outcome_fields(self, score: "DistractorScore | None") -> dict:
+        # median_rt_seconds is intentionally logged in the event but NOT surfaced in outcome_summary
+        # (preserving the pre-refactor field set).
+        return {
+            "distractor_enabled": self._params.enabled,
+            "distractor_n_events": score.n_events if score else None,
+            "distractor_n_hits": score.n_hits if score else None,
+            "distractor_n_misses": score.n_misses if score else None,
+            "distractor_n_false_alarms": score.n_false_alarms if score else None,
+            "distractor_hit_rate": score.hit_rate if score else None,
+            "distractor_mean_rt_seconds": score.mean_rt_seconds if score else None,
+        }

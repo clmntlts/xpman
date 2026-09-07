@@ -15,9 +15,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from xpman.tasks.fpvs.distractor import DistractorParams
+from xpman.tasks.fpvs.distractor import DistractorOverlay, DistractorParams
 from xpman.tasks.fpvs.fixation import FixationParams
-from xpman.tasks.fpvs.go_nogo import GoNoGoParams
+from xpman.tasks.fpvs.go_nogo import GoNoGoOverlay, GoNoGoParams
 from xpman.tasks.fpvs.modulation import ModulationParams, TimingParams
 from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams
@@ -497,6 +497,24 @@ class FPVSConditionParams(BaseModel):
         json_schema_extra={"section": "Attention tasks"},
     )
 
+    def all_overlays(self) -> list:
+        """Every behavioural attention overlay this Condition knows about, wrapped as pluggable
+        ``BehaviouralOverlay`` adapters (see ``overlay_base``) -- enabled or not. The presentation
+        engine (``paradigm_oddball``) and the run wiring (``task.py``) iterate THESE instead of
+        naming ``distractor``/``go_nogo``, so adding a new attention task is: a new params field
+        above, a new entry in this list, and a module implementing ``BehaviouralOverlay`` -- with no
+        edits to the timing engine or the run loop."""
+        return [
+            DistractorOverlay(self.distractor, self.fixation),
+            GoNoGoOverlay(self.go_nogo),
+        ]
+
+    def active_overlays(self) -> list:
+        """The subset of :meth:`all_overlays` whose task is ``enabled`` -- what actually runs and is
+        scored this trial. ``all_overlays`` (not this) is used for ``outcome_summary`` so a disabled
+        task still reports ``<task>_enabled = False`` with null metrics, exactly as before."""
+        return [overlay for overlay in self.all_overlays() if overlay.params.enabled]
+
     # NOTE: there used to be a Condition-level ``_check_oddball_below_base_frequency`` validator
     # here (oddball.oddball_freq_hz must be strictly < base.base_freq_hz -- see the "position 1 is
     # never an oddball" degenerate-case comment history). Now that the main stream is a
@@ -507,15 +525,13 @@ class FPVSConditionParams(BaseModel):
     @model_validator(mode="after")
     def _check_behavioural_tasks_dont_share_keys(self) -> "FPVSConditionParams":
         # All key presses come from ONE keyboard and are routed to a task by key name (see
-        # task.py run_trial). If the two *enabled* behavioural tasks (distractor, go_nogo) share a
-        # key, the same press is scored by both -- an unrecoverable ambiguity, so reject it at
-        # save/freeze time rather than silently double-counting. (A single enabled task, or both
-        # disabled, is always fine.)
-        enabled: list[tuple[str, set[str]]] = []
-        if self.distractor.enabled:
-            enabled.append(("distractor", set(self.distractor.keys)))
-        if self.go_nogo.enabled:
-            enabled.append(("go_nogo", set(self.go_nogo.keys)))
+        # task.py run_trial). If two *enabled* behavioural overlays share a key, the same press is
+        # scored by both -- an unrecoverable ambiguity, so reject it at save/freeze time rather than
+        # silently double-counting. (A single enabled task, or none, is always fine.) Iterates
+        # active_overlays generically, so any new attention task is covered without editing here.
+        enabled: list[tuple[str, set[str]]] = [
+            (overlay.spawn_key, set(overlay.params.keys)) for overlay in self.active_overlays()
+        ]
         for i in range(len(enabled)):
             for j in range(i + 1, len(enabled)):
                 (name_a, keys_a), (name_b, keys_b) = enabled[i], enabled[j]
