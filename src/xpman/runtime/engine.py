@@ -185,43 +185,50 @@ def execute_run(
         event_sink=event_sink,
         abort_check=abort_check,
     )
-    trial_sequence = _build_trial_sequence(frozen_program, rng, experiment_id=experiment_id)
-    # Wall-clock sync anchor (#raw-export cross-system alignment): every OTHER event's timestamp
-    # is seconds on PsychoPy's monotonic clock, zeroed at an arbitrary process-start instant with
-    # no logged relationship to real time -- there was no way to align the raw export against
-    # another system's own timestamped log (video, eye-tracker, ...) without one. This event's own
-    # `timestamp` column IS the monotonic reading at this exact instant (event_sink.log() defaults
-    # to clock.get_time() when no explicit timestamp is passed, same as here), so pairing it with a
-    # wall-clock reading taken right alongside it gives a single (monotonic, wall-clock) anchor
-    # point: any other event's wall-clock time = wall_clock_utc + (event.timestamp - this
-    # event's timestamp). Soft, software-clock precision (fine for aligning a video/eye-tracker
-    # log) -- NOT a substitute for the photodiode+trigger hardware sync EEG timing actually needs
-    # (see docs/verification_protocol.md); two independent OS clocks drift regardless of how
-    # carefully either is timestamped.
-    wall_clock_utc = datetime.now(timezone.utc)
-    event_sink.log(
-        "run_started",
-        {
-            "run_id": run.id,
-            "n_trials": len(trial_sequence),
-            "experiment_id": experiment_id,
-            "rng_seed": rng_seed,
-            "wall_clock_utc": wall_clock_utc.isoformat(),
-        },
-    )
-
-    # Store the event-log path relative to data_dir when we know it, so the DB stays portable if
-    # the whole data directory is moved (the absolute path would otherwise dangle). Falls back to
-    # the absolute path for callers that don't pass data_dir (e.g. tests driving execute_run
-    # directly). The path is also reconstructable from the id hierarchy, so this is belt-and-braces.
-    events_path = event_sink.parquet_path
-    if data_dir is not None:
-        try:
-            events_path = events_path.relative_to(data_dir)
-        except ValueError:
-            pass  # not under data_dir -- keep the absolute path rather than guessing
-
+    # Everything that can fail for a bad Instance runs inside ONE try below -- including building the
+    # trial sequence (which raises a documented ValueError for a Trial whose Condition was deleted
+    # before freeze), the run_started log, and prepare -- so any such failure marks the Run CRASHED
+    # and still runs the finally (task.cleanup + event_sink.close()). If these ran BEFORE the try, a
+    # raise here would escape with run.status stuck at its launch-time placeholder and the CSV/Parquet
+    # event-log handles leaked open (unfinalized Parquet). ctx/rng are built above (needed to build
+    # the context and by the finally) and don't do I/O, so they stay outside.
     try:
+        trial_sequence = _build_trial_sequence(frozen_program, rng, experiment_id=experiment_id)
+        # Wall-clock sync anchor (#raw-export cross-system alignment): every OTHER event's timestamp
+        # is seconds on PsychoPy's monotonic clock, zeroed at an arbitrary process-start instant with
+        # no logged relationship to real time -- there was no way to align the raw export against
+        # another system's own timestamped log (video, eye-tracker, ...) without one. This event's own
+        # `timestamp` column IS the monotonic reading at this exact instant (event_sink.log() defaults
+        # to clock.get_time() when no explicit timestamp is passed, same as here), so pairing it with a
+        # wall-clock reading taken right alongside it gives a single (monotonic, wall-clock) anchor
+        # point: any other event's wall-clock time = wall_clock_utc + (event.timestamp - this
+        # event's timestamp). Soft, software-clock precision (fine for aligning a video/eye-tracker
+        # log) -- NOT a substitute for the photodiode+trigger hardware sync EEG timing actually needs
+        # (see docs/verification_protocol.md); two independent OS clocks drift regardless of how
+        # carefully either is timestamped.
+        wall_clock_utc = datetime.now(timezone.utc)
+        event_sink.log(
+            "run_started",
+            {
+                "run_id": run.id,
+                "n_trials": len(trial_sequence),
+                "experiment_id": experiment_id,
+                "rng_seed": rng_seed,
+                "wall_clock_utc": wall_clock_utc.isoformat(),
+            },
+        )
+
+        # Store the event-log path relative to data_dir when we know it, so the DB stays portable if
+        # the whole data directory is moved (the absolute path would otherwise dangle). Falls back to
+        # the absolute path for callers that don't pass data_dir (e.g. tests driving execute_run
+        # directly). The path is also reconstructable from the id hierarchy, so this is belt-and-braces.
+        events_path = event_sink.parquet_path
+        if data_dir is not None:
+            try:
+                events_path = events_path.relative_to(data_dir)
+            except ValueError:
+                pass  # not under data_dir -- keep the absolute path rather than guessing
+
         task.prepare(ctx)
         # Record run-level provenance the task can only supply after prepare (e.g. the achieved
         # refresh rate). Persist it now so it survives even if a later trial crashes the Run.

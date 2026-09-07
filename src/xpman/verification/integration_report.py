@@ -512,12 +512,24 @@ def generate_report(
                          + (f" · +{n_unlabelled} BDF unlabelled" if n_unlabelled else ""),
                   "ok": n_logged_bdf == len(coded)})
     if align.get("ok"):
+        # align_clocks pairs the two trigger sequences BY POSITION over min(len). If the counts
+        # differ at all (a dropped/extra edge), every pair after the discrepancy is mismatched and
+        # the fitted slope/residual are meaningless -- so flag it loudly and fail the slope/residual
+        # cards rather than showing a falsely-green "aligned" when the pairing can't be trusted.
+        counts_agree = align.get("count_match", True)
+        if not counts_agree:
+            cards.append({"label": "⚠ Trigger counts differ", "value": f"{align['n_bdf']} vs {align['n_xpman']}",
+                          "sub": "BDF vs xpman — pairing is by position, so the alignment below is "
+                                 "unreliable (a dropped/extra trigger shifts every later pair)",
+                          "ok": False})
         cards.append({"label": "Clock alignment slope", "value": f"{align['slope']:.6f}",
-                      "sub": f"{(align['slope']-1.0)*1e6:+.0f} ppm PC↔BioSemi drift",
-                      "ok": abs(align["slope"] - 1.0) < 1e-3})
+                      "sub": f"{(align['slope']-1.0)*1e6:+.0f} ppm PC↔BioSemi drift"
+                             + ("" if counts_agree else " · counts differ, unreliable"),
+                      "ok": counts_agree and abs(align["slope"] - 1.0) < 1e-3})
         cards.append({"label": "Cross-system residual", "value": f"{align['resid_sd_ms']:.2f} ms",
-                      "sub": f"max {align['resid_max_ms']:.2f} ms · n={align['n_paired']}",
-                      "ok": align["resid_sd_ms"] < 2.0})
+                      "sub": f"max {align['resid_max_ms']:.2f} ms · n={align['n_paired']}"
+                             + ("" if counts_agree else " · counts differ, unreliable"),
+                      "ok": counts_agree and align["resid_sd_ms"] < 2.0})
     if st["pulse_ms"].size:
         pw = st["pulse_ms"]
         cards.append({"label": "Pulse width (BDF)", "value": f"{pw.mean():.2f} ms",

@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from xpman.core import repository as repo
 from xpman.core.instance import freeze_program
 from xpman.gui.commit import safe_commit
-from xpman.core.validation import validate_program_for_freeze
+from xpman.core.validation import blocking_freeze_errors, validate_program_for_freeze
 
 if TYPE_CHECKING:
     from xpman.tasks.registry import TaskRegistry
@@ -78,7 +78,27 @@ class InstanceFreezeDialog(QDialog):
         layout.addWidget(QLabel("This will freeze:"))
         layout.addWidget(QLabel(self._summary_text()))
 
-        self._warnings = validate_program_for_freeze(session, program_id, registry)
+        # Split freeze problems into BLOCKING errors (a Condition whose params don't validate ->
+        # the Instance would be permanently unrunnable) and advisory WARNINGS (structural issues with
+        # legitimate override stories). Blocking errors disable the Ok button; warnings only relabel
+        # it. blocking_freeze_errors' messages are a subset of validate_program_for_freeze's, so
+        # de-dupe them out of the amber list to avoid showing the same line twice.
+        self._blocking = blocking_freeze_errors(session, program_id, registry)
+        self._warnings = [
+            w for w in validate_program_for_freeze(session, program_id, registry)
+            if w not in set(self._blocking)
+        ]
+        if self._blocking:
+            header = QLabel(
+                f"<b>{len(self._blocking)} error(s) -- cannot freeze:</b> a Condition's parameters "
+                "are invalid, so this Instance could never run. Fix the Condition first."
+            )
+            header.setWordWrap(True)
+            layout.addWidget(header)
+            error_label = QLabel("\n".join(f"- {e}" for e in self._blocking[:_MAX_WARNINGS_SHOWN]))
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #b91c1c;")  # red -- a hard error, not a warning
+            layout.addWidget(error_label)
         self._warnings_label: QLabel | None = None
         if self._warnings:
             header = QLabel(f"<b>{len(self._warnings)} warning(s) found:</b>")
@@ -100,7 +120,13 @@ class InstanceFreezeDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self._ok_button.setText("Create Instance Anyway" if self._warnings else "Create Instance")
+        if self._blocking:
+            # A blocking error means the Instance could never run -- refuse to freeze it at all,
+            # rather than the advisory "Create Instance Anyway" override offered for mere warnings.
+            self._ok_button.setEnabled(False)
+            self._ok_button.setText("Cannot Create Instance")
+        else:
+            self._ok_button.setText("Create Instance Anyway" if self._warnings else "Create Instance")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -130,6 +156,8 @@ class InstanceFreezeDialog(QDialog):
         return f"{program_name} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
     def _on_accept(self) -> None:
+        if self._blocking:
+            return  # belt-and-braces: the Ok button is already disabled when there are blocking errors
         name = self._name_edit.text().strip()
         if not name:
             return

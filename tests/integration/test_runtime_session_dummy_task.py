@@ -430,6 +430,42 @@ def test_task_exception_marks_run_crashed_and_persists_partial_results(session, 
     assert results[0].trial_index == 0
 
 
+def test_deleted_condition_before_freeze_crashes_cleanly(session, registry, mock_window, tmp_path):
+    """A frozen Trial whose Condition was deleted before freeze makes _build_trial_sequence raise --
+    which happens BEFORE the main trial loop. The Run must still end CRASHED (not stuck at the
+    launch-time ABORTED placeholder) with ended_at set, per execute_run's crash-safety contract
+    (the build + run_started log run inside the same try as the loop)."""
+    profile = repo.create_profile(session, name="P")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="A", last_name="B")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="Prog", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    experiment = repo.create_experiment(session, program_id=program.id, name="E", parameters_json={})
+    condition = repo.create_condition(
+        session, experiment_id=experiment.id, name="C",
+        parameters_json={"flip_rate_hz": 10, "duration_seconds": 0.1, "trigger_code": 1},
+    )
+    block = repo.create_block(session, experiment_id=experiment.id, name="B1", repeat_count=1, order_index=0)
+    repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)
+    session.commit()
+    repo.delete_condition(session, condition.id)  # SET NULLs the Trial's condition_id
+    session.commit()
+    instance = freeze_program(session, program.id, name="Inst")
+    session.commit()
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        with pytest.raises(ValueError, match="no Condition"):
+            launch_run(
+                session, instance_id=instance.id, subject_id=subject.id, registry=registry,
+                window=mock_window, trigger=NullTrigger(reset_after=0.0), clock=Clock(), data_dir=tmp_path,
+            )
+
+    run = session.query(Run).filter(Run.instance_id == instance.id).one()
+    assert run.status == RunStatus.CRASHED  # not the ABORTED placeholder
+    assert run.ended_at is not None
+
+
 class _CommitOncePoisoned:
     """Wraps a real Session, reproducing SQLAlchemy's actual failure mode: after commit() raises
     once, every *subsequent* commit() also raises (a stand-in for the real

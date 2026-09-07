@@ -172,6 +172,27 @@ def test_warnings_shown_and_freeze_still_allowed(qtbot, session, registry, tmp_p
     assert dialog.created_instance_id is not None
 
 
+def test_invalid_condition_params_block_freeze(qtbot, session, registry, tmp_path):
+    # Unlike advisory warnings, a Condition whose params don't validate makes the Instance
+    # permanently unrunnable, so freeze must be BLOCKED (Ok disabled), not merely relabelled.
+    program = _build_program_tree(session, resource_dir=str(tmp_path))
+    experiment = repo.list_experiments(session, program_id=program.id)[0]
+    repo.create_condition(
+        session, experiment_id=experiment.id, name="Bad",
+        parameters_json={"flip_rate_hz": -5.0, "duration_seconds": 1.0, "trigger_code": 1},
+    )
+    session.commit()
+
+    dialog = InstanceFreezeDialog(session, program.id, registry)
+    qtbot.addWidget(dialog)
+
+    assert dialog._blocking  # a blocking error was found
+    assert not dialog._ok_button.isEnabled()
+    assert dialog._ok_button.text() == "Cannot Create Instance"
+    dialog._on_accept()  # guarded no-op even if invoked directly
+    assert dialog.created_instance_id is None
+
+
 def test_missing_resource_dir_warns(qtbot, session, registry):
     program = _build_program_tree(session, resource_dir="C:/definitely/not/a/real/dir")
     dialog = InstanceFreezeDialog(session, program.id, registry)
