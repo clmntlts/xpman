@@ -1762,12 +1762,9 @@ class FPVSTask(TaskModule):
                     f"go_nogo guard bands (2 x {go_nogo.guard_seconds:g}s) span the whole trial "
                     f"({params.main_stream.base.trial_duration_seconds:g}s) -- no go/no-go event can be scheduled."
                 )
-            # (Shared keys are a hard error -- see the Condition-level validator above.)
-            if distractor.enabled:
-                warnings.append(
-                    "both the central distractor and the spatial go/no-go task are enabled -- run one "
-                    "behavioural task at a time (their events and keys would otherwise interfere)."
-                )
+            # (Enabling more than one attention task at once is a HARD error -- see
+            # FPVSConditionParams._check_at_most_one_attention_task -- so no "both enabled" advisory
+            # is needed or reachable here.)
             # (A go_nogo trigger code colliding with base/oddball is a HARD error -- see
             # FPVSConditionParams._check_all_trigger_codes_disjoint -- so no advisory needed here.)
 
