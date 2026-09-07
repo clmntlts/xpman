@@ -281,7 +281,12 @@ def _run_familiarization(
     the real sequence when enabled; ``None`` keeps it centered."""
     ctx.event_sink.log(
         "familiarization_start",
-        {"frequency_hz": fam.frequency_hz, "duration_seconds": fam.duration_seconds},
+        # start_trigger_code makes this marker self-describing: it records the exact TTL code sent
+        # on the port below (None when no trigger is configured), so the event log alone -- without
+        # the frozen Condition params -- reconciles against the amplifier's Status channel. Onset
+        # triggers already carry their code (trigger_sent); segment-boundary triggers now do too.
+        {"frequency_hz": fam.frequency_hz, "duration_seconds": fam.duration_seconds,
+         "start_trigger_code": fam.start_trigger_code},
     )
     if fam.start_trigger_code is not None:
         ctx.trigger.send_trigger(fam.start_trigger_code)
@@ -304,7 +309,7 @@ def _run_familiarization(
 
     if fam.stop_trigger_code is not None:
         ctx.trigger.send_trigger(fam.stop_trigger_code)
-    ctx.event_sink.log("familiarization_end", {})
+    ctx.event_sink.log("familiarization_end", {"stop_trigger_code": fam.stop_trigger_code})
 
     present_fixation_only(
         window=ctx.window,
@@ -335,7 +340,9 @@ def _run_baseline(
     ``run_base_sequence`` exactly as ``_run_familiarization`` does."""
     ctx.event_sink.log(
         "baseline_start",
-        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds},
+        # start_trigger_code recorded so the marker is self-describing (see _run_familiarization).
+        {"phase": phase, "base_freq_hz": base_freq_hz, "duration_seconds": baseline.duration_seconds,
+         "start_trigger_code": baseline.start_trigger_code},
     )
     if baseline.start_trigger_code is not None:
         ctx.trigger.send_trigger(baseline.start_trigger_code)
@@ -358,7 +365,7 @@ def _run_baseline(
 
     if baseline.stop_trigger_code is not None:
         ctx.trigger.send_trigger(baseline.stop_trigger_code)
-    ctx.event_sink.log("baseline_end", {"phase": phase})
+    ctx.event_sink.log("baseline_end", {"phase": phase, "stop_trigger_code": baseline.stop_trigger_code})
 
     present_fixation_only(
         window=ctx.window,

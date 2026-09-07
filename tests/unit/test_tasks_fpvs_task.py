@@ -837,6 +837,14 @@ def test_run_trial_runs_familiarization_before_main_on_first_trial_when_enabled(
     # Start/stop triggers fired.
     assert 40 in trigger.codes_sent
     assert 41 in trigger.codes_sent
+    # ...and the markers RECORD those codes, so the event log alone reconciles against the
+    # amplifier's Status channel without needing the frozen Condition params.
+    import json as _json
+
+    fam_start = next(_json.loads(r["payload_json"]) for r in rows if r["event_type"] == "familiarization_start")
+    fam_end = next(_json.loads(r["payload_json"]) for r in rows if r["event_type"] == "familiarization_end")
+    assert fam_start["start_trigger_code"] == 40
+    assert fam_end["stop_trigger_code"] == 41
 
 
 def test_run_trial_familiarization_only_on_first_trial(mock_window, stim_root, event_sink):
@@ -2339,6 +2347,15 @@ def test_run_trial_baseline_before_and_after(mock_window, stim_root, event_sink)
     assert starts[0] < main < starts[1]
     assert result.outcome_summary["baseline"] == "both"
     assert 60 in trigger.codes_sent and 61 in trigger.codes_sent
+    # Each baseline marker records the exact start/stop code it sent (self-describing event log).
+    assert all(
+        json.loads(r["payload_json"])["start_trigger_code"] == 60
+        for r in rows if r["event_type"] == "baseline_start"
+    )
+    assert all(
+        json.loads(r["payload_json"])["stop_trigger_code"] == 61
+        for r in rows if r["event_type"] == "baseline_end"
+    )
 
 
 def test_run_trial_dual_stream_presents_two_streams(mock_window, stim_root, event_sink):
