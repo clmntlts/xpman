@@ -7,11 +7,12 @@ import pytest
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.models import Base
-from xpman.core.validation import validate_program_for_freeze
+from xpman.core.validation import blocking_freeze_errors, validate_program_for_freeze
 from xpman.tasks.dummy.task import DummyTask
 from xpman.tasks.registry import TaskRegistry
 
 _VALID_DUMMY_PARAMS = {"flip_rate_hz": 10.0, "duration_seconds": 1.0, "trigger_code": 1}
+_INVALID_DUMMY_PARAMS = {"flip_rate_hz": -5.0, "duration_seconds": 1.0, "trigger_code": 1}  # gt=0
 
 
 @pytest.fixture()
@@ -65,6 +66,40 @@ def test_clean_program_returns_no_warnings(session, registry, tmp_path):
 def test_missing_program_raises_lookup_error(session, registry):
     with pytest.raises(LookupError):
         validate_program_for_freeze(session, 99999, registry)
+
+
+def test_blocking_freeze_errors_flags_invalid_condition_params(session, registry, tmp_path):
+    # A Condition whose params don't validate would make the frozen Instance unrunnable -> BLOCKING.
+    program = _build_program(session, tmp_path)
+    experiment = repo.create_experiment(session, program_id=program.id, name="Exp 1", parameters_json={})
+    repo.create_condition(
+        session, experiment_id=experiment.id, name="Bad", parameters_json=dict(_INVALID_DUMMY_PARAMS)
+    )
+    session.commit()
+
+    errors = blocking_freeze_errors(session, program.id, registry)
+    assert any("Bad" in e and "do not validate" in e for e in errors)
+
+
+def test_blocking_freeze_errors_empty_for_clean_program(session, registry, tmp_path):
+    program = _build_program(session, tmp_path)
+    _add_clean_experiment(session, program.id)
+    assert blocking_freeze_errors(session, program.id, registry) == []
+
+
+def test_blocking_freeze_errors_missing_program_raises(session, registry):
+    with pytest.raises(LookupError):
+        blocking_freeze_errors(session, 99999, registry)
+
+
+def test_blocking_freeze_errors_unknown_task_returns_empty(session, registry, tmp_path):
+    # Params can't be schema-checked without the task; that's surfaced as an advisory warning, not a
+    # blocking error, so blocking_freeze_errors is empty (never blocks on an uninstalled task).
+    program = _build_program(session, tmp_path, task_name="no_such_task")
+    experiment = repo.create_experiment(session, program_id=program.id, name="Exp 1", parameters_json={})
+    repo.create_condition(session, experiment_id=experiment.id, name="X", parameters_json={})
+    session.commit()
+    assert blocking_freeze_errors(session, program.id, registry) == []
 
 
 def test_empty_resource_dir_warns(session, registry, tmp_path):
