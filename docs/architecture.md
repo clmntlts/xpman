@@ -2,8 +2,8 @@
 
 ## Why this project exists
 
-xpman replaces a legacy closed-source Java tool ("XP Man / Experiment Manager", built at the
-Face Categorization Lab, UCLouvain) used to run EEG/vision-science experiments — mainly Fast
+xpman replaces a legacy closed-source Java tool ("XP Man / Experiment Manager", built at
+UCLouvain) used to run EEG/vision-science experiments — mainly Fast
 Periodic Visual Stimulation (FPVS) paradigms. That tool required a paid HASP hardware dongle
 to launch and stored everything in db4o, a discontinued proprietary object database. xpman has
 no licensing dependency and stores data in open, inspectable formats (SQLite, Parquet, CSV),

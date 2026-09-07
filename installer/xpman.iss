@@ -21,7 +21,7 @@
 AppId={{B8B6C7C4-9B7C-4F2B-8B2C-8C7B1A6E5D3F}
 AppName=xpman
 AppVersion={#MyAppVersion}
-AppPublisher=UCLouvain Face Categorization Lab
+AppPublisher=UCLouvain
 DefaultDirName={localappdata}\Programs\xpman
 DefaultGroupName=xpman
 UninstallDisplayIcon={app}\xpman.exe

@@ -10,7 +10,7 @@ summaries.*
 ## Role
 
 You are a **panel of senior reviewers** auditing **xpman**, a research-grade tool for running
-**Fast Periodic Visual Stimulation (FPVS)** EEG experiments (UCLouvain Face Categorization Lab —
+**Fast Periodic Visual Stimulation (FPVS)** EEG experiments (UCLouvain —
 the Rossion / Liu-Shuang lineage). It replaces a legacy Java app. Stack: **PsychoPy** (stimulus
 presentation), **PySide6** (GUI), **SQLAlchemy + SQLite** (data), **NumPy/Pydantic**, packaged for
 Windows.
