@@ -34,3 +34,7 @@ tests/unit/gui/*.png
 
 # Local Claude Code workflow file -- kept on disk for the assistant, not published to the repo
 CLAUDE.md
+
+# Vendored Plotly for the integration verifier -- fetched by
+# scripts/build_integration_verifier_exe.ps1 (or downloaded on demand), not source
+src/xpman/verification/assets/plotly.min.js

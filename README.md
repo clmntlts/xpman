@@ -119,6 +119,21 @@ full checklist and the machine-specific gotchas that have shipped broken builds 
 recently: a conda-based `.venv` freezes into an exe that crashes on every launch, with no error
 at build time).
 
+## Verifying against the amplifier (`xpman-verify`)
+
+After a hardware run, cross-check that xpman's triggers actually landed on the BioSemi recording —
+at the right time, with the right codes, no dropped frames — using the **integration verifier**. It
+takes the run's `.bdf` and its `events.csv` and produces one interactive HTML report: a trigger
+codebook (every code reconciled BDF ↔ xpman), a photodiode↔trigger timeline with per-code toggles,
+and the PC↔BioSemi clock alignment. Full guide:
+[`docs/integration_verifier.md`](docs/integration_verifier.md).
+
+- **App (no Python needed):** build `dist\xpman-verify.exe` with
+  `scripts\build_integration_verifier_exe.ps1` (needs the `build` extra), then double-click it and
+  pick the two files. Reports are fully offline (Plotly is bundled).
+- **From a checkout:** `xpman-verify` (file-picker GUI) or
+  `xpman-verify-report --bdf a.bdf --events-csv events.csv --out report.html` (CLI).
+
 ## Project layout
 
 See `docs/architecture.md` for the full package layout and the reasoning behind each technology
