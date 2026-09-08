@@ -14,7 +14,7 @@ xpman now packages into a standalone Windows build (see Setup below). Core FPVS 
 have been **verified on a real BioSemi rig** (2026-09-07: photodiode + serial MMBT-S, 0 dropped
 frames, trigger jitter SD ~0.25 ms, frame-exact 6/1.2 Hz); the advanced scenarios (parallel backend,
 dual streams, sweep, position/size variation) remain to be measured — see
-[`docs/verification_protocol.md`](docs/verification_protocol.md). See `docs/architecture.md` for the
+[`docs/verification_protocol.md`](docs/verification_protocol.md). See [`docs/architecture.md`](docs/architecture.md) for the
 technology choices, package layout, data model, and roadmap.
 
 **New to xpman?** [`docs/tutorial.md`](docs/tutorial.md) is the full user-facing walkthrough —
