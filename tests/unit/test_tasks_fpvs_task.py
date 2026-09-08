@@ -1156,6 +1156,47 @@ def test_check_triggers_warns_when_jitter_enabled_but_zero_extent():
     assert any("zero extent" in w for w in warnings)
 
 
+def test_check_triggers_warns_when_base_freq_not_frame_exact():
+    """A base rate that doesn't divide the monitor refresh evenly is quantized to the nearest whole
+    frames/cycle, shifting the frequency tag off the intended FFT bin -- and the runtime 5% drift
+    flag misses near-exact cases. 6.5 Hz on a nominal 60 Hz monitor -> 9 frames/cycle -> 6.667 Hz."""
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.main_stream.base.base_freq_hz = 6.5
+    warnings = task.check_triggers(params.model_dump())
+    assert any("not frame-exact" in w and "base_freq_hz" in w for w in warnings)
+
+
+def test_check_triggers_no_frame_exact_warning_for_a_divisor_base_freq():
+    """Base rates that divide the nominal 60 Hz refresh exactly (6 Hz -> 10 frames/cycle, 4 Hz ->
+    15, 1.2 Hz -> 50) are frame-exact and must NOT raise the advisory -- the canonical faces
+    (6/1.2) and words (4 Hz) rates included."""
+    task = FPVSTask()
+    for exact in (6.0, 5.0, 4.0, 3.0, 2.0, 1.2):
+        params = FPVSConditionParams()
+        params.main_stream.base.base_freq_hz = exact
+        warnings = task.check_triggers(params.model_dump())
+        assert not any("frame-exact" in w for w in warnings), (exact, warnings)
+
+
+def test_check_triggers_frame_exactness_covers_sweep_steps():
+    """The advisory covers each presented sweep step, not just the single main base rate."""
+    from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep
+
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.main_stream.sweep = FrequencySweepParams(
+        enabled=True,
+        steps=[
+            SweepStep(base_freq_hz=6.0, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+            SweepStep(base_freq_hz=6.5, duration_seconds=0.5, oddball=OddballParams(oddball_freq_hz=1.2)),
+        ],
+    )
+    warnings = task.check_triggers(params.model_dump())
+    assert any("sweep step 2 base_freq_hz" in w and "not frame-exact" in w for w in warnings)
+    assert not any("sweep step 1 base_freq_hz" in w and "frame-exact" in w for w in warnings)
+
+
 def test_run_trial_jitter_onsets_log_pos(mock_window, stim_root, event_sink):
     import json
 
