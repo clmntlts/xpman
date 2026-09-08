@@ -141,7 +141,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-trigger-hardware", action="store_true", help="Alias for --trigger-backend none (use NullTrigger instead of real hardware).")
     parser.add_argument("--parallel-port-address", type=lambda s: int(s, 0), default=0x0378)
     parser.add_argument("--serial-port", default=None, help="COM/virtual-serial port for --trigger-backend serial (e.g. COM4).")
-    parser.add_argument("--serial-baud", type=int, default=115200, help="Baud rate for the serial trigger backend.")
+    parser.add_argument("--serial-baud", type=int, default=9600, help="Baud rate for the serial trigger backend (default 9600, the NEUROSPEC MMBT-S rate).")
     parser.add_argument(
         "--serial-init-settle-seconds",
         type=float,

@@ -60,9 +60,9 @@ pip install -e .[dev]
 ```
 
 ### 2.2 ⭐ Trigger-box config — DO NOT SKIP
-The **NEUROSPEC MMBT-S** must be set to **Pulse Mode** and driven at **9600 baud** (pass
-`--serial-baud 9600` on the commands below — the software's default is 115200, which this box does
-**not** use). Confirm the exact baud/mode against the MMBT-S manual.
+The **NEUROSPEC MMBT-S** must be set to **Pulse Mode** and driven at **9600 baud** — which is now
+the software default, so the commands below need no `--serial-baud` flag (pass `--serial-baud <n>`
+only for a box that uses a different rate). Confirm the exact baud/mode against the MMBT-S manual.
 1. Plug in the MMBT-S.
 2. **Device Manager → Ports (COM & LPT)** → find it (e.g. "USB Serial Port (COMx)"). **Note the COM
    number** — you'll pass it below.
@@ -118,7 +118,7 @@ so the photodiode/triggers are easy to see. Replace `COM4` with your port.
 ```powershell
 .venv\Scripts\python.exe tests\manual_hardware\run_dummy_task_manual.py `
   --fullscreen --flip-rate-hz 2 --duration-seconds 30 `
-  --trigger-code 1 --trigger-backend serial --serial-port COM4 --serial-baud 9600
+  --trigger-code 1 --trigger-backend serial --serial-port COM4
 ```
 Start your recording/scope, run it, and check:
 - **ActiView Status channel** ticks to **1** on each flip (proves the trigger reaches BioSemi).
@@ -140,7 +140,7 @@ your stimulus folder.
   --resource-dir "C:\path\to\SepStim" --fullscreen `
   --base-freq-hz 6 --oddball-freq-hz 1.2 --trial-duration-seconds 60 `
   --base-trigger-code 1 --oddball-trigger-code 2 `
-  --trigger-backend serial --serial-port COM4 --serial-baud 9600
+  --trigger-backend serial --serial-port COM4
 ```
 Check, on the capture:
 - **Base rate**: a stimulus onset every ~1/6 s; **oddball** every 5th (1.2 Hz) carries code **2**, the

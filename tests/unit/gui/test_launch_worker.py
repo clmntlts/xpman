@@ -80,7 +80,7 @@ def test_parse_args_trigger_backend_defaults_and_serial_options():
     default = parse_args(base)
     assert default.trigger_backend is None  # omitted -> legacy behavior resolved at run time
     assert default.serial_port is None
-    assert default.serial_baud == 115200
+    assert default.serial_baud == 9600
 
     serial = parse_args(
         [*base, "--trigger-backend", "serial", "--serial-port", "COM4", "--serial-baud", "57600"]
@@ -508,7 +508,7 @@ def test_resolve_trigger_serial_forwards_init_settle_seconds(db_path, tmp_path):
             None,
         )
     assert exit_code == EXIT_COMPLETED
-    serial_spy.assert_called_once_with(port="COM4", baudrate=115200, init_settle_seconds=2.5)
+    serial_spy.assert_called_once_with(port="COM4", baudrate=9600, init_settle_seconds=2.5)
 
 
 def test_trigger_close_called_on_teardown(db_path, tmp_path):
