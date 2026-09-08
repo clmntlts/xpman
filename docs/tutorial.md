@@ -138,6 +138,9 @@ separate.
   Program/Experiment/Condition's parameters.
 - **Status bar** (bottom of the window): a running "N subject(s), M program(s)" count, plus
   transient confirmation messages ("Saved...", "Exported to...").
+- **Menu bar** (top): a **Help** menu with **"Send Feedback / Report a Bug…"** (composes a report —
+  bug/feature/feedback + your note + auto version/OS info — and opens a pre-filled GitHub issue, an
+  email, or copies it to the clipboard; nothing is sent automatically) and **"About xpman"**.
 - Window title bar shows the active Profile's name.
 
 ### 4.3 The tree — right-click menus
@@ -199,8 +202,10 @@ Single-click (not right-click) a node to see its details on the right:
 - **Subject** → read-only: name, created date, and any extra info recorded.
 - **Block** → read-only: name, repeat count, both randomization flags.
 - **Trial** → read-only: assigned Condition (or "(no condition assigned)"), position.
-- **Instance** → read-only: name, created date, schema version, checksum, and a reminder that
-  it's an immutable snapshot.
+- **Instance** → read-only: name, created date, schema version, checksum, a **Runs count**, and a
+  reminder that it's an immutable snapshot — plus **"Export All Results (CSV)…"** / **"…(Parquet)…"**
+  buttons that combine *every* Run of this Instance into one table (distinct from the per-Run export
+  in [4.10](#410-run-results--export)).
 - **Run** → the results viewer (see [4.10](#410-run-results--export)).
 - Group headers and empty placeholders → "Select an item in the tree to view its details."
 
@@ -209,6 +214,8 @@ Single-click (not right-click) a node to see its details on the right:
 Right-click **Profile** (or "Subjects") → **New Subject...**
 
 - **First name**, **Last name** — text fields. At least one of the two is required.
+- **Information** — an optional free-text notes field (handedness, session notes, etc.), shown
+  read-only on the Subject's detail panel afterward.
 - **Ok** is disabled until you've entered at least one name.
 
 ### 4.6 Creating a Program
@@ -305,6 +312,12 @@ Select a **Run** node (under an Instance → "Runs") to see:
   no metadata mixed into data rows — every row is self-describing). CSV opens directly in
   Excel; Parquet is the same data for pandas/R/etc. Failures show a dialog rather than
   crashing; a cancelled save dialog does nothing.
+- **Trigger / Event Log...** — opens the event-log viewer for this Run, with **Summary** and
+  **Timeline** tabs (every timestamped event: flips, `trigger_sent`, stimulus/oddball onsets,
+  segment/overlay markers) — the same viewer referenced from the sweep/baseline/attention sections.
+- **Export Raw Data...** — writes a full raw bundle beyond the per-Trial table: every timestamped
+  event plus a manifest of Run/Subject/Instance provenance and the frozen Condition params — what
+  you feed the integration verifier (`xpman-verify`) alongside the `.bdf`.
 
 ### 4.11 Launching a Run
 
@@ -314,13 +327,19 @@ Right-click an **Instance** → **Launch...**
    (see [4.5](#45-creating-a-subject)) — the dialog tells you this and disables Launch.
 2. **Fullscreen** (checked by default) — leave checked for any real session; frame-locked
    timing precision depends on it. Only uncheck for a quick windowed dry run.
-3. **Send real triggers (parallel port)** (checked by default) — leave checked for any real
-   EEG session. Uncheck to dry-run without an amplifier connected (e.g. testing on a laptop).
-4. **Parallel port address** — a text field, default `0x0378` (the common LPT1 default).
-   Only relevant (and only enabled) while "Send real triggers" is checked. If triggers aren't
-   reaching the amplifier, this is usually why — check Windows Device Manager for the actual
-   address; a PCIe parallel-port card is often not at the default. Accepts hex (`0x0278`) or
-   plain decimal. Launch is disabled with an inline error until this parses to a valid number.
+3. **Trigger backend** — a dropdown with three choices:
+   - **None (dry run)** — no triggers sent; for testing on a laptop with no amplifier.
+   - **Parallel port** — reveals a **Parallel port address** field (default `0x0378`, the common LPT1
+     default; accepts hex `0x0278` or decimal). If triggers aren't reaching the amplifier this is
+     usually why — check Windows Device Manager for the actual address (a PCIe LPT card is often not
+     at the default).
+   - **Serial (USB)** — for a USB/serial trigger box such as the lab's **NEUROSPEC MMBT-S**. Reveals
+     **Serial (COM) port** (e.g. `COM4`), **Baud rate** (the field defaults to 115200 — **set it to
+     `9600` for the MMBT-S**, in Pulse Mode), and **Init settle (s)** (a short post-open wait for
+     boxes that reset on connect; default 0).
+4. **Test triggers…** — sends a test pulse (or a full 1–255 sweep) through the chosen backend so you
+   can confirm on the EEG trigger channel that codes arrive, **before** committing a subject. (A
+   trigger is write-only — xpman can send but can't read back receipt — so confirm on the amplifier.)
 5. Click **Launch**. The experiment runs in its own separate process — deliberately, so its
    frame-by-frame timing is never affected by the rest of the xpman GUI running at the same
    time. A progress bar tracks trial-by-trial completion (updated roughly twice a second).
@@ -379,8 +398,9 @@ exported results.
       instructions before the run starts) and again every N trials after that, regardless of the
       Between-trials setting above (a break always waits for a keypress, never auto-dismisses).
     - Set **Monitor (screen index)** if the stimulus screen isn't the primary display.
-    - Leave Fullscreen checked; check/uncheck triggers depending on whether an amplifier is
-      connected → **Launch**. Watch the progress bar; use Abort if needed.
+    - Leave Fullscreen checked; pick the **Trigger backend** (None for a dry run, else Parallel or
+      Serial) depending on whether an amplifier is connected → **Launch**. Watch the progress bar;
+      use Abort if needed.
 11. **Review results.** Expand the Instance's "Runs" group, click the new Run — check status
     and the per-trial table. Click **Export CSV...** to save a spreadsheet-ready file.
 
@@ -648,7 +668,7 @@ oddball frequency in it is the pure measurement floor. It runs at the Condition'
 |---|---|---|---|
 | `enabled` | checkbox | off | Add a base-only reference segment to each trial. |
 | `position` | dropdown | `before` | Where it sits relative to the oddball stream: `before`, `after`, or `both`. |
-| `duration_seconds` | number | 20.0 | Length of each baseline segment (match the main sequence for a comparable measurement). |
+| `duration_seconds` | number | 10.0 | Length of each baseline segment (match the main sequence for a comparable measurement). |
 | `blank_seconds` | number | 1.0 | Fixation-only gap after each baseline segment. |
 | `start_trigger_code` / `stop_trigger_code` | integer, optional | not set | EEG markers framing each baseline segment. |
 
@@ -717,8 +737,8 @@ issue where the parallel-port driver DLL must be manually placed in `System32` a
 not just the app folder, or triggers silently fail. If the script reports it can't find the
 driver DLL, download it from https://www.highrez.co.uk/downloads/inpout32/ first.
 
-For a dry run without any amplifier connected, uncheck "Send real triggers" in the Launch
-dialog instead of troubleshooting hardware.
+For a dry run without any amplifier connected, set the **Trigger backend** to **None (dry run)** in
+the Launch dialog instead of troubleshooting hardware.
 
 ### 7.3 A Run says "crashed" or "could not start"
 
@@ -792,8 +812,9 @@ usually means a focus problem. If presses were captured but the task's scored-ev
 0, the keys you pressed don't match the Condition's configured `distractor.keys`/`go_nogo.keys` --
 the line lists the actual `distinct_keys` seen.
 
-The `distractor` and `go_nogo` tasks can both be answered from the same keyboard; if they share a
-key, a press counts for both (`Check Triggers…` warns about that).
+Only one attention task (`distractor` **or** `go_nogo`) can be enabled per Condition — enabling both
+is rejected at save/freeze time (see §6.2) — so they never run together and never share a key. The
+enabled task's keys are scored against its own events, not stimulus onsets.
 
 ## 8. FAQ
 
@@ -810,7 +831,9 @@ same Instance reproduces their own prior order, not a new random one. "Randomize
 **Where is my data actually stored?**
 `data\xpman.db` (SQLite — Profiles/Subjects/Programs/.../Results) and `data\runs\` (one
 Parquet + CSV event log per Run, holding the full frame-by-frame detail behind each Result
-row). Both paths are relative to wherever you launched `python -m xpman.gui.app` from.
+row). The `data\` folder is anchored to the **repo root** (source run) or the **installed app's
+folder** (packaged build), *not* the shell's current directory — so a "wrong Start-in folder" can't
+silently relocate your data.
 
 **Can two researchers share the same database?**
 Not concurrently by design today — one researcher, one machine, one database is the current

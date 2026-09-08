@@ -1,7 +1,8 @@
 # Phase 2 design spec — segments × streams (sweep, dual-stream, per-trial baseline)
 
-Status: **DRAFT for expert review** (branch `phase2-sweep-dualstream`). No hot-loop code has been
-written yet. This doc is the contract the implementation waves are held to.
+Status: **implemented** (sweep, dual/multi-stream, and per-trial baseline all shipped — see
+`docs/tutorial.md` §6.2 and CHANGELOG 0.2.0/0.3.0). This doc is retained as the original design
+contract the implementation was held to.
 
 ## Goal
 

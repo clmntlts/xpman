@@ -37,8 +37,8 @@ kills or clears that concern.
 
 - **Laptop/PC with xpman installed** (Section 2.1) and the stimulus image folder (SepStim-style or
   your own).
-- **BioSemi USB Trigger Interface (SKU NS7830)** + its USB-C cable + the DSUB-37 into the receiver's
-  trigger input. (This is your trigger path — no parallel port needed.)
+- **NEUROSPEC MMBT-S trigger box** (serial/USB, run at **9600 baud in Pulse Mode**) + its USB cable
+  + the DSUB into the receiver's trigger input. (This is your trigger path — no parallel port needed.)
 - **A photodiode** taped to the screen (a photodiode + ~330 Ω resistor, or a lab photosensor). This
   is how we see the *actual* light change on screen.
 - **One timing instrument** — either:
@@ -59,13 +59,16 @@ py -3.11 -m venv .venv
 pip install -e .[dev]
 ```
 
-### 2.2 ⭐ Set the FTDI latency timer to 1 ms — DO NOT SKIP
-This single setting is almost certainly what made USB triggers "unreliable" before. The FTDI default
-is **16 ms**, which adds up to ~16 ms of latency/jitter.
-1. Plug in the BioSemi USB Trigger Interface.
+### 2.2 ⭐ Trigger-box config — DO NOT SKIP
+The **NEUROSPEC MMBT-S** must be set to **Pulse Mode** and driven at **9600 baud** (pass
+`--serial-baud 9600` on the commands below — the software's default is 115200, which this box does
+**not** use). Confirm the exact baud/mode against the MMBT-S manual.
+1. Plug in the MMBT-S.
 2. **Device Manager → Ports (COM & LPT)** → find it (e.g. "USB Serial Port (COMx)"). **Note the COM
    number** — you'll pass it below.
-3. Right-click → **Properties → Port Settings → Advanced → Latency Timer → set to `1`** → OK.
+3. **If** the box enumerates as a generic **FTDI** virtual COM port, also set **Properties → Port
+   Settings → Advanced → Latency Timer → `1`** (the 16 ms FTDI default is a classic ±10 ms jitter
+   cause). This step applies to FTDI-based boxes; it does not replace the 9600-baud/Pulse-Mode config.
 
 If it does **not** appear under "Ports (COM & LPT)" as a COM port, stop and tell the xpman maintainer
 — the backend assumes a virtual COM port; a different enumeration needs a code tweak.
@@ -115,7 +118,7 @@ so the photodiode/triggers are easy to see. Replace `COM4` with your port.
 ```powershell
 .venv\Scripts\python.exe tests\manual_hardware\run_dummy_task_manual.py `
   --fullscreen --flip-rate-hz 2 --duration-seconds 30 `
-  --trigger-code 1 --trigger-backend serial --serial-port COM4
+  --trigger-code 1 --trigger-backend serial --serial-port COM4 --serial-baud 9600
 ```
 Start your recording/scope, run it, and check:
 - **ActiView Status channel** ticks to **1** on each flip (proves the trigger reaches BioSemi).
@@ -137,7 +140,7 @@ your stimulus folder.
   --resource-dir "C:\path\to\SepStim" --fullscreen `
   --base-freq-hz 6 --oddball-freq-hz 1.2 --trial-duration-seconds 60 `
   --base-trigger-code 1 --oddball-trigger-code 2 `
-  --trigger-backend serial --serial-port COM4
+  --trigger-backend serial --serial-port COM4 --serial-baud 9600
 ```
 Check, on the capture:
 - **Base rate**: a stimulus onset every ~1/6 s; **oddball** every 5th (1.2 Hz) carries code **2**, the
@@ -239,6 +242,7 @@ real finding, not a "good enough."
 ## 10. After the session
 
 Send the maintainer: the filled record sheet, the `events.csv` files, the scope/ActiView captures,
-and the legacy comparison. If everything passes, xpman graduates from "built to spec" to
-"hardware-verified" — clear for real data collection. If not, the specific numbers point straight at
-what to fix.
+and the legacy comparison. The **core** paradigm already passed (2026-09-07); a clean session here
+extends "hardware-verified" to the **remaining** scenarios you measured (parallel backend, dual
+streams, sweep, position/size variation) — clearing them for real data collection. If not, the
+specific numbers point straight at what to fix.
