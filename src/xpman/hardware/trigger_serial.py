@@ -50,7 +50,7 @@ class SerialTrigger(TriggerSender):
     def __init__(
         self,
         port: str,
-        baudrate: int = 115200,
+        baudrate: int = 9600,
         auto_pulse: bool = True,
         reset_after: float = DEFAULT_RESET_AFTER,
         init_settle_seconds: float = 0.0,
@@ -61,8 +61,9 @@ class SerialTrigger(TriggerSender):
             port: The virtual COM port the device enumerated as (e.g. ``"COM4"`` on Windows,
                 ``"/dev/ttyUSB0"`` on Linux). Check Windows Device Manager -> Ports (COM & LPT)
                 for the actual name the FTDI driver assigned.
-            baudrate: Serial baud. 115200 is a safe, common default; the BioSemi device times
-                the pulse in hardware, so baud only governs how fast the code byte reaches it.
+            baudrate: Serial baud. Defaults to 9600 -- the rate the NEUROSPEC MMBT-S uses in Pulse
+                Mode (the lab's box). The box times the pulse in hardware, so baud only governs how
+                fast the code byte reaches it; override for a device that needs a different rate.
             auto_pulse: ``True`` (default) for a device that pulses in hardware and auto-returns
                 to 0 (the BioSemi 8 ms pulse) -- ``clear_code()`` is then a no-op. ``False`` for
                 a latching device -- ``clear_code()`` then writes ``bytes([0])`` to reset it.
