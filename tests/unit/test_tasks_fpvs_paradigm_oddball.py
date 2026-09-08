@@ -622,6 +622,61 @@ def test_flip_log_is_flushed_when_a_flip_raises_midtrial(base_stimuli, oddball_s
     assert [r for r in rows if r["event_type"] == "flip"], "flip records must survive a mid-trial crash"
 
 
+def test_flip_records_are_drained_mid_trial_not_only_at_the_end(
+    base_stimuli, oddball_stimuli, trigger, clock, tmp_path
+):
+    """#45: flip records used to sit in memory for the WHOLE trial, so a hard process kill (which
+    never runs the finally) lost the entire per-frame timeline -- the data timing verification needs
+    most. They are now drained every FLIP_LOG_DRAIN_EVERY frames, so a long trial has flip rows on
+    disk well before it ends. Proven by reading the CSV from INSIDE the frame loop."""
+    import csv
+
+    from xpman.tasks.fpvs.paradigm_oddball import FLIP_LOG_DRAIN_EVERY
+
+    window = MagicMock(name="Window")
+    _pending: list = []
+    state = {"count": 0, "flips_on_disk_midtrial": None}
+    sink = EventSink(tmp_path / "drain" / "events.csv", tmp_path / "drain" / "events.parquet")
+
+    def _flip():
+        while _pending:
+            fn, a, k = _pending.pop(0)
+            fn(*a, **k)
+        state["count"] += 1
+        if state["count"] == FLIP_LOG_DRAIN_EVERY * 2:
+            # Mid-trial snapshot of what a hard kill right now would have left behind.
+            with sink.csv_path.open(newline="", encoding="utf-8") as f:
+                state["flips_on_disk_midtrial"] = sum(
+                    1 for r in csv.DictReader(f) if r["event_type"] == "flip"
+                )
+        return state["count"] / 60.0
+
+    window.callOnFlip = lambda fn, *a, **k: _pending.append((fn, a, k))
+    window.flip.side_effect = _flip
+    window.size = (800, 600)
+
+    run_base_oddball_sequence(
+        window=window,
+        base_stimuli=base_stimuli,
+        oddball_stimuli=oddball_stimuli,
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=10.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=sink,
+    )
+    sink.close()
+
+    assert state["flips_on_disk_midtrial"] is not None, "the trial was too short to reach the snapshot"
+    # At least one full drain landed before the trial ended (previously this would have been 0).
+    assert state["flips_on_disk_midtrial"] >= FLIP_LOG_DRAIN_EVERY
+    # ...and the complete timeline is still on disk at the end (nothing dropped by draining).
+    with sink.csv_path.open(newline="", encoding="utf-8") as f:
+        total_flips = sum(1 for r in csv.DictReader(f) if r["event_type"] == "flip")
+    assert total_flips == state["count"]
+
+
 def test_oddball_appears_at_every_kth_position(mock_window, base_stimuli, oddball_stimuli, event_sink, trigger, clock):
     # base=6Hz, oddball=1.2Hz -> period=5. 60Hz refresh, 10 frames/stim, 3s trial -> 18 stimuli.
     result = run_base_oddball_sequence(
