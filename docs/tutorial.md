@@ -701,10 +701,16 @@ other streams' timing is presented but never hardware-verified against the photo
 | `sweep` | group | Sweep this stream too (only valid for exactly two active streams, both sweeping on a **shared timeline** — same step count + durations, only the per-step frequencies differ). |
 | `coincidence_codes` | group | Reserved codes for frames where the main and second streams onset together (there's one port, one pulse): the 2×2 of (base/oddball)×(base/oddball). Required once **both** have trigger codes. |
 
-Saving is **blocked** if any two active streams share a position, if an oddball-carrying stream's
-own oddball frequency exactly equals another active stream's base or oddball frequency (their
-responses would land on the same FFT bin — no way to tell them apart), or if sweep/per-stream-trigger
-rules above are violated. Sharing a plain **base** rate across streams is otherwise fine — e.g. three
+Saving is **blocked** if any two active streams share a position, or if the sweep/per-stream-trigger
+rules above are violated.
+
+**Shared tagged frequencies ask, they don't block.** If an oddball-carrying stream's own oddball
+frequency exactly equals another active stream's base or oddball frequency, their responses land on
+the same FFT bin with no way to tell them apart — so xpman shows a **confirmation popup** when you
+save ("…Do you want to save anyway?") and proceeds only if you say yes. It's usually a mistake, but
+it can be deliberate, so the choice is yours; "Check Triggers…" lists the same collision.
+
+Sharing a plain **base** rate across streams is otherwise fine — e.g. three
 base-only streams and one oddball-carrying stream all at the same base rate, to test whether the
 oddball's *position* (not frequency) modulates the response; base-only streams contribute no energy
 at any oddball frequency, so nothing becomes ambiguous. "Check Triggers…" additionally warns about

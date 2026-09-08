@@ -682,49 +682,53 @@ def test_base_only_additional_stream_is_accepted():
 # ---------------------------------------------------------------------------
 
 
-def test_two_streams_each_with_their_own_oddball_at_identical_frequencies_is_rejected():
+def test_two_streams_each_with_their_own_oddball_at_identical_frequencies_is_flagged_not_rejected():
+    """Coinciding tagged frequencies are no longer a hard rejection -- the Condition validates and
+    reports the collision, so the GUI can ask the researcher to confirm instead of refusing."""
     from xpman.tasks.fpvs.schema import StreamParams
 
-    with pytest.raises(ValidationError, match="exactly equals"):
-        FPVSConditionParams(
-            main_stream=StreamParams(
-                enabled=True,
-                base=BaseSequenceParams(base_freq_hz=6.0),
-                oddball=OddballParams(oddball_freq_hz=1.2),
-                position_pix=(0.0, 0.0),
-            ),
-            second_stream=StreamParams(
-                enabled=True,
-                oddball_enabled=True,
-                base=BaseSequenceParams(base_freq_hz=10.0),
-                oddball=OddballParams(oddball_freq_hz=1.2),  # collides with main's oddball
-                position_pix=(200.0, 0.0),
-            ),
-        )
+    params = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=10.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),  # collides with main's oddball
+            position_pix=(200.0, 0.0),
+        ),
+    )
+    collisions = params.requested_frequency_collisions()
+    assert collisions and any("exactly equals" in m for m in collisions)
 
 
-def test_base_only_filler_colliding_with_another_streams_oddball_frequency_is_rejected():
-    """Distinguishes 'sharing a base rate' (fine) from 'a filler's base rate landing exactly on
-    another stream's oddball rate' (rejected) -- the base-only stream contributes no energy at any
-    oddball frequency, but here its OWN base fundamental IS the main stream's measured frequency."""
+def test_base_only_filler_colliding_with_another_streams_oddball_frequency_is_flagged():
+    """Distinguishes 'sharing a base rate' (fine, no collision) from 'a filler's base rate landing
+    exactly on another stream's oddball rate' (flagged) -- the base-only stream contributes no energy
+    at any oddball frequency, but here its OWN base fundamental IS the main stream's measured
+    frequency. Flagged for confirmation, no longer rejected."""
     from xpman.tasks.fpvs.schema import StreamParams
 
-    with pytest.raises(ValidationError, match="exactly equals"):
-        FPVSConditionParams(
-            main_stream=StreamParams(
-                enabled=True,
-                base=BaseSequenceParams(base_freq_hz=6.0),
-                oddball=OddballParams(oddball_freq_hz=1.2),
-                position_pix=(0.0, 0.0),
-            ),
-            second_stream=StreamParams(
-                enabled=True,
-                oddball_enabled=False,
-                base=BaseSequenceParams(base_freq_hz=1.2),  # == main's oddball frequency
-                oddball=OddballParams(oddball_freq_hz=0.5),  # irrelevant: oddball_enabled=False
-                position_pix=(200.0, 0.0),
-            ),
-        )
+    params = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 0.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=False,
+            base=BaseSequenceParams(base_freq_hz=1.2),  # == main's oddball frequency
+            oddball=OddballParams(oddball_freq_hz=0.5),  # irrelevant: oddball_enabled=False
+            position_pix=(200.0, 0.0),
+        ),
+    )
+    assert any("exactly equals" in m for m in params.requested_frequency_collisions())
 
 
 def test_two_streams_each_with_their_own_oddball_sharing_a_base_rate_is_accepted():
@@ -826,35 +830,35 @@ def test_pattern_based_oddball_is_skipped_by_the_collision_check():
 def test_oddball_collision_check_covers_every_pair_not_just_adjacent_streams():
     """3 active streams, each carrying its own oddball at a distinct rate EXCEPT main and the
     non-adjacent additional_streams[0] entry (second_stream sits between them in field order) --
-    must still be rejected, proving the pairwise loop checks every pair, not just neighbours."""
+    must still be flagged, proving the pairwise loop checks every pair, not just neighbours."""
     from xpman.tasks.fpvs.schema import StreamParams
 
-    with pytest.raises(ValidationError, match="exactly equals"):
-        FPVSConditionParams(
-            main_stream=StreamParams(
+    params = FPVSConditionParams(
+        main_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=6.0),
+            oddball=OddballParams(oddball_freq_hz=1.2),
+            position_pix=(0.0, 200.0),
+        ),
+        second_stream=StreamParams(
+            enabled=True,
+            oddball_enabled=True,
+            base=BaseSequenceParams(base_freq_hz=8.0),
+            oddball=OddballParams(oddball_freq_hz=1.6),  # distinct, no collision
+            position_pix=(0.0, -200.0),
+        ),
+        additional_streams=[
+            StreamParams(
                 enabled=True,
                 oddball_enabled=True,
-                base=BaseSequenceParams(base_freq_hz=6.0),
-                oddball=OddballParams(oddball_freq_hz=1.2),
-                position_pix=(0.0, 200.0),
+                base=BaseSequenceParams(base_freq_hz=10.0),
+                oddball=OddballParams(oddball_freq_hz=1.2),  # collides with MAIN, not second
+                position_pix=(-200.0, 0.0),
             ),
-            second_stream=StreamParams(
-                enabled=True,
-                oddball_enabled=True,
-                base=BaseSequenceParams(base_freq_hz=8.0),
-                oddball=OddballParams(oddball_freq_hz=1.6),  # distinct, no collision
-                position_pix=(0.0, -200.0),
-            ),
-            additional_streams=[
-                StreamParams(
-                    enabled=True,
-                    oddball_enabled=True,
-                    base=BaseSequenceParams(base_freq_hz=10.0),
-                    oddball=OddballParams(oddball_freq_hz=1.2),  # collides with MAIN, not second
-                    position_pix=(-200.0, 0.0),
-                ),
-            ],
-        )
+        ],
+    )
+    assert any("exactly equals" in m for m in params.requested_frequency_collisions())
 
 
 # ---------------------------------------------------------------------------

@@ -3271,3 +3271,37 @@ def test_run_trial_equalization_second_trial_reuses_cache(mock_window, split_sti
     payload_1 = json.loads(eq_rows[1]["payload_json"])
     assert payload_0["mean_luminance_before"] == payload_1["mean_luminance_before"]
     assert payload_0["n_equalized"] == payload_1["n_equalized"] == 6
+
+
+# -- frequency collisions: confirm-before-save instead of a hard block ------------------------
+
+
+def _colliding_two_stream_params() -> FPVSConditionParams:
+    p = FPVSConditionParams()
+    p.main_stream.position_pix = (-200.0, 0.0)
+    p.second_stream.enabled = True
+    p.second_stream.position_pix = (200.0, 0.0)
+    p.second_stream.base.base_freq_hz = 10.0
+    p.second_stream.oddball.oddball_freq_hz = 1.2  # == main stream's oddball rate
+    return p
+
+
+def test_confirm_before_save_reports_frequency_collision():
+    reasons = FPVSTask().confirm_before_save(_colliding_two_stream_params().model_dump())
+    assert reasons and any("exactly equals" in r for r in reasons)
+
+
+def test_confirm_before_save_is_silent_for_distinct_rates():
+    p = _colliding_two_stream_params()
+    p.second_stream.oddball.oddball_freq_hz = 2.0  # distinct from main's 1.2
+    assert FPVSTask().confirm_before_save(p.model_dump()) == []
+
+
+def test_confirm_before_save_never_raises_on_invalid_params():
+    # Invalid params are pydantic's job to block; the confirm hook must stay quiet, not explode.
+    assert FPVSTask().confirm_before_save({"main_stream": {"base": {"base_freq_hz": "nonsense"}}}) == []
+
+
+def test_check_triggers_lists_the_frequency_collision():
+    warnings = FPVSTask().check_triggers(_colliding_two_stream_params().model_dump())
+    assert any("frequency collision" in w for w in warnings)

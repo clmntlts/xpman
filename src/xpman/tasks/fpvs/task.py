@@ -1609,6 +1609,19 @@ class FPVSTask(TaskModule):
 
         return TrialResult(outcome_summary=outcome_summary)
 
+    def confirm_before_save(self, condition_params: dict) -> list[str]:
+        """Ask the researcher to confirm a Condition whose streams share a tagged frequency.
+
+        Coinciding tagged frequencies put two streams' responses in one FFT bin (inseparable), which
+        is usually a mistake -- but it can be deliberate, so this asks rather than refuses (the
+        model-level hard rejection was removed in favour of this confirmation). Invalid params
+        confirm nothing: pydantic already blocks the save with a field error."""
+        try:
+            params = FPVSConditionParams.model_validate(condition_params)
+        except ValidationError:
+            return []
+        return params.requested_frequency_collisions()
+
     def run_metadata(self) -> dict:
         """Run-level provenance the engine persists onto the Run: the achieved refresh rate the
         frame math used, and whether it was really measured (vs the fallback). Valid only after
@@ -1816,6 +1829,11 @@ class FPVSTask(TaskModule):
         # schema._check_multi_stream passed them) can round onto the same achieved frequency and
         # collide on one FFT bin (#39). The real refresh isn't known at design time, so check against
         # the nominal 60 Hz -- the runtime re-check in run_trial uses the measured refresh.
+        # Requested-rate collisions across streams. No longer a hard save/freeze rejection (the GUI
+        # asks the researcher to confirm instead), so they must be surfaced here too.
+        for problem in params.requested_frequency_collisions():
+            warnings.append(f"frequency collision: {problem}")
+
         for problem in achieved_frequency_collisions(_active_stream_freq_specs(params), NOMINAL_REFRESH_HZ):
             warnings.append(f"achieved-frequency collision: {problem}")
 
