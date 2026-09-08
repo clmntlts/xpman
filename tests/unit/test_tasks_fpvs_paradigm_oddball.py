@@ -1281,6 +1281,17 @@ def test_distractor_trigger_sent_on_event_onset(mock_window, event_sink, clock):
     assert rec.ops.count(("set", 99)) == 1
     assert ("set", 1) in rec.ops  # base onsets still fire
 
+    # #41: the overlay pulse is now recorded by its own trigger_sent (was missing in single-stream),
+    # so the trigger_sent stream reconciles 1:1 against the amp -- every physical pulse has a
+    # trigger_sent, including the off-onset distractor one.
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    sent_codes = [json.loads(r["payload_json"])["code"] for r in rows if r["event_type"] == "trigger_sent"]
+    assert sent_codes.count(99) == 1  # the distractor pulse now has a trigger_sent
+    # ...and exactly one trigger_sent per physical port pulse: one per set-code op the trigger saw.
+    assert len(sent_codes) == sum(1 for op in rec.ops if op[0] == "set")
+
 
 # ---------------------------------------------------------------------------
 # present_fixation_only
