@@ -421,3 +421,22 @@ def test_screenshot_of_condition_form(qtbot, session, registry):
     pixmap = window.grab()
     assert not pixmap.isNull()
     pixmap.save(str(Path(__file__).parent / "main_window_screenshot.png"))
+
+
+def test_selecting_condition_with_type_invalid_stored_param_does_not_crash(qtbot, session, registry):
+    """#40: a Condition whose stored parameters_json has a type-invalid leaf (a hand-edited or
+    partially-migrated row, e.g. a non-numeric flip_rate_hz) must NOT crash node selection -- the
+    form loads with the bad leaf defaulted, and the tree stays usable."""
+    fixture = _build_fixture(session)
+    # Corrupt a stored numeric param to a non-numeric string.
+    repo.update_condition(session, fixture["condition"].id, parameters_json={"flip_rate_hz": "oops"})
+    session.commit()
+
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    node = TreeNode(kind="condition", id=fixture["condition"].id, name="Fast")
+    window._on_node_selected(node)  # must not raise
+
+    # Either a form built (bad leaf defaulted) or the inline error message -- never a crash.
+    assert window._current_form is not None
+    assert isinstance(window._current_form.get_values()["flip_rate_hz"], (int, float))
