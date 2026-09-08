@@ -14,10 +14,11 @@ packaged build that passes every automated check yet crashes for every real user
      its own comment says to bump it alongside the package version, and it drifted for several
      releases before 0.3.0 because nothing enforces this).
 2. **Update `CHANGELOG.md`** with a new `## [X.Y.Z] — YYYY-MM-DD` entry above the previous one.
-   Keep the standing "not yet hardware-verified" banner at the top of the file -- every release so
-   far has shipped without a real EEG-rig verification pass (`docs/verification_protocol.md`),
-   and the banner is the honest, load-bearing caveat that makes that acceptable. Follow the
-   existing entries' `### Added` / `### Changed` / `### Fixed` / `### Documentation` structure.
+   Keep the standing hardware-verification banner at the top of the file accurate: as of
+   2026-09-07 the **core** paradigm is verified on a real BioSemi rig, but the advanced scenarios
+   (parallel backend, dual streams, sweep, position/size variation) are not — update the banner's
+   scope when a new scenario is measured (`docs/verification_protocol.md`), rather than dropping it.
+   Follow the existing entries' `### Added` / `### Changed` / `### Fixed` / `### Documentation` structure.
 3. **Full test suite + lint**, from a clean venv (see gotcha #1 below if you're on a machine you
    haven't released from before):
    ```powershell
