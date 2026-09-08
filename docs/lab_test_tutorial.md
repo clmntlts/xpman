@@ -1,9 +1,11 @@
 # xpman lab-test tutorial — hardware verification with BioSemi ActiveThree
 
 A turnkey, do-this-at-the-rig guide to verify that xpman's **screen timing** and **EEG trigger
-timing** are correct on the real hardware. Until this passes, every timing claim in xpman is
-"built to spec, not measured." Print this, fill in the record sheet at the end, and keep it with the
-setup.
+timing** are correct on the real hardware. The **core** paradigm passed on 2026-09-07 (dummy + a
+single-stream FPVS run on a BioSemi rig with the serial MMBT-S box: 0 dropped frames, trigger jitter
+SD ~0.25 ms, ~8.8 ms pulse — see `docs/verification_protocol.md`); use this guide to re-verify on your
+own rig and to measure the scenarios still pending (parallel backend, dual streams, sweep,
+position/size variation). Print this, fill in the record sheet at the end, and keep it with the setup.
 
 Companion docs: `docs/verification_protocol.md` (the why + the statistics), `docs/tutorial.md`
 (using the app in general).
@@ -151,6 +153,9 @@ Optional extras in the same session:
 - **Position jitter**: build a Condition in the GUI with `position_jitter.enabled = true` and a
   region, freeze, launch — confirm the image lands at varying positions while the **fixation marker
   stays centered** and the corner photodiode patch is unaffected.
+- **Size variation**: a single-stream Condition with `size_variation.enabled = true` (e.g.
+  `min_scale = 0.74`, `max_scale = 1.2`), freeze, launch — confirm the image **rescales** between
+  stimuli while the fixation marker and photodiode patch keep their size, with no dropped frames.
 - **Parallel port** (if you also have an LPT into the receiver): rerun with
   `--trigger-backend parallel --parallel-port-address 0x0378` and compare latency/jitter to serial.
 

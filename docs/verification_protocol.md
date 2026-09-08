@@ -4,6 +4,16 @@ Correctness for this project means "the EEG timing is actually right," not just 
 This is the operational checklist for empirically verifying xpman against the legacy app.
 Full rationale lives in the plan file; this doc is the actionable, repeatable version.
 
+> **Status — core paradigm verified (2026-09-07).** The dummy task and a single-stream FPVS run were
+> measured on a real BioSemi rig (method A: in-amplifier photodiode on the Photo channel; serial
+> MMBT-S trigger box on the Status channel). Results: **0 dropped frames** (dummy 0/1798, FPVS
+> 0/3590), screen inter-flip SD **0.06 / 0.27 ms**, **trigger jitter SD ~0.25 ms** (dummy — the clean
+> hard-edged measurement), pulse width **~8.8 ms** (constant), base/oddball **frame-exact at 5.997 /
+> 1.199 Hz** — at least as good as the legacy app on the same rig, and far below the historical ±10 ms
+> USB-jitter worry. Still to measure: the **parallel-port** backend, and the advanced scenarios in
+> "New features to verify" below (dual streams under load, sweep, per-trial baseline, position/size
+> variation).
+
 ## Rig
 
 Legacy app and xpman (dummy task first, then the real FPVS task) run on the same physical
@@ -202,7 +212,7 @@ trusting `pytest` alone.
   `hardware/trigger.py`, or a PsychoPy version bump. This is a manual smoke test, not CI (CI
   has no access to the physical rig).
 
-## New features to verify at the lab (2026-07, built to spec, not yet measured)
+## New features to verify at the lab (built to spec; core measured 2026-09-07, these still pending)
 
 Three features landed in software with green unit tests but are **unverified on hardware** — fold
 these into the same photodiode + logic-analyzer session:
@@ -223,17 +233,23 @@ these into the same photodiode + logic-analyzer session:
    image lands at varying positions within the configured region while the **fixation marker stays
    centered** and the photodiode patch (screen corner) is unaffected. Each onset logs its `pos`, and
    positions are reproducible for the same (Instance, Subject).
-4. **Frequency sweep (`sweep`).** With a multi-step sweep, confirm on the photodiode that each step
+4. **Size variation.** With a single-stream Condition using `size_variation.enabled = true` (e.g.
+   `min_scale = 0.74`, `max_scale = 1.2`), visually confirm the image **rescales** from stimulus to
+   stimulus while the **fixation marker and photodiode patch keep their own size**, and that there are
+   **no dropped frames** (the resize is one property set per stimulus, not per frame). Each onset logs
+   its `size` scale, reproducible for the same (Instance, Subject). Enabling it with a second stream is
+   rejected at freeze time (dual-stream size variation is not yet implemented).
+5. **Frequency sweep (`sweep`).** With a multi-step sweep, confirm on the photodiode that each step
    runs at its own base rate and that the frame count is **continuous across step boundaries** (no
    dropped/duplicated frame at a boundary). Check the contrast envelope fades only at the trial's
    very start/end (no re-fade at each step). Analyse **per segment** using the
    `sweep_segment_start/end` frame ranges; discard the first ~0.5–1 s of each segment (the step
    transient). Verify each step is long enough to resolve its oddball (`1/duration` FFT bin).
-5. **Per-trial baseline (`baseline`).** Confirm the base-only segment shows the base stimulation with
+6. **Per-trial baseline (`baseline`).** Confirm the base-only segment shows the base stimulation with
    **no oddball onsets**, framed by its `baseline_start/end` markers (+ start/stop triggers), and that
    its oddball-frequency power is at the noise floor. Keep `position` (before/after) consistent — an
    after-baseline is post-adaptation.
-6. **Dual bilateral streams (`second_stream`).** The higher-risk draw-budget case: **2 ImageStims +
+7. **Dual bilateral streams (`second_stream`).** The higher-risk draw-budget case: **2 ImageStims +
    fixation + photodiode + overlays per frame** — verify **no dropped frames** at the target refresh.
    Confirm each stream renders at its own position and frequency, the photodiode (tracking
    `photodiode.tracked_stream_index`, default 0=main) still marks that stream's onsets cleanly, and

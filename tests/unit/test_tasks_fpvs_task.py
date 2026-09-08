@@ -25,6 +25,7 @@ from xpman.tasks.fpvs.paradigm_oddball import BaseSequenceParams, OddballParams
 from xpman.tasks.fpvs.schema import (
     FPVSConditionParams,
     PositionJitterParams,
+    SizeVariationParams,
     StimulusSelector,
 )
 from xpman.tasks.fpvs.task import (
@@ -32,6 +33,7 @@ from xpman.tasks.fpvs.task import (
     _ImageWithFixation,
     FPVSTask,
     _build_position_provider,
+    _build_size_provider,
     _select_pool,
 )
 
@@ -1015,6 +1017,26 @@ def test_build_position_provider_per_trial_returns_fixed_position():
     assert len(set(positions)) == 1  # per="trial" -> one position reused for the whole trial
 
 
+def test_build_size_provider_none_when_disabled():
+    provider = _build_size_provider(SizeVariationParams(enabled=False), np.random.default_rng(0))
+    assert provider is None
+
+
+def test_build_size_provider_per_stimulus_draws_fresh_each_call():
+    size = SizeVariationParams(enabled=True, min_scale=0.7, max_scale=1.3, per="stimulus")
+    provider = _build_size_provider(size, np.random.default_rng(1))
+    scales = [provider() for _ in range(20)]
+    assert len(set(scales)) > 1  # per="stimulus" -> scales vary
+    assert all(0.7 <= s <= 1.3 for s in scales)
+
+
+def test_build_size_provider_per_trial_returns_fixed_scale():
+    size = SizeVariationParams(enabled=True, min_scale=0.7, max_scale=1.3, per="trial")
+    provider = _build_size_provider(size, np.random.default_rng(2))
+    scales = [provider() for _ in range(20)]
+    assert len(set(scales)) == 1  # per="trial" -> one scale reused for the whole trial
+
+
 class _PosRecorder:
     """Stands in for a psychopy ImageStim, recording every .pos assignment (and .opacity) so a
     test can prove a non-zero jitter position actually reaches ImageStim.pos. One instance is
@@ -1156,6 +1178,22 @@ def test_check_triggers_warns_when_jitter_enabled_but_zero_extent():
     assert any("zero extent" in w for w in warnings)
 
 
+def test_check_triggers_warns_when_size_variation_enabled_but_noop():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.size_variation = SizeVariationParams(enabled=True, min_scale=1.0, max_scale=1.0)
+    warnings = task.check_triggers(params.model_dump())
+    assert any("size_variation is enabled but min_scale == max_scale" in w for w in warnings)
+
+
+def test_check_triggers_no_size_variation_warning_when_range_is_widened():
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.size_variation = SizeVariationParams(enabled=True, min_scale=0.74, max_scale=1.2)
+    warnings = task.check_triggers(params.model_dump())
+    assert not any("size_variation is enabled but" in w for w in warnings)
+
+
 def test_check_triggers_warns_when_base_freq_not_frame_exact():
     """A base rate that doesn't divide the monitor refresh evenly is quantized to the nearest whole
     frames/cycle, shifting the frequency tag off the intended FFT bin -- and the runtime 5% drift
@@ -1233,6 +1271,56 @@ def test_run_trial_jitter_onsets_log_pos(mock_window, stim_root, event_sink):
         pos = json.loads(row["payload_json"])["pos"]
         assert pos is not None
         assert _math.hypot(pos[0], pos[1]) <= 100.0 + 1e-9
+
+
+def _size_condition(min_scale: float = 0.7, max_scale: float = 1.3) -> FPVSConditionParams:
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
+    params.size_variation = SizeVariationParams(
+        enabled=True, min_scale=min_scale, max_scale=max_scale
+    )
+    return params
+
+
+def test_run_trial_size_variation_onsets_log_size(mock_window, stim_root, event_sink):
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    _run_trial_outcome(task, ctx, _size_condition(min_scale=0.7, max_scale=1.3))
+
+    rows = _read_events(event_sink)
+    onsets = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert onsets
+    # Every onset logs a concrete size scale within the configured range (never None when on).
+    for row in onsets:
+        size = json.loads(row["payload_json"])["size"]
+        assert size is not None
+        assert 0.7 - 1e-9 <= size <= 1.3 + 1e-9
+
+
+def test_run_trial_without_size_variation_logs_size_none(mock_window, stim_root, event_sink):
+    import json
+
+    task = FPVSTask()
+    ctx = _make_ctx(mock_window, stim_root, event_sink)
+    task.prepare(ctx)
+
+    params = FPVSConditionParams()
+    params.main_stream.base_selector = StimulusSelector(subdirectory="objects")
+    params.main_stream.oddball_selector = StimulusSelector(subdirectory="faces")
+    params.main_stream.base.trial_duration_seconds = 1.0
+    _run_trial_outcome(task, ctx, params)
+
+    rows = _read_events(event_sink)
+    onsets = [r for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert onsets
+    for row in onsets:
+        assert json.loads(row["payload_json"])["size"] is None
 
 
 def test_run_trial_no_jitter_onsets_log_pos_none(mock_window, stim_root, event_sink):
