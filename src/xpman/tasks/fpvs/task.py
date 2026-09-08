@@ -48,6 +48,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
 from xpman.hardware.trigger import min_distinct_onset_interval_seconds
 from xpman.tasks.fpvs.streams import (
     StreamSpec,
+    achieved_frequency_collisions,
     multi_stream_separability_warnings,
     stream_separability_warnings,
 )
@@ -260,6 +261,24 @@ def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str
     if params.familiarization.enabled:
         freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
     return freqs
+
+
+def _active_stream_freq_specs(params: "FPVSConditionParams") -> list[tuple[str, float, float | None]]:
+    """``(name, base_hz, oddball_hz-or-None)`` for every ACTIVE stream, with ``oddball_hz`` numeric
+    only when the stream carries a non-pattern oddball -- mirroring the rule
+    ``schema._check_multi_stream`` applies to requested rates. Feeds the achieved-frequency collision
+    check (design-time in ``check_triggers`` and runtime in ``run_trial``)."""
+    streams = [("Stream 1 (main)", params.main_stream)]
+    if params.second_stream.enabled:
+        streams.append(("Stream 2", params.second_stream))
+    streams += [(f"Stream {i + 3}", s) for i, s in enumerate(params.additional_streams) if s.enabled]
+    specs: list[tuple[str, float, float | None]] = []
+    for name, s in streams:
+        oddball_hz = (
+            s.oddball.oddball_freq_hz if (s.oddball_enabled and s.oddball.pattern is None) else None
+        )
+        specs.append((name, s.base.base_freq_hz, oddball_hz))
+    return specs
 
 
 def _frame_exactness_advisory(label: str, freq_hz: float) -> str | None:
@@ -675,6 +694,21 @@ class FPVSTask(TaskModule):
                 )
         return any_warning
 
+    def _check_achieved_freq_collisions_live(self, ctx: TaskContext, params: "FPVSConditionParams") -> bool:
+        """Runtime re-check of #39 against the MEASURED refresh: two active streams whose requested
+        rates differ (so ``schema._check_multi_stream`` passed them) can round onto the same achieved
+        frequency and collide on one FFT bin. Design-time ``check_triggers`` only sees the nominal
+        60 Hz; this is the definitive check on the real monitor. Advisory only (logs an event per
+        colliding pair + returns whether any tripped, for ``outcome_summary``) -- never aborts a Run,
+        since the data is already being collected and the achieved frequencies are recorded anyway."""
+        any_warning = False
+        for problem in achieved_frequency_collisions(
+            _active_stream_freq_specs(params), self._refresh_rate_hz
+        ):
+            any_warning = True
+            ctx.event_sink.log("achieved_frequency_collision", {"detail": problem})
+        return any_warning
+
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
         # LOAD-PATH CONTRACT (intentional): a frozen Instance's condition params are read back here
         # by validating the stored dict directly -- FPVSSchema.migrate is deliberately NOT called on
@@ -703,6 +737,7 @@ class FPVSTask(TaskModule):
             )
 
         pool_size_vs_period_warning = self._check_pool_size_vs_oddball_period_live(ctx, params)
+        achieved_freq_collision_warning = self._check_achieved_freq_collisions_live(ctx, params)
 
         # Luminance/contrast equalization (opt-in, default off -- resolve_equalized_pool returns
         # an empty mapping when disabled, so the disabled path is byte-for-byte unchanged: no
@@ -1433,6 +1468,7 @@ class FPVSTask(TaskModule):
                 "pool_luminance_mismatch_warning": pool_luminance_mismatch_warning,
                 "extra_stream_luminance_warning": extra_stream_luminance_warning,
                 "pool_size_vs_period_warning": pool_size_vs_period_warning,
+                "achieved_freq_collision_warning": achieved_freq_collision_warning,
                 "n_stimuli_shown": sequence_result.n_stimuli_shown,
                 "n_oddballs_shown": sequence_result.n_oddballs_shown,
                 "requested_base_freq_hz": sequence_result.requested_base_freq_hz,
@@ -1684,6 +1720,13 @@ class FPVSTask(TaskModule):
             advisory = _frame_exactness_advisory(label, freq)
             if advisory is not None:
                 warnings.append(advisory)
+
+        # Achieved-frequency cross-stream collisions: two streams whose REQUESTED rates differ (so
+        # schema._check_multi_stream passed them) can round onto the same achieved frequency and
+        # collide on one FFT bin (#39). The real refresh isn't known at design time, so check against
+        # the nominal 60 Hz -- the runtime re-check in run_trial uses the measured refresh.
+        for problem in achieved_frequency_collisions(_active_stream_freq_specs(params), NOMINAL_REFRESH_HZ):
+            warnings.append(f"achieved-frequency collision: {problem}")
 
         # Off-screen position-jitter advisory (WP-B). The real display and native image sizes
         # aren't known at design time (no window/prepare yet), so this is a coarse, best-effort
