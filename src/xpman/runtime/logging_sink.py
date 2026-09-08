@@ -5,7 +5,14 @@ the full per-flip/per-event stream for a Run lives here, on disk, referenced fro
 ``Result.events_file_path`` -- there is deliberately no SQL-queryable event mirror (issue #32).
 
 CSV is the crash-safety source of truth: each :meth:`EventSink.log` call writes and flushes a
-row immediately, so a mid-session app crash leaves a fully readable partial CSV on disk. The
+row immediately, so a mid-session app crash leaves a fully readable partial CSV on disk.
+
+The one exception is the high-frequency per-frame ``flip`` stream, batched via
+:meth:`EventSink.log_many` to keep disk I/O off the frame-locked loop. Those records are therefore
+NOT on disk the instant they happen: the presentation engine drains them every
+``paradigm_oddball.FLIP_LOG_DRAIN_EVERY`` frames (~2 s at 60 Hz) and again in a ``finally``, so a
+hard process kill loses at most that last window of flip rows -- not, as it once did, an entire
+trial's per-frame timeline (#45). Every other event type is flushed as it happens. The
 Parquet file is buffered in memory and only finalized (its footer written, becoming valid,
 readable Parquet) on :meth:`close`, so an app crash *can* leave an unreadable/incomplete
 ``.parquet`` file -- the CSV sibling is what to trust in that case. This tradeoff (fast columnar

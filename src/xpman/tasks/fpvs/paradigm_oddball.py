@@ -352,6 +352,26 @@ class Segment:
     oddball: OddballParams | None = None
 
 
+#: Drain the buffered per-frame ``flip`` records to disk once this many have accumulated. They are
+#: collected in memory during the frame-locked loop because a per-frame disk flush can cost a frame
+#: (see ``EventSink.log_many``), but holding a WHOLE trial meant a hard process kill lost every flip
+#: record -- exactly the data timing verification needs (#45). Draining every N records, between
+#: stimuli (where an onset event already flushes), bounds that loss to ~2 s at 60 Hz for roughly one
+#: extra flush every 2 s, instead of losing a full 60 s trial.
+FLIP_LOG_DRAIN_EVERY = 120
+
+
+def _drain_flip_log(event_sink: "EventSink", flip_log: "list[tuple[str, dict, float]]") -> None:
+    """Write out the accumulated per-frame flip records if enough have piled up, then clear them.
+
+    A no-op below :data:`FLIP_LOG_DRAIN_EVERY`. Call this only BETWEEN stimuli (never inside a
+    stimulus's frames) so the disk write stays off the per-frame path; the trailing ``log_many`` in
+    each sequence's ``finally`` still writes whatever remains."""
+    if len(flip_log) >= FLIP_LOG_DRAIN_EVERY:
+        event_sink.log_many(flip_log)
+        flip_log.clear()
+
+
 def _present_stimulus(
     *,
     window: "psychopy.visual.Window",
@@ -736,6 +756,8 @@ def run_base_sequence(
             if frames_this_stim > 0:
                 stimuli_shown += 1
                 onsets.append(OnsetRecord(time=onset_time, is_oddball=False, stim_index=stim_index))
+            # Between stimuli: bound how many flip records a hard kill could lose (#45).
+            _drain_flip_log(event_sink, flip_log)
             if stim_aborted:
                 aborted = True
                 break
@@ -1031,6 +1053,8 @@ def _present_oddball_segment(
             if is_oddball:
                 oddballs_shown += 1
             onsets.append(OnsetRecord(time=onset_time, is_oddball=is_oddball, stim_index=position - 1))
+        # Between stimuli: bound how many flip records a hard kill could lose (#45).
+        _drain_flip_log(event_sink, flip_log)
         if stim_aborted:
             aborted = True
             break
@@ -1666,6 +1690,10 @@ def _run_dual_stream(
                     )
                 flip_log.append(("flip", {"frame_index": global_frame_index}, flip_time))
                 frames_presented += 1
+                # Bound a hard kill's flip-record loss (#45). The threshold check is O(1) per frame;
+                # an actual write happens only every FLIP_LOG_DRAIN_EVERY frames (~2 s at 60 Hz),
+                # far rarer than the per-onset event flushes this loop already performs.
+                _drain_flip_log(event_sink, flip_log)
 
             # End of this time-segment: advance the global frame cursor to the next segment's start and,
             # for an actual sweep (>1 time-segment), emit per-segment provenance (mirrors the single-stream
