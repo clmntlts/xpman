@@ -114,6 +114,30 @@ def _build_fixture(session):
     }
 
 
+def test_help_menu_has_a_feedback_action_that_opens_the_dialog(qtbot, session, registry, monkeypatch):
+    from PySide6.QtGui import QAction
+
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+
+    # The menu bar shows a "Help" top-level menu.
+    assert any("Help" in a.text() for a in window.menuBar().actions())
+    # ...containing a "Send Feedback" action.
+    feedback_actions = [a for a in window.findChildren(QAction) if "Feedback" in a.text()]
+    assert feedback_actions, "no 'Send Feedback' action found"
+
+    # Triggering it constructs a FeedbackDialog; stub exec() so the test never blocks on a modal.
+    opened = {}
+    from xpman.gui.dialogs import feedback_dialog as fd
+
+    monkeypatch.setattr(
+        fd.FeedbackDialog, "exec", lambda self: opened.setdefault("title", self.windowTitle())
+    )
+    feedback_actions[0].trigger()
+    assert opened.get("title") == "Send feedback"
+
+
 def test_window_title_includes_profile_name(qtbot, session, registry):
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, registry)
