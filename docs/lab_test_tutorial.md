@@ -1,9 +1,11 @@
 # xpman lab-test tutorial — hardware verification with BioSemi ActiveThree
 
 A turnkey, do-this-at-the-rig guide to verify that xpman's **screen timing** and **EEG trigger
-timing** are correct on the real hardware. Until this passes, every timing claim in xpman is
-"built to spec, not measured." Print this, fill in the record sheet at the end, and keep it with the
-setup.
+timing** are correct on the real hardware. The **core** paradigm passed on 2026-09-07 (dummy + a
+single-stream FPVS run on a BioSemi rig with the serial MMBT-S box: 0 dropped frames, trigger jitter
+SD ~0.25 ms, ~8.8 ms pulse — see `docs/verification_protocol.md`); use this guide to re-verify on your
+own rig and to measure the scenarios still pending (parallel backend, dual streams, sweep,
+position/size variation). Print this, fill in the record sheet at the end, and keep it with the setup.
 
 Companion docs: `docs/verification_protocol.md` (the why + the statistics), `docs/tutorial.md`
 (using the app in general).

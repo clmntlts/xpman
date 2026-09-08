@@ -4,6 +4,16 @@ Correctness for this project means "the EEG timing is actually right," not just 
 This is the operational checklist for empirically verifying xpman against the legacy app.
 Full rationale lives in the plan file; this doc is the actionable, repeatable version.
 
+> **Status — core paradigm verified (2026-09-07).** The dummy task and a single-stream FPVS run were
+> measured on a real BioSemi rig (method A: in-amplifier photodiode on the Photo channel; serial
+> MMBT-S trigger box on the Status channel). Results: **0 dropped frames** (dummy 0/1798, FPVS
+> 0/3590), screen inter-flip SD **0.06 / 0.27 ms**, **trigger jitter SD ~0.25 ms** (dummy — the clean
+> hard-edged measurement), pulse width **~8.8 ms** (constant), base/oddball **frame-exact at 5.997 /
+> 1.199 Hz** — at least as good as the legacy app on the same rig, and far below the historical ±10 ms
+> USB-jitter worry. Still to measure: the **parallel-port** backend, and the advanced scenarios in
+> "New features to verify" below (dual streams under load, sweep, per-trial baseline, position/size
+> variation).
+
 ## Rig
 
 Legacy app and xpman (dummy task first, then the real FPVS task) run on the same physical
@@ -202,7 +212,7 @@ trusting `pytest` alone.
   `hardware/trigger.py`, or a PsychoPy version bump. This is a manual smoke test, not CI (CI
   has no access to the physical rig).
 
-## New features to verify at the lab (2026-07, built to spec, not yet measured)
+## New features to verify at the lab (built to spec; core measured 2026-09-07, these still pending)
 
 Three features landed in software with green unit tests but are **unverified on hardware** — fold
 these into the same photodiode + logic-analyzer session:
