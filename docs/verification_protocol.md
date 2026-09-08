@@ -241,8 +241,9 @@ parallel-port comparison, remain — fold them into the same photodiode + logic-
    `min_scale = 0.74`, `max_scale = 1.2`), visually confirm the image **rescales** from stimulus to
    stimulus while the **fixation marker and photodiode patch keep their own size**, and that there are
    **no dropped frames** (the resize is one property set per stimulus, not per frame). Each onset logs
-   its `size` scale, reproducible for the same (Instance, Subject). Enabling it with a second stream is
-   rejected at freeze time (dual-stream size variation is not yet implemented).
+   its `size` scale, reproducible for the same (Instance, Subject). It also works **per stream** in a
+   multi-stream Condition (like position jitter): confirm each stream rescales independently, around
+   its own position, with both streams' onsets logging their own `size`.
 5. **Frequency sweep (`sweep`).** With a multi-step sweep, confirm on the photodiode that each step
    runs at its own base rate and that the frame count is **continuous across step boundaries** (no
    dropped/duplicated frame at a boundary). Check the contrast envelope fades only at the trial's

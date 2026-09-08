@@ -148,16 +148,21 @@ def test_size_variation_defaults_are_a_disabled_noop():
     assert sv.is_noop()
 
 
-def test_size_variation_rejected_with_a_second_stream():
-    """Size variation is wired for single-stream Conditions only; enabling it with a second stream
-    must be rejected (not silently ignored -- that would drop a configured control from the data)."""
+def test_size_variation_allowed_with_multiple_streams():
+    """Size variation works per stream (like position_jitter): enabling it alongside a second stream
+    is valid -- each active stream rescales from its own decoupled RNG sub-stream."""
     params = FPVSConditionParams()
     params.main_stream.position_pix = (-200.0, 0.0)
     params.second_stream.enabled = True
     params.second_stream.position_pix = (200.0, 0.0)
+    # Distinct rates so this test isolates size-variation-with-multi-stream (a shared oddball rate
+    # is a separate concern, covered by the frequency-collision checks).
+    params.second_stream.base.base_freq_hz = 5.0
+    params.second_stream.oddball.oddball_freq_hz = 1.0
     params.size_variation = SizeVariationParams(enabled=True, min_scale=0.8, max_scale=1.2)
-    with pytest.raises(ValidationError, match="size_variation is only supported"):
-        FPVSConditionParams.model_validate(params.model_dump())
+    validated = FPVSConditionParams.model_validate(params.model_dump())
+    assert validated.size_variation.enabled
+    assert validated.second_stream.enabled
 
 
 def test_size_variation_allowed_single_stream():
