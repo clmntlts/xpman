@@ -206,8 +206,9 @@ class SizeVariationParams(BaseModel):
     preserved. Disabled by default, and defaults to a degenerate ``1.0..1.0`` range so an enabled
     range that was never widened is a visible no-op rather than a hidden one.
 
-    Currently supported for a single-stream Condition only; enabling it with a second/additional
-    stream is rejected on the Condition (dual-stream size variation is not yet wired -- #5)."""
+    Works for multiple simultaneous streams too: exactly like ``position_jitter``, each active stream
+    draws its own scale from its own decoupled RNG sub-stream, so the streams rescale independently
+    yet reproducibly. Each onset logs the scale it was shown at."""
 
     enabled: bool = Field(
         default=False, description="Randomize each image's size within the scale range below."
@@ -616,15 +617,6 @@ class FPVSConditionParams(BaseModel):
         if not active_extra:
             return self
 
-        # HARD: size variation is wired for the single-stream path only. Silently ignoring it with a
-        # second/additional stream would drop a configured low-level-adaptation control from the
-        # recorded data, so reject it here rather than no-op (dual-stream size variation is #5).
-        if self.size_variation.enabled:
-            raise ValueError(
-                "size_variation is only supported for a single-stream Condition; disable it or "
-                "remove the second/additional streams (dual-stream size variation is not yet "
-                "implemented -- #5)."
-            )
 
         # HARD: every active stream position (main + each active extra) must be pairwise-distinct.
         positions = [tuple(self.main_stream.position_pix)] + [tuple(s.position_pix) for s in active_extra]

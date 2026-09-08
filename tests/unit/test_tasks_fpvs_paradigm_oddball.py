@@ -1876,6 +1876,63 @@ def test_dual_stream_per_stream_jitter_offsets_each_stream_own_center(
     assert any((x, y) != (100.0, 0.0) for x, y in s1)
 
 
+def test_dual_stream_per_stream_size_variation_scales_each_stream_independently(
+    event_sink, trigger, clock
+):
+    """Size variation works per stream, exactly like position jitter (#5): each active stream draws
+    its own scale from its own decoupled sub-stream, and every onset logs the scale it was shown at."""
+    import numpy as np
+
+    from xpman.tasks.fpvs.schema import SizeVariationParams
+    from xpman.tasks.fpvs.size import sample_size_scale
+
+    size = SizeVariationParams(enabled=True, min_scale=0.74, max_scale=1.2)
+    rngs = np.random.default_rng(4321).spawn(2)  # mirrors task.py's per-stream spawn
+    providers = [lambda r=rngs[0]: sample_size_scale(r, size), lambda r=rngs[1]: sample_size_scale(r, size)]
+    streams, segments = _dual_streams()
+    win = MagicMock(name="window")
+    win.flip.return_value = 0.0
+    _run_dual_stream(
+        window=win, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, overlays=[], size_providers=providers,
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    s0 = [p["size"] for p in payloads if p["stream"] == 0]
+    s1 = [p["size"] for p in payloads if p["stream"] == 1]
+    assert s0 and s1
+    # Every onset carries a scale inside the configured range, for BOTH streams.
+    assert all(s is not None and 0.74 <= s <= 1.2 for s in s0 + s1)
+    # Scales actually vary (not pinned to one value) and the two streams draw independently.
+    assert len(set(s0)) > 1
+    assert s0 != s1
+
+
+def test_dual_stream_without_size_providers_logs_size_none(event_sink, trigger, clock):
+    """No size providers -> native size, and the onset log says so (size: None), unchanged from before."""
+    streams, segments = _dual_streams()
+    win = MagicMock(name="window")
+    win.flip.return_value = 0.0
+    _run_dual_stream(
+        window=win, streams=streams, stream_segments=segments, refresh_rate_hz=60.0,
+        trigger=trigger, clock=clock, event_sink=event_sink, photodiode=None,
+        photodiode_params=PhotodiodeParams(), tracked_stream_index=0, reserved_codes=_RESERVED,
+        abort_check=lambda: False, starting_frame_index=0, n_fade_in_frames=0, n_fade_out_frames=0,
+        rng=None, overlays=[],
+    )
+    event_sink.close()
+    with event_sink.csv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    payloads = [json.loads(r["payload_json"]) for r in rows if r["event_type"] in ("stimulus_onset", "oddball_onset")]
+    assert payloads
+    assert all(p["size"] is None for p in payloads)
+
+
 def _dual_jitter_positions(seed, event_sink, trigger, clock):
     """Run a jittered dual-stream trial seeded from ``seed`` (spawn(2) like task.py) and return the
     per-stream onset positions."""
