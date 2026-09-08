@@ -28,10 +28,13 @@ with a **single human-in-the-loop measurement step** at the rig.
 |---|---|---|
 | Host-API reachability (P0.1) | `audio/fingerprint.py` | ✅ headless / launch-time |
 | Machine fingerprint (keys the profile) | `audio/fingerprint.py` | ✅ launch-time |
+| Live fingerprint from the device list | `audio/fingerprint.py` (pure) + `audio/backend_ptb.py` (I/O) | ✅ launch-time |
+| Onset detection + pairing ("audio photodiode") | `audio/onset_detect.py` | ✅ (pure, on a captured trace) |
 | Jitter stats + §5 budget + config pick | `audio/jitter.py` | ✅ (pure, on captured data) |
+| Calibration sweep orchestration | `audio/calibration.py` | ✅ (pure; drives the backend) |
 | Profile store + amp-preferred lookup | `audio/profile.py` | ✅ launch-time |
 | **Launch gate** (the automatic checkpoint) | `audio/gate.py` | ✅ every FPAS run |
-| Loopback capture that fills a profile | *hardware increment* | ❌ done at the rig |
+| Loopback capture (play + record) | `audio/backend_ptb.py` | ⚙️ rig-run (the one hardware seam) |
 
 ## The gate (policy: advisory with override)
 
@@ -65,9 +68,28 @@ calibration.
 `σ ≤ 0.3 / (2πf)` for <~10 % phase-locked-power loss in the frequency domain; the tightest tag
 governs. ERP-locked analysis caps it further at ~2–5 ms regardless of tag (default target 3 ms).
 
-## Still to build (needs the rig / later increments)
+## The calibration sweep (`audio/calibration.py`)
 
-- The loopback capture routine + guided calibration wizard that *writes* a profile (audio line-in and
-  amp AUX paths).
-- The system wrapper that gathers the live fingerprint from the audio backend.
-- Wiring the gate into the FPAS run launch UI (the confirmation dialog) — lands with Phase 1f (GUI).
+`run_calibration(backend, fingerprint, configs, …)` plays a raised-cosine-gated **click train**,
+records it through the injected `CaptureBackend`, detects onsets, pairs them to the schedule, and
+summarises jitter for each `latency_class × buffer_size` point. It selects the lowest-jitter config
+that clears the budget and writes an `AudioProfile`; if *none* clears it, the lowest-jitter config is
+stored with `passed=False` so the machine is on record as measured-and-failed (the P0.3
+"needs different hardware" signal) rather than looking uncalibrated. `now_iso` and `xpman_version` are
+injected, so the whole sweep is pure and unit-tested against a fake backend.
+
+The **one hardware seam** is `CaptureBackend.play_and_record` — implemented for real in
+`audio/backend_ptb.py` (`PtbCaptureBackend`, full-duplex PsychPortAudio) and by a fake in tests. The
+same file's `gather_live_fingerprint()` enumerates devices and delegates identity construction to the
+pure `build_fingerprint_from_devices`.
+
+> **Rig note:** `backend_ptb.py` is written to the documented PsychToolbox `audio` API but has not
+> been executed against hardware. Confirm the `get_devices()` keys and `Stream` full-duplex calls on
+> the lab machine the first time it runs; keep the pure layers authoritative and adjust only that file.
+
+## Still to build (later increments)
+
+- A guided calibration **wizard/CLI** that picks the sweep grid, calls `run_calibration`, and saves
+  the profile via `ProfileStore` (thin orchestration over what exists).
+- Wiring the gate into the FPAS run-launch UI (the confirmation dialog) — lands with Phase 1f (GUI).
+- The frozen-build audio smoke test (P0.6) in the build pipeline.

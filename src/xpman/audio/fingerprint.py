@@ -94,3 +94,65 @@ def build_fingerprint(
         sample_rate_hz=sample_rate_hz,
         available_host_apis=tuple(available_host_apis or ()),
     )
+
+
+@dataclass(frozen=True)
+class DeviceInfo:
+    """One audio device as reported by the backend (a normalised view of a PsychPortAudio
+    ``get_devices()`` entry). Only the fields the fingerprint and calibration need; the backend
+    wrapper maps the raw dict onto this so nothing downstream depends on PsychPortAudio's exact keys."""
+
+    index: int
+    name: str
+    host_api: str
+    default_sample_rate_hz: int
+    max_output_channels: int
+    max_input_channels: int = 0
+
+    @property
+    def is_output(self) -> bool:
+        return self.max_output_channels > 0
+
+    @property
+    def is_input(self) -> bool:
+        return self.max_input_channels > 0
+
+
+def default_output_device_index(devices: list[DeviceInfo]) -> int:
+    """Heuristically pick which enumerated device to treat as the output when the user hasn't
+    configured one: prefer an output device on a low-latency host API (ASIO/WASAPI/...), falling back
+    to the first output device of any host API. Raises when no device has output channels. Kept pure
+    so the choice is testable; the backend calls it with the live device list."""
+    outputs = [d for d in devices if d.is_output]
+    if not outputs:
+        raise ValueError("no output-capable audio device found")
+    low_latency = [d for d in outputs if is_low_latency_host_api(d.host_api)]
+    return (low_latency[0] if low_latency else outputs[0]).index
+
+
+def build_fingerprint_from_devices(
+    *,
+    hostname: str,
+    devices: list[DeviceInfo],
+    output_device_index: int,
+    sample_rate_hz: int | None = None,
+) -> AudioMachineFingerprint:
+    """Build a fingerprint from an enumerated device list plus the chosen output device (pure). The
+    device's own host API and (unless overridden) its default sample rate become the identity fields;
+    ``available_host_apis`` is the sorted set of distinct host APIs across every enumerated device
+    (drives the P0.1 low-latency-path advisory). The backend wrapper picks ``output_device_index``
+    (the system default or a configured device) and calls this -- so device selection stays a thin
+    system concern and the identity construction stays pure and testable."""
+    chosen = next((d for d in devices if d.index == output_device_index), None)
+    if chosen is None:
+        raise ValueError(f"output_device_index {output_device_index} not found among enumerated devices")
+    if not chosen.is_output:
+        raise ValueError(f"device {output_device_index} ({chosen.name!r}) has no output channels")
+    apis = tuple(sorted({d.host_api for d in devices}))
+    return AudioMachineFingerprint(
+        hostname=hostname,
+        host_api=chosen.host_api,
+        output_device=chosen.name,
+        sample_rate_hz=sample_rate_hz if sample_rate_hz is not None else chosen.default_sample_rate_hz,
+        available_host_apis=apis,
+    )
