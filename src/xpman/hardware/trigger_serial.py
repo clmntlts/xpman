@@ -83,12 +83,23 @@ class SerialTrigger(TriggerSender):
 
         Raises:
             ValueError: ``init_settle_seconds`` is negative.
-            RuntimeError: The port could not be opened (wrong name, device unplugged, already in
-                use). The message names the port so the experimenter knows exactly which one.
+            RuntimeError: ``port`` is ``None``/blank, or the port could not be opened (wrong name,
+                device unplugged, already in use). The message names the port so the experimenter
+                knows exactly which one.
         """
         super().__init__(reset_after=reset_after)
         if init_settle_seconds < 0:
             raise ValueError(f"init_settle_seconds must be >= 0, got {init_settle_seconds!r}")
+        if port is None or (isinstance(port, str) and not port.strip()):
+            # pyserial's Serial(None, ...) constructs a *closed* port that raises nothing here
+            # and only fails at the first write mid-run (launch_worker defaults --serial-port to
+            # None, so `--trigger-backend serial` with no port would sail through construction and
+            # abort a subject's session partway). Refuse at setup so the misconfiguration is a
+            # clean, immediate error instead of a wasted run.
+            raise RuntimeError(
+                "SerialTrigger requires a serial port name (e.g. 'COM4' or '/dev/ttyUSB0'), got "
+                f"{port!r}. Pass --serial-port when using --trigger-backend serial."
+            )
         self._port = port
         self._baudrate = baudrate
         self._auto_pulse = auto_pulse

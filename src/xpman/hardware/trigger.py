@@ -204,7 +204,24 @@ class ParallelPortTrigger(TriggerSender):
         from psychopy import core as _psychopy_core
 
         self._core = _psychopy_core
-        self._port = _psychopy_parallel.ParallelPort(address=address)
+        # psychopy.parallel sets ``ParallelPort = None`` (and only logs a warning) when none of
+        # inpout32/inpoutx64/dlportio loaded. Constructing anyway would give a backend whose
+        # setData is a silent no-op: a whole session logs trigger_sent for every onset while ZERO
+        # markers reach the amplifier -- invisible until analysis. Refuse at setup instead.
+        if getattr(_psychopy_parallel, "ParallelPort", None) is None:
+            raise RuntimeError(
+                "No parallel-port driver is available (psychopy.parallel.ParallelPort is None -- "
+                "none of inpout32/inpoutx64/dlportio loaded). A run would silently deliver no "
+                "triggers to the amplifier. Install the driver "
+                "(scripts/install_parallel_port_driver.ps1) or select a different trigger backend."
+            )
+        try:
+            self._port = _psychopy_parallel.ParallelPort(address=address)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a clear, address-named RuntimeError
+            raise RuntimeError(
+                f"Could not open parallel port at address {hex(address)}: {exc}. Check the port "
+                "address (LPT1 is usually 0x0378) and that the driver is installed."
+            ) from exc
 
     def set_code(self, code: int) -> None:
         """Drive ``code`` onto the data pins (non-blocking)."""

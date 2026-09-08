@@ -305,7 +305,13 @@ def execute_run(
         # no-op if there was nothing to roll back) so the recovery commit below can succeed.
         session.rollback()
         run.status = RunStatus.CRASHED
-        event_sink.log("run_crashed", {})
+        try:
+            event_sink.log("run_crashed", {})
+        except Exception:  # noqa: BLE001 - the crash log must never mask the original exception
+            # A disk-full/IO fault is plausibly the very condition being logged; if this raised it
+            # would skip the CRASHED-status commit below and replace the real exception. Swallow it
+            # (the commit and re-raise below are what actually preserve crash-safety).
+            pass
         try:
             session.commit()
         except Exception as commit_exc:  # noqa: BLE001 - must not mask the original exception
