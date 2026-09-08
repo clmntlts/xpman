@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QModelIndex, QPoint, Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -182,7 +183,39 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         self.setCentralWidget(splitter)
 
+        self._build_menu_bar()
         self._refresh_status_bar()
+
+    # -- menu bar ----------------------------------------------------------------------
+
+    def _build_menu_bar(self) -> None:
+        """A minimal Help menu: the in-app feedback/bug/feature channel, plus About."""
+        help_menu = self.menuBar().addMenu("&Help")
+
+        feedback_action = QAction("Send Feedback / Report a Bug…", self)
+        feedback_action.triggered.connect(self._open_feedback_dialog)
+        help_menu.addAction(feedback_action)
+
+        about_action = QAction("About xpman", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+    def _open_feedback_dialog(self) -> None:
+        # Imported lazily so the (Qt-heavy) dialog module loads only when actually opened.
+        from xpman.gui.dialogs.feedback_dialog import FeedbackDialog
+
+        FeedbackDialog(self).exec()
+
+    def _show_about(self) -> None:
+        from xpman.gui.feedback import CONTACT_EMAIL, GITHUB_REPO, collect_diagnostics
+
+        diag = "\n".join(f"{k}: {v}" for k, v in collect_diagnostics().items())
+        QMessageBox.about(
+            self,
+            "About xpman",
+            f"xpman — an open, dongle-free FPVS/EEG experiment runner.\n\n{diag}\n\n"
+            f"Source & issues: https://github.com/{GITHUB_REPO}\nContact: {CONTACT_EMAIL}",
+        )
 
     # -- selection handling -------------------------------------------------------------
 
