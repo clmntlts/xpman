@@ -570,9 +570,10 @@ and the photodiode patch are untouched. Off by default. Each onset logs its `siz
 | `min_scale` / `max_scale` | number | 1.0 / 1.0 | > 0, `max ≥ min` | Smallest / largest size as a multiple of the image's native size (canonical FPVS uses ~**0.74–1.2**). |
 | `per` | dropdown | `stimulus` | — | Draw a fresh scale for **every image** (`stimulus`) or **once per trial** (`trial`). |
 
-Currently supported for a **single-stream** Condition only — enabling it together with a
-`second_stream`/`additional_streams` is **rejected** at save/freeze time (rather than silently
-ignored). "Check Triggers…" warns if it's enabled but `min_scale == max_scale` (a no-op).
+Works with **multiple simultaneous streams** too, exactly like position jitter: each active stream
+draws its own scale from its own decoupled random sub-stream, so the streams rescale independently
+yet reproducibly, and every onset logs the scale its image was shown at (per stream). "Check
+Triggers…" warns if it's enabled but `min_scale == max_scale` (a no-op).
 
 **Luminance / contrast equalization** (`equalization`) — optionally normalize every pool the
 Condition presents (base + oddball + any stream pools) toward the **combined** pool's mean, so a

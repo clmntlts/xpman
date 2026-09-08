@@ -607,9 +607,9 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           genuinely run-level warm-ups.)
 - [ ] **Still deferred (additive on the above when a real protocol needs it):** size-as-oddball
       modulation; intra-category oddball; missing-oddball; double-base; the remaining per-image
-      transforms (rotate/flip — random *scale* shipped as `size_variation` in 0.6.0, and random
-      position as `position_jitter`); inter-trial sound/animation. (Luminance/contrast
-      **equalization** shipped — `equalization` — and is no longer deferred.)
+      transforms (rotate/flip — random *scale* shipped as `size_variation` in 0.6.0, per-stream like
+      `position_jitter`, and random position as `position_jitter`); inter-trial sound/animation.
+      (Luminance/contrast **equalization** shipped — `equalization` — and is no longer deferred.)
       Plus a dedicated familiarization stimulus selector (currently reuses `base_selector`),
       extending the distractor across the pre/post/familiarization phases (currently the main
       sequence only), and an optional `subdirectory` dropdown in the GUI (currently free text + preview).
