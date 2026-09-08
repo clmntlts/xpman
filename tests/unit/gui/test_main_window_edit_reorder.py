@@ -285,17 +285,24 @@ def test_check_triggers_with_no_conflicts_shows_information(qtbot, session, regi
     mock_warn.assert_not_called()
 
 
-def test_check_triggers_with_conflicts_shows_warning(qtbot, session, registry):
+def test_check_triggers_with_conflicts_shows_advisories_dialog(qtbot, session, registry):
     conflicting_registry = TaskRegistry([_CheckableTask(warnings=["Condition A and B both use trigger code 3"])])
     fixture = _build_fixture(session)
     window = MainWindow(session, fixture["profile"].id, conflicting_registry)
     qtbot.addWidget(window)
 
     node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
-    with patch.object(QMessageBox, "warning") as mock_warn, patch.object(QMessageBox, "information") as mock_info:
+    # Warnings now open a scrollable/filterable AdvisoriesDialog (not a cramped QMessageBox); patch
+    # it so exec() doesn't block, and assert the warnings were handed to it.
+    with (
+        patch("xpman.gui.dialogs.advisories_dialog.AdvisoriesDialog") as dialog_cls,
+        patch.object(QMessageBox, "information") as mock_info,
+    ):
+        dialog_cls.return_value.exec.return_value = None
         window._check_triggers(node)
-    mock_warn.assert_called_once()
-    assert "trigger code 3" in mock_warn.call_args[0][2]
+    dialog_cls.assert_called_once()
+    passed_warnings = dialog_cls.call_args.args[2]
+    assert any("trigger code 3" in w for w in passed_warnings)
     mock_info.assert_not_called()
 
 
