@@ -12,7 +12,7 @@ Status: core data model, runtime engine, dummy + FPVS tasks, and the full PySide
 an experiment, edit/reorder it, launch a run, view/export results) are working end-to-end, and
 xpman now packages into a standalone Windows build (see Setup below). Core FPVS timing and triggers
 have been **verified on a real BioSemi rig** (2026-09-07: photodiode + serial MMBT-S, 0 dropped
-frames, trigger jitter SD ~0.25 ms, frame-exact 6/1.2 Hz); the advanced scenarios (parallel backend,
+frames, trigger jitter SD ~0.25 ms, base/oddball frame-exact at 5.997/1.199 Hz); the advanced scenarios (parallel backend,
 dual streams, sweep, position/size variation) remain to be measured — see
 [`docs/verification_protocol.md`](docs/verification_protocol.md). See [`docs/architecture.md`](docs/architecture.md) for the
 technology choices, package layout, data model, and roadmap.

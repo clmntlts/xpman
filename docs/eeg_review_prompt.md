@@ -41,12 +41,15 @@ Review **as five distinct experts**, each doing an independent pass, then reconc
 
 ## The one caveat that dominates everything
 
-**Nothing has been validated on real EEG hardware.** Unit tests mock the display and hardware.
-So every timing/rendering/trigger claim is *"built to spec, unverified."* Weight this heavily:
-explicitly separate **proven** from **plausible-but-unverified**, and treat any correctness claim
-that depends on frame timing, trigger latency, or actual pixel output as **unproven** until a
-photodiode + logic-analyzer pass confirms it (see `docs/verification_protocol.md` and
-`core/verification_report.py`).
+**The CORE paradigm was hardware-verified on 2026-09-07** (real BioSemi rig, photodiode + serial
+NEUROSPEC MMBT-S: 0 dropped frames, trigger jitter SD ~0.25 ms, ~8.8 ms pulse, base/oddball
+frame-exact) — but the **advanced scenarios** (parallel-port backend, dual streams under load,
+frequency sweep, per-trial baseline, position/size variation) are **still built-to-spec, not
+measured**, and unit tests mock the display and hardware everywhere. Weight this heavily: explicitly
+separate **proven** (core timing, measured) from **plausible-but-unverified** (the advanced
+scenarios), and treat any correctness claim about those that depends on frame timing, trigger
+latency, or actual pixel output as **unproven** until a photodiode + logic-analyzer pass confirms it
+(see `docs/verification_protocol.md` and `core/verification_report.py`).
 
 ## What to examine (verify each against the code — cite `file:line`)
 
@@ -97,13 +100,20 @@ their edge cases and hidden assumptions hardest.
 
 ## Known deferred (do NOT re-litigate as new findings — but DO assess whether any is mis-prioritized)
 
-Size modulation; intra-category oddball; baseline period; oddball-proportion patterns (BBBBO);
-missing-oddball; double-base; sweep; distractor; frequency-changing; per-image transforms
-(scale/rotate/flip/position); luminance/contrast equalization; second oddball directory; inter-trial
-sound/animation; per-subject aggregate results view; in-GUI events viewer; multi-monitor/resolution
-selection; profile passwords & cross-profile visibility (inert). The full hardware-verification
-protocol has not been run. If any deferred item actually *blocks valid data collection for a
-standard study*, flag it as a real finding with justification.
+Still deferred: **size-as-oddball** modulation; intra-category oddball; missing-oddball; double-base;
+the remaining per-image transforms (**rotate/flip** — random *scale* shipped as `size_variation`,
+random *position* as `position_jitter`); dedicated second/familiarization oddball selector;
+inter-trial sound/animation; multi-monitor/resolution selection; profile passwords & cross-profile
+visibility (inert); dual-stream size variation.
+
+Already **shipped** (do NOT list as missing): baseline period; oddball patterns (BBBBO); frequency
+sweep; the distractor and go/no-go attention tasks; luminance/contrast equalization; position jitter;
+size variation; dual/multi bilateral streams; the in-GUI events viewer; per-Instance aggregate
+results export; the in-app feedback channel.
+
+Hardware: the **core** paradigm was verified 2026-09-07 (see above); the advanced scenarios and the
+parallel backend are not yet measured. If any deferred item actually *blocks valid data collection
+for a standard study*, flag it as a real finding with justification.
 
 ## Output
 
