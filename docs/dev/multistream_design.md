@@ -1,6 +1,7 @@
 # Multi-stream FPVS (N ≥ 2 simultaneous streams) — design plan
 
-Status: **proposed** (scoping only, not yet implemented). Extends the dual bilateral stream
+Status: **implemented** (shipped as `additional_streams`, schema v10; see `docs/tutorial.md` §6.2).
+This doc is retained as the original design record. Extends the dual bilateral stream
 work (`phase2_design.md`, schema v6) from exactly two streams to an arbitrary number, driven by
 the "one odd + several similar, compare the oddball response by location" paradigm.
 

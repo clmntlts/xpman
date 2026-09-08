@@ -35,7 +35,7 @@ src/xpman/
 ├── tasks/      # plugin task modules (dummy, fpvs, ...), each implementing TaskModule (base.py)
 ├── hardware/   # OS/hardware-specific code behind interfaces (TriggerSender, Clock, display)
 ├── runtime/    # the engine that executes a Block -> Trial -> TaskModule sequence
-└── gui/        # PySide6 UI: tree view, schema-driven parameter forms, dialogs, launch wizard
+└── gui/        # PySide6 UI: tree view, schema-driven parameter forms, dialogs, launch dialog
 ```
 
 ## Data model

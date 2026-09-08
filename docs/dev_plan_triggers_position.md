@@ -1,5 +1,11 @@
 # Development plan — callOnFlip refactor (A), position jitter (B), USB serial triggers (C)
 
+> **Historical (superseded).** All three work packages shipped, and the hardware gate below was
+> cleared on 2026-09-07: the callOnFlip path and the **serial backend (NEUROSPEC MMBT-S, 9600 baud,
+> Pulse Mode)** were measured on a real BioSemi rig (trigger jitter SD ~0.25 ms). References to a
+> "BioSemi USB Trigger Interface (NS7830)" below reflect the original target device, not the box
+> actually used. Retained as a development record.
+
 Reviewed by the five-reviewer panel (`docs/eeg_review_prompt.md`); findings folded in. Executed by
 spawned agents, coordinated centrally. This document is the shared reference — each agent reads its
 own work package **and** the "Shared contracts" section so parallel work doesn't diverge.
