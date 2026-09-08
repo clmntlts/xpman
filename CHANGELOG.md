@@ -10,6 +10,50 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 > scenarios (parallel‑port backend, dual streams, frequency sweep, position/size variation) are not
 > yet individually measured on hardware. See `docs/verification_protocol.md`.
 
+## [0.6.0] — 2026-09-08
+
+Methodology, safety, and usability release. Adds the canonical size-variation control and an in-app
+feedback channel, hardens the trigger backends against silent failure, and warns about
+frequency-grid pitfalls before a recording. No breaking change; an older Instance loads and runs
+identically (schema evolution stayed additive, now at version **10**).
+
+### Added
+
+- **Size variation** (`size_variation`, schema v10): per-stimulus random image rescaling within a
+  scale range (canonical FPVS ~0.74–1.2×), the low-level pixel-wise **adaptation control** so the
+  oddball response reflects high-level individuation. Single-stream only for now (rejected with a
+  second stream rather than silently ignored); each onset logs its `size`. Decoupled, guarded RNG
+  sub-stream so enabling it leaves every existing Instance's randomization byte-for-byte unchanged.
+- **In-app feedback channel**: a new **Help** menu → "Send Feedback / Report a Bug…" composes a
+  report (category + summary + details + auto version/OS/Python diagnostics) and delivers it via a
+  pre-filled **GitHub issue**, an **email** to the maintainer, or the **clipboard** — nothing is sent
+  automatically. Plus an **About xpman** box.
+- **Frequency-grid advisories** in "Check Triggers…" and at run time: a base rate that isn't
+  **frame-exact** on the monitor (quantized off the intended FFT bin), and a cross-stream
+  **rounding collision** (two streams whose requested rates differ but round to the same achieved
+  frequency) — re-checked against the real refresh at run time.
+
+### Changed
+
+- **Core FPVS timing is now hardware-verified** (2026-09-07, real BioSemi rig): 0 dropped frames,
+  trigger jitter SD ~0.25 ms, ~8.8 ms pulse, base/oddball frame-exact — the doc banners are updated
+  from "not yet measured" to reflect this, with an honest caveat that the advanced scenarios
+  (parallel backend, dual streams, sweep, position/size variation) remain to be measured.
+
+### Fixed
+
+- **Trigger backends fail fast instead of silently.** `SerialTrigger` refuses a `None`/blank port at
+  construction (was failing only at the first write mid-run); `ParallelPortTrigger` raises when no
+  driver is available (was logging `trigger_sent` while zero markers reached the amplifier); the
+  crash handler's `run_crashed` log is wrapped so it can't mask the original error or block the
+  CRASHED-status commit.
+
+### Documentation
+
+- Brought the tutorial and lab docs to the current state: the packaged **installer** as the
+  researcher path, parameter tables for `position_jitter` / `size_variation` / `equalization`, the
+  new advisories, and the corrected hardware-verification status.
+
 ## [0.5.0] — 2026-09-07
 
 Extensibility and data-safety release. The two attentional tasks are refactored onto a shared,
