@@ -54,6 +54,7 @@ from xpman.gui.forms.widgets import (
     EnumFieldWidget,
     FloatFieldWidget,
     FloatPairFieldWidget,
+    FrequencyFieldWidget,
     IntFieldWidget,
     OptionalFieldWidget,
     StringFieldWidget,
@@ -370,7 +371,7 @@ class SchemaForm(QWidget):
             group = self._build_nested_group(name, inner_annotation, field_info.description, title)
             return ("group", group)
 
-        widget = self._build_leaf_widget(inner_annotation, field_info)
+        widget = self._build_leaf_widget(inner_annotation, field_info, name)
         if is_optional:
             widget = OptionalFieldWidget(widget)
         widget.valueEdited.connect(self.valuesChanged.emit)
@@ -447,7 +448,13 @@ class SchemaForm(QWidget):
             self._collapsible_groups[field_name] = group
         return group
 
-    def _build_leaf_widget(self, annotation: Any, field_info: Any) -> Any:
+    #: Float fields carrying a **base** stimulation rate, given the live "achieved at 60 Hz" hint via
+    #: FrequencyFieldWidget. Deliberately excludes ``oddball_freq_hz``: an oddball is placed relative
+    #: to its base (base/N), so its own quantisation is derived, not a direct frame rounding of its
+    #: own value -- the Check-Triggers advisory covers the full base+oddball picture.
+    _BASE_FREQUENCY_FIELDS = frozenset({"base_freq_hz", "frequency_hz"})
+
+    def _build_leaf_widget(self, annotation: Any, field_info: Any, name: str = "") -> Any:
         metadata = list(field_info.metadata)
 
         if _is_enum(annotation):
@@ -462,6 +469,8 @@ class SchemaForm(QWidget):
             return IntFieldWidget(minimum=int(minimum), maximum=int(maximum))
         if annotation is float:
             minimum, maximum = _numeric_range(metadata, is_int=False)
+            if name in self._BASE_FREQUENCY_FIELDS:
+                return FrequencyFieldWidget(minimum=minimum, maximum=maximum)
             return FloatFieldWidget(minimum=minimum, maximum=maximum)
         if _is_float_pair(annotation):
             return FloatPairFieldWidget()

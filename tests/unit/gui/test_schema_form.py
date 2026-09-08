@@ -764,3 +764,37 @@ def test_screenshot_fpvs_condition_params(qtbot):
     SCREENSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     saved = pixmap.save(str(SCREENSHOT_PATH))
     assert saved
+
+
+# -- frequency fields get the live "achieved at 60 Hz" hint (bug #74 follow-up) ---------------
+
+
+def test_base_freq_field_uses_frequency_widget_but_oddball_does_not(qtbot):
+    from xpman.gui.forms.widgets import FloatFieldWidget, FrequencyFieldWidget
+    from xpman.tasks.fpvs.paradigm_oddball import OddballParams
+
+    base_form = SchemaForm(BaseSequenceParams)
+    qtbot.addWidget(base_form)
+    assert isinstance(base_form._field_widgets["base_freq_hz"], FrequencyFieldWidget)
+
+    odd_form = SchemaForm(OddballParams)
+    qtbot.addWidget(odd_form)
+    odd = odd_form._field_widgets["oddball_freq_hz"]
+    # Oddball is placed relative to its base, so it gets a plain float field, not the freq hint.
+    assert isinstance(odd, FloatFieldWidget)
+    assert not isinstance(odd, FrequencyFieldWidget)
+
+
+def test_frequency_widget_hint_flags_frame_inexact_rate(qtbot):
+    from xpman.gui.forms.widgets import FrequencyFieldWidget
+
+    w = FrequencyFieldWidget(minimum=0.0, maximum=1000.0)
+    qtbot.addWidget(w)
+
+    w.set_value(6.0)  # 60/6 = 10 frames exactly
+    assert "frame-exact" in w._hint.text()
+    assert "not frame-exact" not in w._hint.text()
+
+    w.set_value(8.0)  # 60/8 = 7.5 -> rounds to 8 frames -> 7.5 Hz (the #74 case)
+    assert "not frame-exact" in w._hint.text()
+    assert "7.5" in w._hint.text()
