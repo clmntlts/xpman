@@ -590,6 +590,12 @@ class MainWindow(QMainWindow):
             return
 
         self._error_label.hide()
+
+        # "Legitimate but usually a mistake" configurations (e.g. two streams sharing a tagged
+        # frequency) are not refused -- the task reports them and the researcher explicitly confirms.
+        if not self._confirm_before_save(model):
+            return
+
         updater = {"program": repo.update_program, "experiment": repo.update_experiment, "condition": repo.update_condition}[
             self._current_node.kind
         ]
@@ -598,6 +604,33 @@ class MainWindow(QMainWindow):
             return
         self._refresh_status_bar()
         self.statusBar().showMessage(f'Saved "{self._current_node.name}"', 3000)
+
+    def _confirm_before_save(self, model) -> bool:
+        """Ask the task whether this Condition needs explicit confirmation; return True to proceed.
+
+        Only Conditions have task-specific confirmations today. Anything that goes wrong resolving
+        the task is treated as "nothing to confirm" -- a checker must never block saving."""
+        if self._current_node is None or self._current_node.kind != "condition":
+            return True
+        try:
+            condition = repo.get_condition(self._session, self._current_node.id)
+            experiment = repo.get_experiment(self._session, condition.experiment_id)
+            program = repo.get_program(self._session, experiment.program_id)
+            task = self._registry.get(program.task_name)
+            reasons = task.confirm_before_save(model.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 - a failing advisory must never prevent a save
+            return True
+        if not reasons:
+            return True
+        body = "\n\n".join(f"- {r}" for r in reasons)
+        answer = QMessageBox.warning(
+            self,
+            "Confirm before saving",
+            f"{body}\n\nDo you want to save anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     # -- misc --------------------------------------------------------------------------------
 
