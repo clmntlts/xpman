@@ -249,6 +249,15 @@ class MainWindow(QMainWindow):
             self._show_placeholder(f'"{node.name}" could not be shown -- {exc}')
             self._error_label.setText(f'Could not load "{node.name}": {exc}')
             self._error_label.show()
+        except Exception as exc:  # noqa: BLE001 - selecting a tree node must never crash the whole GUI
+            # Safety net for a row whose stored data can't be rendered at all (e.g. a hand-edited or
+            # partially-migrated parameters_json the form widgets can't place). Degrade to an inline
+            # message so the tree stays usable and the researcher can pick another node, rather than
+            # taking down the window. The field widgets already tolerate individual bad leaves; this
+            # catches anything they can't.
+            self._show_placeholder(f'"{node.name}" could not be shown.')
+            self._error_label.setText(f'Could not load "{node.name}": {exc}')
+            self._error_label.show()
 
     def _show_param_form(self, node: TreeNode) -> None:
         model_cls = {

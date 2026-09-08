@@ -153,7 +153,14 @@ class IntFieldWidget(_ErrorLabelMixin):
         return self._spin.value()
 
     def set_value(self, value: Any) -> None:
-        self._spin.setValue(int(value) if value is not None else 0)
+        try:
+            self._spin.setValue(int(value) if value is not None else 0)
+        except (ValueError, TypeError):
+            # A stored value that isn't an int (a hand-edited or migrated row, e.g. "oops") must not
+            # crash form load. Leave the spinbox at its current/default value -- mirroring
+            # Enum/ChoiceFieldWidget's "ignore what we can't place" contract. Save-time validation
+            # still surfaces the bad field, so nothing is silently persisted.
+            pass
 
 
 class FloatFieldWidget(_ErrorLabelMixin):
@@ -178,7 +185,14 @@ class FloatFieldWidget(_ErrorLabelMixin):
         return self._spin.value()
 
     def set_value(self, value: Any) -> None:
-        self._spin.setValue(float(value) if value is not None else 0.0)
+        try:
+            self._spin.setValue(float(value) if value is not None else 0.0)
+        except (ValueError, TypeError):
+            # A stored value that isn't a number (a hand-edited or migrated row, e.g.
+            # background_gray="oops") must not crash form load. Leave the spinbox at its
+            # current/default value -- mirroring Enum/ChoiceFieldWidget's "ignore what we can't place"
+            # contract. Save-time validation still surfaces the bad field.
+            pass
 
 
 class FrequencyFieldWidget(FloatFieldWidget):
@@ -376,9 +390,14 @@ class FloatPairFieldWidget(_ErrorLabelMixin):
     def set_value(self, value: Any) -> None:
         if value is None:
             value = (0.0, 0.0)
-        x, y = value
-        self._x_spin.setValue(float(x))
-        self._y_spin.setValue(float(y))
+        try:
+            x, y = value
+            self._x_spin.setValue(float(x))
+            self._y_spin.setValue(float(y))
+        except (ValueError, TypeError):
+            # A stored value that isn't a 2-number pair (hand-edited/migrated row) must not crash form
+            # load; leave the spinboxes at their current/default values. Save-time validation catches it.
+            pass
 
 
 class StringListFieldWidget(_ErrorLabelMixin):
