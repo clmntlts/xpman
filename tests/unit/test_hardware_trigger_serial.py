@@ -141,6 +141,19 @@ def test_clear_code_raises_on_a_short_write_when_not_auto_pulse():
             ctx.trigger.clear_code()
 
 
+@pytest.mark.parametrize("bad_port", [None, "", "   "])
+def test_missing_port_is_refused_at_construction(bad_port):
+    """#43: pyserial's Serial(None, ...) builds a *closed* port that raises nothing at construction
+    and fails only at the first write mid-run (launch_worker defaults --serial-port to None, so
+    `--trigger-backend serial` with no port would abort a subject's session partway). A missing or
+    blank port must raise a clear setup error BEFORE any port is opened."""
+    mock_cls = MagicMock(name="serial.Serial")
+    with patch("serial.Serial", mock_cls):
+        with pytest.raises(RuntimeError, match="requires a serial port"):
+            SerialTrigger(port=bad_port)
+    mock_cls.assert_not_called()
+
+
 def test_close_closes_the_port():
     with _MockedSerial(port="COM4") as ctx:
         ctx.trigger.close()

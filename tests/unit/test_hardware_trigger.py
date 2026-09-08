@@ -135,6 +135,24 @@ def test_construction_does_not_require_real_hardware():
         ctx.mock_port_cls.assert_called_once_with(address=0x0378)
 
 
+def test_missing_driver_is_refused_at_construction():
+    """#42: psychopy.parallel sets ParallelPort = None (only a warning) when no driver loaded.
+    Constructing anyway yields a backend whose setData silently no-ops -- a whole session logs
+    trigger_sent while ZERO markers reach the amplifier. Construction must raise instead."""
+    with patch("psychopy.parallel.ParallelPort", None), patch("psychopy.core.wait", MagicMock()):
+        with pytest.raises(RuntimeError, match="No parallel-port driver"):
+            ParallelPortTrigger(address=0x0378)
+
+
+def test_port_open_failure_is_wrapped_with_a_clear_address_named_error():
+    """#42: if the driver is present but opening the port fails, surface a clear, address-named
+    RuntimeError rather than the bare backend traceback."""
+    failing_cls = MagicMock(side_effect=OSError("access denied"))
+    with patch("psychopy.parallel.ParallelPort", failing_cls), patch("psychopy.core.wait", MagicMock()):
+        with pytest.raises(RuntimeError, match="Could not open parallel port at address 0x378"):
+            ParallelPortTrigger(address=0x0378)
+
+
 def test_default_address_and_reset_after():
     with _MockedParallelPort() as ctx:
         assert ctx.trigger.address == 0x0378

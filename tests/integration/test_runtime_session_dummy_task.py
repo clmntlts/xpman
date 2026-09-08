@@ -537,6 +537,76 @@ def test_commit_failure_during_a_trial_does_not_mask_the_real_error(session, reg
     assert run.ended_at is not None
 
 
+class _CrashLogRaisingSink:
+    """Wraps a real EventSink but makes the ``run_crashed`` log raise -- standing in for a disk-full
+    IO fault that is plausibly the very condition being logged. #44: this must NOT mask the original
+    exception nor block the CRASHED-status recovery commit."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def log(self, event, *args, **kwargs):
+        if event == "run_crashed":
+            raise OSError("No space left on device")
+        return self._real.log(event, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_crash_log_failure_does_not_block_the_crashed_commit(session, registry, mock_window, tmp_path):
+    """#44: the except-block ``event_sink.log('run_crashed')`` used to be unwrapped. If it raised
+    (a disk-full fault -- plausibly the very condition being logged) it would skip the CRASHED
+    recovery commit and replace the original exception. Wrapping it must preserve BOTH the original
+    error and the durable CRASHED status."""
+    # A frozen Trial whose Condition was deleted before freeze makes _build_trial_sequence raise
+    # inside execute_run's try -> the except block (where the crash log lives) runs.
+    profile = repo.create_profile(session, name="P")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="A", last_name="B")
+    program = repo.create_program(
+        session, profile_id=profile.id, name="Prog", resource_main_directory="C:/stim",
+        task_name="dummy", task_schema_version="1", parameters_json={},
+    )
+    experiment = repo.create_experiment(session, program_id=program.id, name="E", parameters_json={})
+    condition = repo.create_condition(
+        session, experiment_id=experiment.id, name="C",
+        parameters_json={"flip_rate_hz": 10, "duration_seconds": 0.1, "trigger_code": 1},
+    )
+    block = repo.create_block(session, experiment_id=experiment.id, name="B1", repeat_count=1, order_index=0)
+    repo.create_trial(session, block_id=block.id, condition_id=condition.id, order_index=0)
+    session.commit()
+    repo.delete_condition(session, condition.id)  # SET NULLs the Trial's condition_id
+    session.commit()
+    instance = freeze_program(session, program.id, name="Inst")
+    session.commit()
+
+    run = Run(
+        instance_id=instance.id, subject_id=subject.id, started_at=datetime.now(timezone.utc),
+        xpman_version=XPMAN_VERSION, status=RunStatus.ABORTED,
+    )
+    session.add(run)
+    session.commit()
+
+    run_dir = tmp_path / "run"
+    sink = _CrashLogRaisingSink(
+        EventSink(csv_path=run_dir / "events.csv", parquet_path=run_dir / "events.parquet")
+    )
+
+    with patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        # The ORIGINAL error (missing Condition) must propagate -- not the OSError from the crash log.
+        with pytest.raises(ValueError, match="no Condition"):
+            execute_run(
+                session, run=run, instance=instance, subject=subject,
+                task=registry.get("dummy"), window=mock_window, trigger=NullTrigger(reset_after=0.0),
+                clock=Clock(), event_sink=sink,
+            )
+
+    # Despite the crash-log failure, the CRASHED status and ended_at were still durably committed.
+    session.refresh(run)
+    assert run.status == RunStatus.CRASHED
+    assert run.ended_at is not None
+
+
 def test_on_run_created_fires_early_with_committed_run_id(session, registry, mock_window, tmp_path):
     """on_run_created must fire right after the Run row is committed -- before any trial runs --
     so a caller (e.g. a subprocess announcing its run id to a polling parent process) can react
