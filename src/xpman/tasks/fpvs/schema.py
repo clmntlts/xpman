@@ -567,6 +567,50 @@ class FPVSConditionParams(BaseModel):
         task still reports ``<task>_enabled = False`` with null metrics, exactly as before."""
         return [overlay for overlay in self.all_overlays() if overlay.params.enabled]
 
+    def requested_frequency_collisions(self, *, tol: float = 1e-3) -> list[str]:
+        """Active streams whose REQUESTED tagged frequencies coincide exactly -- one message per
+        colliding pair, empty when clean.
+
+        An oddball-carrying stream's oddball frequency landing on another active stream's driving
+        frequency (its base, or its oddball when it carries one) means both responses occupy the same
+        FFT bin, with no way to attribute the signal to either stream. That is a genuine analysis
+        problem, but **not** a hard validation error: a researcher may deliberately run two streams at
+        the same rate, so the GUI surfaces this and asks for explicit confirmation before saving
+        rather than refusing (see ``FPVSTask.confirm_before_save``).
+
+        Deliberately EQUALITY, not the broader "harmonically related" test: an oddball frequency is
+        routinely base/N, so it is already a harmonic sub-multiple of its own base and of any stream
+        sharing that base -- flagging that would fire on the completely standard design (several
+        base-only fillers sharing one base rate with the oddball-carrying stream). The softer
+        harmonic/intermodulation judgement stays in ``check_triggers``' separability advisories.
+        Pattern-based oddballs have no single numeric rate and are skipped."""
+        active_extra: list[StreamParams] = []
+        if self.second_stream.enabled:
+            active_extra.append(self.second_stream)
+        active_extra += [s for s in self.additional_streams if s.enabled]
+        if not active_extra:
+            return []
+
+        messages: list[str] = []
+        all_active = [self.main_stream] + active_extra
+        for i, s in enumerate(all_active):
+            if not (s.oddball_enabled and s.oddball.pattern is None):
+                continue
+            for j, t in enumerate(all_active):
+                if i == j:
+                    continue
+                candidates: list[tuple[str, float]] = [("base", t.base.base_freq_hz)]
+                if t.oddball_enabled and t.oddball.pattern is None:
+                    candidates.append(("oddball", t.oddball.oddball_freq_hz))
+                for label, freq in candidates:
+                    if abs(s.oddball.oddball_freq_hz - freq) <= tol:
+                        messages.append(
+                            f"stream {i}'s oddball frequency ({s.oddball.oddball_freq_hz:g} Hz) "
+                            f"exactly equals stream {j}'s {label} frequency ({freq:g} Hz) -- their "
+                            "responses would land on the same FFT bin with no way to tell them apart."
+                        )
+        return messages
+
     # NOTE: there used to be a Condition-level ``_check_oddball_below_base_frequency`` validator
     # here (oddball.oddball_freq_hz must be strictly < base.base_freq_hz -- see the "position 1 is
     # never an oddball" degenerate-case comment history). Now that the main stream is a
@@ -626,40 +670,10 @@ class FPVSConditionParams(BaseModel):
                 "apart (e.g. (-200, 0), (200, 0), (0, 200))."
             )
 
-        # HARD: an oddball-carrying stream's own measured (oddball) frequency must not EXACTLY equal
-        # any OTHER active stream's driving frequency (that stream's base, and its oddball too if it
-        # carries one) -- the one genuinely unambiguous, no-judgment-call case: identical frequencies
-        # land on the same FFT bin with no way to attribute the response to either stream. This is
-        # deliberately equality, NOT the broader "harmonically related" test `bases_harmonically_related`
-        # uses for base-vs-base pairs: an oddball frequency is routinely derived as base_freq / N (e.g.
-        # the 1.2 Hz default is base 6.0 Hz / 5), so it is ALREADY, normally, a harmonic sub-multiple of
-        # its OWN stream's base -- and, incidentally, of any OTHER stream sharing that same base rate.
-        # Rejecting that would block the completely standard case (and the exact design this check was
-        # motivated by: several base-only streams sharing one base rate with the one oddball-carrying
-        # stream, to test whether oddball POSITION modulates the response). Whether a harmonic-but-not-
-        # equal relationship matters in practice depends on how many harmonics get analysed and the
-        # trial length (FFT bin width) -- that softer judgment call stays with check_triggers' advisory
-        # (multi_stream_separability_warnings), not a hard block here. Pattern-based oddballs have no
-        # single numeric rate to compare and are skipped, matching StreamParams._check_oddball_below_base.
-        _tol = 1e-3
-        all_active = [self.main_stream] + active_extra
-        for i, s in enumerate(all_active):
-            if not (s.oddball_enabled and s.oddball.pattern is None):
-                continue
-            for j, t in enumerate(all_active):
-                if i == j:
-                    continue
-                candidates: list[tuple[str, float]] = [("base", t.base.base_freq_hz)]
-                if t.oddball_enabled and t.oddball.pattern is None:
-                    candidates.append(("oddball", t.oddball.oddball_freq_hz))
-                for label, freq in candidates:
-                    if abs(s.oddball.oddball_freq_hz - freq) <= _tol:
-                        raise ValueError(
-                            f"stream {i}'s oddball frequency ({s.oddball.oddball_freq_hz:g} Hz) "
-                            f"exactly equals stream {j}'s {label} frequency ({freq:g} Hz) -- their "
-                            "responses would land on the same FFT bin with no way to tell them apart. "
-                            "Give one of them a different rate."
-                        )
+        # NOTE: coinciding tagged frequencies across streams are NOT rejected here -- see
+        # ``requested_frequency_collisions``. They are a real analysis problem (the responses land on
+        # one FFT bin), but a researcher may deliberately run two streams at the same rate, so the GUI
+        # asks for explicit confirmation instead of refusing the save.
 
         # HARD: sweep x N (>2 streams) is out of scope -- only the legacy main+second pair may sweep.
         if active_additional and (
