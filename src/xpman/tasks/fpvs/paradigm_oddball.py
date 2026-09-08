@@ -495,17 +495,23 @@ def _present_stimulus(
         if flip_time is None:
             flip_time = clock.get_time()
 
+        # ONE trigger_sent per ACTUAL port pulse -- a base/oddball onset code OR an overlay
+        # (distractor/go-nogo) pulse, which fires off the onset grid. The send already happened at the
+        # flip (via the callOnFlip above); only the log stays here, stamped with flip_time. Previously
+        # this was logged only for the base/oddball onset code, so a triggered overlay pulse reached
+        # the amp but had no trigger_sent -- the trigger_sent stream undercounted real pulses in
+        # single-stream (#41). trigger_sent is now the single source of truth for "a code hit the
+        # port"; the overlay's own *_onset event still records the code for behavioural provenance, but
+        # the verifier no longer counts that as a separate pulse (see collect_xpman_triggers).
+        if action[0] == "set_code":
+            sent_payload: dict = {"code": action[1]}
+            if is_onset and action[1] == trigger_code:
+                sent_payload["stim_index"] = stim_index
+                sent_payload["is_oddball"] = is_oddball
+            event_sink.log("trigger_sent", sent_payload, timestamp=flip_time)
+
         if is_onset:
             onset_time = flip_time
-            if trigger_code is not None:
-                # The send already happened at the flip (via the callOnFlip registration above);
-                # only the *log* stays here, timestamped with flip_time to mark when the pulse
-                # actually went out. Once per stimulus, off the per-frame path.
-                event_sink.log(
-                    "trigger_sent",
-                    {"code": trigger_code, "stim_index": stim_index, "is_oddball": is_oddball},
-                    timestamp=flip_time,
-                )
             # Log which image this onset showed (stimulus provenance -- reading onsets in order
             # also recovers the full resolved/shuffled presentation order). ``identity`` and
             # ``category`` are optional generic attributes the stimulus wrapper may set; None when
