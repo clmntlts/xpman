@@ -262,6 +262,24 @@ def collect_xpman_triggers(events: list[dict]) -> "tuple[list[tuple[float, int, 
     """
     coded: list[tuple[float, int, str]] = []
     markers: dict[str, list[float]] = {}
+
+    # A triggered overlay (distractor/go-nogo) pulse is now recorded by a ``trigger_sent`` event
+    # (#41), and the overlay's own ``*_onset`` event ALSO carries the same ``trigger_code`` for
+    # behavioural provenance -- so counting BOTH would double-count one physical pulse. ``trigger_sent``
+    # is the single source of truth for a port pulse; an overlay ``*_onset`` code is counted only when
+    # there is NO ``trigger_sent`` at the same (timestamp, code) -- i.e. an OLDER event log, from before
+    # #41, that has no ``trigger_sent`` for the overlay. They share the exact flip time, so an exact
+    # (rounded) key match is safe. Baseline/familiarization markers use the blocking send_trigger path
+    # (no trigger_sent), so they are untouched below.
+    sent_keys: set[tuple[float, int]] = {
+        (round(float(e["timestamp"]), 6), int((e.get("payload") or {})["code"]))
+        for e in events
+        if e["event_type"] == "trigger_sent" and (e.get("payload") or {}).get("code") is not None
+    }
+
+    def _already_sent(ts: float, code: int) -> bool:
+        return (round(float(ts), 6), int(code)) in sent_keys
+
     for e in events:
         et = e["event_type"]
         p = e.get("payload") or {}
@@ -270,9 +288,11 @@ def collect_xpman_triggers(events: list[dict]) -> "tuple[list[tuple[float, int, 
             lab = "oddball" if p.get("is_oddball") else ("base" if p.get("is_oddball") is False else "trigger")
             coded.append((ts, int(p["code"]), lab))
         elif et == "distractor_onset" and p.get("trigger_code") is not None:
-            coded.append((ts, int(p["trigger_code"]), "distractor"))
+            if not _already_sent(ts, p["trigger_code"]):  # older log: no trigger_sent for it
+                coded.append((ts, int(p["trigger_code"]), "distractor"))
         elif et == "go_nogo_onset" and p.get("trigger_code") is not None:
-            coded.append((ts, int(p["trigger_code"]), "go" if p.get("kind") == "go" else "nogo"))
+            if not _already_sent(ts, p["trigger_code"]):
+                coded.append((ts, int(p["trigger_code"]), "go" if p.get("kind") == "go" else "nogo"))
         elif et in MARKER_EVENTS:
             label, code_field = MARKER_EVENTS[et]
             code = p.get(code_field)
