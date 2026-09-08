@@ -66,7 +66,8 @@ def test_opens_port_with_nonblocking_timeouts():
 
 def test_default_baud_and_reset_after():
     with _MockedSerial(port="COM4") as ctx:
-        ctx.mock_serial_cls.assert_called_once_with("COM4", 115200, timeout=0, write_timeout=0)
+        # Default baud is 9600 -- the NEUROSPEC MMBT-S rate in Pulse Mode.
+        ctx.mock_serial_cls.assert_called_once_with("COM4", 9600, timeout=0, write_timeout=0)
         assert ctx.trigger.reset_after == DEFAULT_RESET_AFTER
 
 
