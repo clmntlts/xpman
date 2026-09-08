@@ -1179,6 +1179,22 @@ def test_check_triggers_no_frame_exact_warning_for_a_divisor_base_freq():
         assert not any("frame-exact" in w for w in warnings), (exact, warnings)
 
 
+def test_check_triggers_flags_achieved_frequency_collision_from_rounding():
+    """#39: two streams whose REQUESTED rates differ (so _check_multi_stream passes them) but round to
+    the same achieved frequency must be flagged. Main oddball 1.2 Hz vs a base-only second stream
+    requested at 1.19 Hz -> both land on 1.2 Hz at 60 Hz."""
+    task = FPVSTask()
+    params = FPVSConditionParams()
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.second_stream.enabled = True
+    params.second_stream.position_pix = (200.0, 0.0)
+    params.second_stream.base.base_freq_hz = 1.19
+    params.second_stream.oddball_enabled = False
+    params.second_stream.oddball.oddball_freq_hz = 0.5  # < base, keeps the (disabled) oddball valid
+    warnings = task.check_triggers(params.model_dump())
+    assert any("achieved-frequency collision" in w for w in warnings), warnings
+
+
 def test_check_triggers_frame_exactness_covers_sweep_steps():
     """The advisory covers each presented sweep step, not just the single main base rate."""
     from xpman.tasks.fpvs.sweep import FrequencySweepParams, SweepStep

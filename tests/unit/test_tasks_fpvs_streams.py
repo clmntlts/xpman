@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from xpman.tasks.fpvs.streams import (
     StreamSpec,
+    achieved_frequency_collisions,
     bases_harmonically_related,
     frequencies_of_interest,
     multi_stream_separability_warnings,
@@ -182,3 +183,43 @@ def test_multi_fewer_than_two_streams_is_empty():
     assert multi_stream_separability_warnings([]) == []
     assert multi_stream_separability_warnings([StreamSpec(6.0, 1.2)]) == []
     assert multi_stream_separability_warnings([StreamSpec(6.0, None)]) == []
+
+
+# ---------------------------------------------------------------------------
+# achieved_frequency_collisions (#39: requested-distinct rates that round together)
+# ---------------------------------------------------------------------------
+
+
+def test_achieved_collision_when_requested_rates_round_together():
+    """Main oddball achieved 6.0/5 = 1.2 Hz; a base-only stream requested at 1.19 Hz rounds to
+    60/50 = 1.2 Hz at 60 Hz -- a collision the requested-rate validator (1.2 vs 1.19) misses."""
+    specs = [("Stream 1 (main)", 6.0, 1.2), ("Stream 2", 1.19, None)]
+    problems = achieved_frequency_collisions(specs, 60.0)
+    assert len(problems) == 1
+    assert "coincides" in problems[0] and "1.2 Hz" in problems[0]
+
+
+def test_no_achieved_collision_for_frame_exact_distinct_rates():
+    """6/1.2 and a well-separated 5.0/1.0 stream stay distinct once quantized -> no collision."""
+    specs = [("Stream 1 (main)", 6.0, 1.2), ("Stream 2", 5.0, 1.0)]
+    assert achieved_frequency_collisions(specs, 60.0) == []
+
+
+def test_no_achieved_collision_reported_for_base_only_sharing_a_base_rate():
+    """A base-only filler sharing the oddball-carrier's BASE rate (both 6 Hz) is the explicitly
+    allowed design (test oddball position, not frequency): the filler carries no oddball, so the
+    only comparison is main-oddball (1.2) vs filler-base (6.0) -- no coincidence."""
+    specs = [("Stream 1 (main)", 6.0, 1.2), ("Stream 2", 6.0, None)]
+    assert achieved_frequency_collisions(specs, 60.0) == []
+
+
+def test_achieved_collision_refresh_dependent():
+    """The same requested pair that collides at 60 Hz can separate on a finer grid: at 120 Hz,
+    1.19 Hz -> 120/round(120/1.19)=120/101=1.188 Hz, no longer equal to the 1.2 Hz oddball."""
+    specs = [("Stream 1 (main)", 6.0, 1.2), ("Stream 2", 1.19, None)]
+    assert achieved_frequency_collisions(specs, 60.0) != []
+    assert achieved_frequency_collisions(specs, 120.0) == []
+
+
+def test_achieved_collision_single_stream_is_empty():
+    assert achieved_frequency_collisions([("Stream 1 (main)", 6.0, 1.2)], 60.0) == []
