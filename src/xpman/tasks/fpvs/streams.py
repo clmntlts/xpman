@@ -256,3 +256,62 @@ def multi_stream_separability_warnings(
                 im_msg=im_msg,
             )
     return sorted(problems)
+
+
+def _quantized(refresh_hz: float, freq_hz: float) -> float:
+    """The frequency actually achieved by showing each stimulus for a whole number of monitor
+    frames: ``refresh / round(refresh / freq)`` (never fewer than 1 frame). Inlined here (rather
+    than importing ``paradigm_oddball``) to keep this module a pure, dependency-free leaf."""
+    return refresh_hz / max(round(refresh_hz / freq_hz), 1)
+
+
+def achieved_frequency_collisions(
+    specs: list[tuple[str, float, float | None]],
+    refresh_hz: float,
+    *,
+    tol: float = 1e-3,
+) -> list[str]:
+    """Cross-stream collisions that appear only AFTER each requested rate is quantized to the
+    monitor's frame grid. ``specs`` is ``(name, base_hz, oddball_hz-or-None)`` per active stream
+    (``oddball_hz`` is ``None`` for a base-only OR a pattern-driven stream, matching the rule
+    ``_check_multi_stream`` applies to requested rates).
+
+    Two DISTINCT requested rates can round to the SAME achieved frequency (e.g. 5.9 and 6.1 Hz both
+    -> 6.0 Hz on a 60 Hz monitor), so an oddball-carrying stream's achieved oddball can land on
+    another stream's achieved driving frequency even though the requested-rate validator
+    (``schema._check_multi_stream``) saw them as distinct and passed. This re-applies that same
+    equality rule to the ACHIEVED frequencies at ``refresh_hz``. Returns one message per colliding
+    (oddball -> other-driver) pair; base<->base coincidences are intentionally not flagged (a
+    base-only filler may share a base rate). Pure and deterministic."""
+    achieved: list[tuple[str, float, float | None]] = []
+    for name, base_hz, oddball_hz in specs:
+        ach_base = _quantized(refresh_hz, base_hz)
+        ach_oddball: float | None = None
+        if oddball_hz is not None:
+            # The oddball is every Nth base stimulus, so it inherits the base's quantization:
+            # achieved_oddball = achieved_base / round(base / oddball).
+            period = max(round(base_hz / oddball_hz), 1)
+            ach_oddball = ach_base / period
+        achieved.append((name, ach_base, ach_oddball))
+
+    out: list[str] = []
+    for i, (name_i, _base_i, odd_i) in enumerate(achieved):
+        if odd_i is None:
+            continue
+        for j, (name_j, base_j, odd_j) in enumerate(achieved):
+            if i == j:
+                continue
+            drivers: list[tuple[str, float]] = [("base", base_j)]
+            if odd_j is not None:
+                drivers.append(("oddball", odd_j))
+            for label, freq in drivers:
+                if abs(odd_i - freq) <= tol:
+                    out.append(
+                        f"{name_i}'s achieved oddball frequency ({odd_i:g} Hz) coincides with "
+                        f"{name_j}'s achieved {label} frequency ({freq:g} Hz) once rounded to the "
+                        f"{refresh_hz:g} Hz frame grid -- their responses land on the same FFT bin, "
+                        "with no way to attribute the response to either stream. The requested rates "
+                        "differ, so this is a rounding collision; choose rates that stay distinct "
+                        "once quantized (a frame-exact pair avoids it)."
+                    )
+    return out
