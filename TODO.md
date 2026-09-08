@@ -472,7 +472,7 @@ for later removal or wiring.
 `Run.experiment_id` (needs a migration story); per-subject aggregate results view; in-GUI events
 viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm breadth (next section).
 
-## Hardware verification (blocking real EEG use)
+## Hardware verification (core done 2026-09-07; advanced scenarios pending)
 
 - [x] Analysis tooling for the lab visit — `tests/manual_hardware/analyze_verification_run.py`
       + `core/verification_report.py` turn a Run's `events.csv` into the inter-flip
@@ -485,11 +485,14 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
       ~9.5 *seconds* of bogus "trigger-to-flip latency" instead of the real ~0.04ms. Fixed;
       see that file's module docstring and `docs/verification_protocol.md` for the full story.
       Unit tests never caught this because they mock `Window.flip()`.
-- [ ] **Run the full verification protocol at the lab** (`docs/verification_protocol.md`):
-      inter-flip interval jitter, trigger-to-flip latency, trigger pulse width/codes, RT
-      calibration — dummy task first, then FPVS. Nothing here has been measured on real
-      hardware yet; everything is built to a specification, not confirmed against it. (The
-      *tooling* to analyze it is now ready — see above — only the physical lab visit remains.)
+- [x] **Core verification run (2026-09-07)** — dummy task + a single-stream FPVS run measured on a
+      real BioSemi rig (in-amplifier photodiode + serial NEUROSPEC MMBT-S box): 0 dropped frames
+      (dummy 0/1798, FPVS 0/3590), inter-flip SD 0.06/0.27 ms, trigger jitter SD ~0.25 ms, ~8.8 ms
+      pulse, base/oddball frame-exact at 5.997/1.199 Hz — at least as good as the legacy app on the
+      same rig. See the status banner in `docs/verification_protocol.md`.
+- [ ] **Measure the advanced scenarios at the lab** (`docs/verification_protocol.md`): the
+      **parallel-port** backend (A/B vs serial), dual streams under load, frequency sweep, per-trial
+      baseline, position jitter, and size variation — built to spec, not yet measured on hardware.
 - [ ] Close [open_questions.md #2](docs/open_questions.md): confirm whether the *legacy app*
       drops frames at the lab's actual monitor refresh rate, for the side-by-side comparison.
 - [ ] Close [open_questions.md #4](docs/open_questions.md): confirm trigger-fires-after-flip
@@ -602,9 +605,11 @@ viewer; multi-monitor resolution/refresh selection; the large FPVS paradigm brea
           hoisting it to a run-level hook would change rng-consumption order and event ordering —
           both forbidden by the byte-for-byte reproducibility net. The hook exists for future,
           genuinely run-level warm-ups.)
-- [ ] **Still deferred (additive on the above when a real protocol needs it):** size modulation;
-      intra-category oddball; missing-oddball; double-base; per-image transforms
-      (scale/rotate/flip/position); luminance equalization; inter-trial sound/animation.
+- [ ] **Still deferred (additive on the above when a real protocol needs it):** size-as-oddball
+      modulation; intra-category oddball; missing-oddball; double-base; the remaining per-image
+      transforms (rotate/flip — random *scale* shipped as `size_variation` in 0.6.0, and random
+      position as `position_jitter`); inter-trial sound/animation. (Luminance/contrast
+      **equalization** shipped — `equalization` — and is no longer deferred.)
       Plus a dedicated familiarization stimulus selector (currently reuses `base_selector`),
       extending the distractor across the pre/post/familiarization phases (currently the main
       sequence only), and an optional `subdirectory` dropdown in the GUI (currently free text + preview).

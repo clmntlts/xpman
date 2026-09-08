@@ -48,9 +48,9 @@ This removes the stimulus PC's clock and any cross-device alignment from the mea
 - **Triggers land on the Status channel.** Mask it to the **low 8 bits** before reading codes —
   xpman emits 1–255 (see the 8-bit enforcement in `hardware/trigger.py`), and the raw Status word
   also carries BioSemi's high bits (new-epoch / CMS-in-range / battery), which otherwise inflate the
-  value. Use the **serial** backend for the BioSemi USB Trigger Interface (`--trigger-backend serial
-  --serial-port COMx`) with the **FTDI latency timer set to 1 ms** (see "New features" item 2 — the
-  16 ms default is the classic ±10 ms jitter), or `--trigger-backend parallel` for an LPT cable.
+  value. Use the **serial** backend for the **NEUROSPEC MMBT-S** trigger box (`--trigger-backend
+  serial --serial-port COMx --serial-baud 9600`, the box in **Pulse Mode** — see "New features"
+  item 2), or `--trigger-backend parallel` for an LPT cable.
 - **Recover onsets from the AUX trace by EDGE, not level.** The patch **alternates** bright/dark on
   each onset (`PhotodiodePatch.toggle`), so at base rate *F* the sensor shows an *F*/2-Hz square wave
   with an edge at **every** onset — detect **both** rising and falling edges (detecting only rising
@@ -104,11 +104,12 @@ square/screen now") and default to a real parallel port at `0x0378` — pass
 port fails to open, run `scripts\install_parallel_port_driver.ps1` **as Administrator** first
 — Windows 11 needs the driver DLL manually placed in `System32`/`SysWOW64`.
 
-`run_fpvs_task_manual.py` also has one dedicated flag per "New features to verify" scenario
+`run_fpvs_task_manual.py` also has a dedicated flag for most "New features to verify" scenarios
 below (`--second-stream`, `--jitter`, `--sweep-steps`, `--baseline`, `--tracked-stream-index`) —
-see its own `--help`/module docstring for the full flag list and an example invocation. This
-means every scenario in that section is runnable through the documented CLI workflow, without
-hand-editing the script or building through the GUI.
+see its own `--help`/module docstring for the full flag list and an example invocation. **Exception:
+size variation has no CLI flag yet** — build a Condition with `size_variation.enabled = true` in the
+GUI, freeze, and launch it (as in `docs/tutorial.md` §6.2). Every other scenario is runnable through
+the CLI without hand-editing the script.
 
 ## Reading the event log
 
@@ -214,21 +215,24 @@ trusting `pytest` alone.
 
 ## New features to verify at the lab (built to spec; core measured 2026-09-07, these still pending)
 
-Three features landed in software with green unit tests but are **unverified on hardware** — fold
-these into the same photodiode + logic-analyzer session:
+The following features landed in software with green unit tests. The 2026-09-07 core run already
+measured items 1–2 on the **serial** path (see the status banner above); items 3–7, and the
+parallel-port comparison, remain — fold them into the same photodiode + logic-analyzer session:
 
 1. **Tightened trigger timing (callOnFlip).** Triggers now fire via `window.callOnFlip` at the
    buffer swap instead of after `flip()` returns. Re-measure trigger-to-onset latency **and jitter**
    against the photodiode and compare to the pre-change numbers — expect equal or tighter, lower
-   jitter. (Applies to both the parallel and serial backends.)
-2. **BioSemi USB serial trigger backend (SKU NS7830).** Select "Serial (USB)" in the Launch dialog
-   (or `--trigger-backend serial --serial-port COMx`). **Required setup: set the FTDI latency timer
-   to 1 ms** — Device Manager → Ports (COM & LPT) → the port → Properties → Port Settings → Advanced
-   → Latency Timer = 1 (the 16 ms default is the classic ±10 ms jitter cause). Then verify: the code
-   byte lands correctly on BioSemi's Status channel; the pulse is the device's fixed ~8 ms; and
-   latency/jitter are within spec **compared to the parallel port** on the same rig. The raw-byte
-   protocol is assumed — confirm against the BioSemi Trigger-Interface manual. Codes are 8-bit
-   (1–255); >255 (16-bit) is not supported yet.
+   jitter. (Applies to both the parallel and serial backends; the **serial** path was measured
+   2026-09-07 at SD ~0.25 ms — the **parallel** re-measure is what's still open.)
+2. **Serial trigger backend — NEUROSPEC MMBT-S** (measured 2026-09-07; only the parallel A/B
+   comparison is still pending). Select "Serial (USB)" in the Launch dialog (or `--trigger-backend
+   serial --serial-port COMx --serial-baud 9600`), with the box in **Pulse Mode**. Confirmed on the
+   verified run: the code byte lands on BioSemi's Status channel, the pulse is the device's fixed
+   ~8 ms, and jitter SD was ~0.25 ms. Codes are 8-bit (1–255); >255 (16-bit) is not supported yet.
+   Note: the MMBT-S runs at **9600 baud in Pulse Mode**, not the FTDI/BioSemi defaults — if your box
+   instead enumerates as a generic FTDI virtual COM port, also set its **Latency Timer to 1 ms**
+   (Device Manager → the port → Properties → Port Settings → Advanced), since the 16 ms FTDI default
+   is the classic ±10 ms jitter cause. **Confirm the exact MMBT-S baud/mode against its manual.**
 3. **Position jitter.** With a Condition using `position_jitter.enabled = true`, visually confirm the
    image lands at varying positions within the configured region while the **fixation marker stays
    centered** and the photodiode patch (screen corner) is unaffected. Each onset logs its `pos`, and
