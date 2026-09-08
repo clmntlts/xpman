@@ -951,4 +951,4 @@ def test_test_triggers_button_opens_dialog_with_a_working_backend_factory(qtbot,
     factory = mock_dialog_cls.call_args.args[0]
     with patch("serial.Serial", MagicMock()) as mock_serial:
         factory()
-    mock_serial.assert_called_once_with("COM7", 115200, timeout=0, write_timeout=0)
+    mock_serial.assert_called_once_with("COM7", 9600, timeout=0, write_timeout=0)

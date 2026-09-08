@@ -222,10 +222,11 @@ class LaunchDialog(QDialog):
         layout.addWidget(self._serial_baud_label)
         self._serial_baud_spin = QSpinBox()
         self._serial_baud_spin.setRange(300, 1_000_000)
-        self._serial_baud_spin.setValue(115200)
+        self._serial_baud_spin.setValue(9600)
         self._serial_baud_spin.setToolTip(
-            "Serial baud rate. 115200 is a safe default; the BioSemi device times the pulse in "
-            "hardware, so baud only governs how fast the code byte reaches it."
+            "Serial baud rate. Defaults to 9600 -- the NEUROSPEC MMBT-S rate in Pulse Mode. The box "
+            "times the pulse in hardware, so baud only governs how fast the code byte reaches it; "
+            "change it for a device that needs a different rate."
         )
         layout.addWidget(self._serial_baud_spin)
 

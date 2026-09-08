@@ -30,7 +30,7 @@ def build_test_trigger(
     *,
     parallel_address: int | None = None,
     serial_port: str | None = None,
-    serial_baud: int = 115200,
+    serial_baud: int = 9600,
     serial_init_settle_seconds: float = 0.0,
     reset_after: float = TEST_PULSE_RESET_AFTER_SECONDS,
 ) -> TriggerSender:

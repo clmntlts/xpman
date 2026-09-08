@@ -334,9 +334,9 @@ Right-click an **Instance** → **Launch...**
      usually why — check Windows Device Manager for the actual address (a PCIe LPT card is often not
      at the default).
    - **Serial (USB)** — for a USB/serial trigger box such as the lab's **NEUROSPEC MMBT-S**. Reveals
-     **Serial (COM) port** (e.g. `COM4`), **Baud rate** (the field defaults to 115200 — **set it to
-     `9600` for the MMBT-S**, in Pulse Mode), and **Init settle (s)** (a short post-open wait for
-     boxes that reset on connect; default 0).
+     **Serial (COM) port** (e.g. `COM4`), **Baud rate** (defaults to **9600**, the MMBT-S rate in
+     Pulse Mode; change it only for a box that uses a different rate), and **Init settle (s)** (a
+     short post-open wait for boxes that reset on connect; default 0).
 4. **Test triggers…** — sends a test pulse (or a full 1–255 sweep) through the chosen backend so you
    can confirm on the EEG trigger channel that codes arrive, **before** committing a subject. (A
    trigger is write-only — xpman can send but can't read back receipt — so confirm on the amplifier.)
