@@ -181,6 +181,58 @@ class FloatFieldWidget(_ErrorLabelMixin):
         self._spin.setValue(float(value) if value is not None else 0.0)
 
 
+class FrequencyFieldWidget(FloatFieldWidget):
+    """A **base** stimulation-frequency field that shows, live, the frequency actually achievable on
+    a nominal 60 Hz monitor. Frame-counted FPVS quantises any rate to ``refresh / round(refresh/f)``,
+    so a rate that doesn't divide the refresh (e.g. 8 Hz → 60/8 = 7.5 Hz) lands off the intended FFT
+    bin. This surfaces that *as you type*, not only in "Check Triggers…". The real monitor governs the
+    true value; 60 Hz is the design-time stand-in (matching ``FPVSTask.check_triggers``). Only for
+    base rates: an oddball is placed relative to its base, so its own quantisation is derived and is
+    covered by the Check-Triggers advisory instead."""
+
+    #: Design-time nominal refresh; the real monitor rate is only known at run time.
+    NOMINAL_REFRESH_HZ = 60.0
+    _REL_TOL = 1e-6
+    _OK_STYLE = f"color: {PALETTE['text_muted']}; font-size: 10px;"
+    _WARN_STYLE = "color: #9a6a00; font-size: 10px;"  # amber: advisory, not an error
+
+    def __init__(
+        self,
+        minimum: float = _FLOAT_FALLBACK_MIN,
+        maximum: float = _FLOAT_FALLBACK_MAX,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(minimum=minimum, maximum=maximum, parent=parent)
+        self._hint = QLabel("")
+        self._hint.setWordWrap(True)
+        self._content_layout.addWidget(self._hint)
+        self.valueEdited.connect(self._update_hint)
+        self._update_hint()
+
+    def set_value(self, value: Any) -> None:
+        super().set_value(value)
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        f = self.get_value()
+        if f <= 0:
+            self._hint.hide()
+            return
+        refresh = self.NOMINAL_REFRESH_HZ
+        fpc = max(round(refresh / f), 1)
+        achieved = refresh / fpc
+        if abs(achieved - f) <= self._REL_TOL * f:
+            self._hint.setStyleSheet(self._OK_STYLE)
+            self._hint.setText(f"→ frame-exact at {refresh:.0f} Hz ({fpc} frames/cycle)")
+        else:
+            self._hint.setStyleSheet(self._WARN_STYLE)
+            self._hint.setText(
+                f"⚠ not frame-exact at {refresh:.0f} Hz → {achieved:.4g} Hz ({fpc} frames/cycle). "
+                "Use a rate that divides the refresh, or confirm the shift is acceptable."
+            )
+        self._hint.show()
+
+
 class BoolFieldWidget(_ErrorLabelMixin):
     """A ``bool`` field."""
 
