@@ -36,6 +36,7 @@ from xpman.tasks.fpvs.paradigm_oddball import (
     Stream,
     _run_dual_stream,
     _run_oddball_segments,
+    achieved_frequency_hz,
     derived_oddball_freq_hz,
     frames_per_cycle,
     oddball_pattern_mask,
@@ -95,6 +96,14 @@ NOMINAL_REFRESH_HZ = 60.0
 #: the drift check alone would miss it) with no inter-stimulus gap.
 BASE_FREQ_PRECISION_THRESHOLD = 0.05
 MIN_FRAMES_PER_CYCLE_WARN = 3
+
+#: Relative tolerance for the design-time frame-exactness advisory: a base rate is "frame-exact"
+#: when the frame-quantized (achieved) frequency is within this fraction of the requested one.
+#: Anything looser is a real bin shift the researcher should see BEFORE recording -- notably the
+#: cases the runtime ``BASE_FREQ_PRECISION_THRESHOLD`` (5%) misses, e.g. 6 Hz on a 75 Hz monitor
+#: -> 6.25 Hz (4.2%), which silently drags a 1.2 Hz oddball to 1.25 Hz. Tiny (not 5%) because the
+#: point is exact frame division; a genuine divisor lands with zero error.
+FRAME_EXACT_REL_TOL = 1e-6
 
 #: Absolute floor, checked at run time against the REAL refresh rate: with fewer than 2 frames
 #: per cycle the stimulus is drawn every single frame with no off-frame, so no contrast
@@ -251,6 +260,26 @@ def _presented_base_frequencies(params: "FPVSConditionParams") -> list[tuple[str
     if params.familiarization.enabled:
         freqs.append(("familiarization.frequency_hz", params.familiarization.frequency_hz))
     return freqs
+
+
+def _frame_exactness_advisory(label: str, freq_hz: float) -> str | None:
+    """Design-time advisory when ``freq_hz`` won't divide the nominal-refresh monitor evenly, so it
+    is quantized to the nearest whole frames/cycle and the frequency tag lands off the intended FFT
+    bin (e.g. 6 Hz on a 75 Hz monitor -> 6.25 Hz achieved, which drags a 1.2 Hz oddball to 1.25 Hz).
+    Returns ``None`` when the rate is frame-exact within ``FRAME_EXACT_REL_TOL``. The REAL monitor
+    governs the true value; this checks against ``NOMINAL_REFRESH_HZ`` because the display isn't
+    known until run time -- so it also names the real monitor as the authority."""
+    fpc = frames_per_cycle(NOMINAL_REFRESH_HZ, freq_hz)
+    achieved = achieved_frequency_hz(NOMINAL_REFRESH_HZ, fpc)
+    if abs(achieved - freq_hz) <= FRAME_EXACT_REL_TOL * freq_hz:
+        return None
+    return (
+        f"{label} {freq_hz:g} Hz is not frame-exact on a {NOMINAL_REFRESH_HZ:.0f} Hz monitor: the "
+        f"nearest is {fpc} frame(s)/cycle -> {achieved:.4g} Hz ({(achieved - freq_hz) / freq_hz * 100:+.1f}%), "
+        "so the frequency tag lands off the intended FFT bin. Use a rate that divides the refresh "
+        f"(nearest is {achieved:.4g} Hz) or confirm the shift is acceptable; the exact achieved value "
+        "depends on your real monitor's refresh rate."
+    )
 
 
 def _run_familiarization(
@@ -1645,6 +1674,16 @@ class FPVSTask(TaskModule):
                 "little/no inter-stimulus gap). Confirm your monitor is fast enough, or check "
                 "for a typo (e.g. 60 instead of 6)."
             )
+
+        # Frame-exactness: a base rate that doesn't divide the monitor refresh evenly is quantized
+        # to the nearest whole frames/cycle, so the frequency tag lands off the requested FFT bin --
+        # and the runtime 5% drift flag (BASE_FREQ_PRECISION_THRESHOLD) misses the near-exact cases
+        # (6 Hz on a 75 Hz monitor -> 6.25 Hz is only 4.2%). Covers every presented base rate
+        # (sweep steps, second/additional streams, familiarization), each against the nominal 60 Hz.
+        for label, freq in _presented_base_frequencies(params):
+            advisory = _frame_exactness_advisory(label, freq)
+            if advisory is not None:
+                warnings.append(advisory)
 
         # Off-screen position-jitter advisory (WP-B). The real display and native image sizes
         # aren't known at design time (no window/prepare yet), so this is a coarse, best-effort
