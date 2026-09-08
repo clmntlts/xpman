@@ -1260,6 +1260,17 @@ class FPVSTask(TaskModule):
                     _build_position_provider(params.position_jitter, stream_rngs[i])
                     for i in range(n_streams_total)
                 ]
+            # Per-stream size variation (#5), exactly the same discipline as the jitter providers above:
+            # one decoupled sub-stream PER stream so each stream rescales independently yet reproducibly,
+            # spawned ONLY when enabled so a disabled Condition consumes no child stream and every
+            # existing Instance's RNG layout is unchanged.
+            multi_size_providers: "list[Callable[[], float] | None] | None" = None
+            if params.size_variation.enabled:
+                size_stream_rngs = ctx.rng.spawn(n_streams_total)
+                multi_size_providers = [
+                    _build_size_provider(params.size_variation, size_stream_rngs[i])
+                    for i in range(n_streams_total)
+                ]
             # Sweep x dual-stream (v2, #4): ONLY for the exactly-two-stream case (the Condition validator
             # forbids additional_streams together with a sweep). Build one shared step timeline pairing
             # each main step with the second stream's step. No sweep -> None, so _run_dual_stream presents
@@ -1293,6 +1304,7 @@ class FPVSTask(TaskModule):
                 rng=ctx.rng,
                 overlays=overlay_controllers,
                 position_providers=multi_position_providers,
+                size_providers=multi_size_providers,
                 stream_segment_timeline=multi_timeline,
             )
         elif params.main_stream.sweep.enabled:

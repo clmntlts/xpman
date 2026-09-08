@@ -1257,6 +1257,9 @@ class _StreamRuntime:
     #: onset log can mark centered-on-position vs jittered provenance).
     current_pos: tuple[float, float] = (0.0, 0.0)
     current_jittered: bool = False
+    #: Size scale applied to this stream's current stimulus (multiple of native), or None when this
+    #: stream has no size-variation provider -- logged per onset like ``pos``.
+    current_size: float | None = None
     n_stimuli_shown: int = 0
     n_oddballs_shown: int = 0
 
@@ -1281,6 +1284,7 @@ def _run_dual_stream(
     rng: "numpy.random.Generator | None",
     overlays: "list[OverlayController]" = (),
     position_providers: "list[Callable[[], tuple[float, float]] | None] | None" = None,
+    size_providers: "list[Callable[[], float] | None] | None" = None,
     stream_segment_timeline: "list[list[Segment]] | None" = None,
 ) -> BaseOddballSequenceResult:
     """Present two (or more) simultaneous image streams **frame-driven** for one constant-duration
@@ -1398,6 +1402,11 @@ def _run_dual_stream(
     # list indexed by stream so the per-frame loop can look each stream's provider up cheaply.
     providers: list[Callable[[], tuple[float, float]] | None] = list(position_providers or [])
     providers += [None] * (len(streams) - len(providers))
+
+    # Per-stream size-variation providers (#5), normalized exactly like the jitter providers above: a
+    # missing list or a None entry -> that stream shows at native size.
+    size_providers_by_stream: list[Callable[[], float] | None] = list(size_providers or [])
+    size_providers_by_stream += [None] * (len(streams) - len(size_providers_by_stream))
 
     # Reserved-code -> coincident-onset mapping, logged into the per-trial start event so an analyst can
     # decode which combined code a coincidence carried (the codes are per-Condition, so this per-trial
@@ -1537,6 +1546,15 @@ def _run_dual_stream(
                     set_position = getattr(rt.current_stim, "set_position", None)
                     if set_position is not None:
                         set_position(rt.current_pos)
+                    # Per-stream size variation (#5), mirroring the jitter draw above: each stream draws
+                    # from its OWN decoupled sub-stream. Always applied (None provider -> 1.0 = native),
+                    # because the ImageStim is cached for the whole Run and a prior size-varied trial
+                    # could otherwise leave a stale scale on this exact stim.
+                    size_provider = size_providers_by_stream[rt.stream_index]
+                    rt.current_size = size_provider() if size_provider is not None else None
+                    set_size = getattr(rt.current_stim, "set_size", None)
+                    if set_size is not None:
+                        set_size(rt.current_size if rt.current_size is not None else 1.0)
                     rt.current_is_oddball = is_oddball
                     rt.current_stim_index = rt.position - 1
                     rt.n_stimuli_shown += 1
@@ -1616,6 +1634,9 @@ def _run_dual_stream(
                             # jitter this equals position_pix (unchanged from v1); with jitter it is the
                             # jittered position, matching how the single-stream path logs each onset (#3).
                             "pos": [rt.current_pos[0], rt.current_pos[1]],
+                            # Size scale applied to this onset (multiple of native), or None when this
+                            # stream has no size variation -- same provenance the single-stream path logs.
+                            "size": rt.current_size,
                             "stream": rt.stream_index,
                         },
                         timestamp=flip_time,
