@@ -971,10 +971,13 @@ class MainWindow(QMainWindow):
             return
         warnings = task.check_triggers(condition.parameters_json, resource_dir=program.resource_main_directory)
         if warnings:
-            message = "Potential trigger conflicts:\n\n" + "\n".join(f"- {w}" for w in warnings)
-            QMessageBox.warning(self, "Check Triggers", message)
+            # A scrollable, filterable list instead of one cramped message box: a rich Condition
+            # (multi-stream, sweep, overlays) can produce many advisories that don't fit legibly.
+            from xpman.gui.dialogs.advisories_dialog import AdvisoriesDialog
+
+            AdvisoriesDialog("Check Triggers", "Potential issues found", warnings, self).exec()
         else:
-            QMessageBox.information(self, "Check Triggers", "No trigger conflicts found.")
+            QMessageBox.information(self, "Check Triggers", "No issues found.")
 
     def _on_preview_button(self) -> None:
         if self._current_node is not None and self._current_node.kind == "condition":
