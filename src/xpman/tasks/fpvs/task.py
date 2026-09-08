@@ -1564,7 +1564,14 @@ class FPVSTask(TaskModule):
         if sequence_result.per_stream:
             outcome_summary["n_streams"] = len(sequence_result.per_stream)
             for s in sequence_result.per_stream:
+                # Requested (expected) AND achieved, per stream -- so a results reader can do a
+                # requested-vs-observed check for EVERY stream, not just the main one (#74 follow-up:
+                # the additional/second stream's expected frequency was missing from this summary).
+                outcome_summary[f"stream{s.stream_index}_requested_base_freq_hz"] = s.requested_base_freq_hz
                 outcome_summary[f"stream{s.stream_index}_achieved_base_freq_hz"] = s.achieved_base_freq_hz
+                outcome_summary[f"stream{s.stream_index}_requested_oddball_freq_hz"] = (
+                    s.requested_oddball_freq_hz
+                )
                 outcome_summary[f"stream{s.stream_index}_achieved_oddball_freq_hz"] = (
                     s.achieved_oddball_freq_hz
                 )
@@ -1573,8 +1580,14 @@ class FPVSTask(TaskModule):
         if sequence_result.per_segment:
             outcome_summary["sweep_n_segments"] = len(sequence_result.per_segment)
             for seg in sequence_result.per_segment:
+                outcome_summary[f"sweep_seg{seg.segment_index}_requested_base_freq_hz"] = (
+                    seg.requested_base_freq_hz
+                )
                 outcome_summary[f"sweep_seg{seg.segment_index}_achieved_base_freq_hz"] = (
                     seg.achieved_base_freq_hz
+                )
+                outcome_summary[f"sweep_seg{seg.segment_index}_requested_oddball_freq_hz"] = (
+                    seg.requested_oddball_freq_hz
                 )
                 outcome_summary[f"sweep_seg{seg.segment_index}_achieved_oddball_freq_hz"] = (
                     seg.achieved_oddball_freq_hz
