@@ -151,6 +151,9 @@ Optional extras in the same session:
 - **Position jitter**: build a Condition in the GUI with `position_jitter.enabled = true` and a
   region, freeze, launch — confirm the image lands at varying positions while the **fixation marker
   stays centered** and the corner photodiode patch is unaffected.
+- **Size variation**: a single-stream Condition with `size_variation.enabled = true` (e.g.
+  `min_scale = 0.74`, `max_scale = 1.2`), freeze, launch — confirm the image **rescales** between
+  stimuli while the fixation marker and photodiode patch keep their size, with no dropped frames.
 - **Parallel port** (if you also have an LPT into the receiver): rerun with
   `--trigger-backend parallel --parallel-port-address 0x0378` and compare latency/jitter to serial.
 
