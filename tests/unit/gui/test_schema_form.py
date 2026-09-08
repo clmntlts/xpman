@@ -798,3 +798,37 @@ def test_frequency_widget_hint_flags_frame_inexact_rate(qtbot):
     w.set_value(8.0)  # 60/8 = 7.5 -> rounds to 8 frames -> 7.5 Hz (the #74 case)
     assert "not frame-exact" in w._hint.text()
     assert "7.5" in w._hint.text()
+
+
+# -- robustness: a type-invalid stored value must not crash form load (#40) --------------------
+
+
+def test_float_field_tolerates_a_non_numeric_stored_value(qtbot):
+    from xpman.gui.forms.widgets import FloatFieldWidget
+
+    w = FloatFieldWidget(minimum=0.0, maximum=1.0)
+    qtbot.addWidget(w)
+    w.set_value(0.5)
+    w.set_value("oops")  # a hand-edited/migrated row -- must not raise
+    assert w.get_value() == 0.5  # left at the last good value
+
+
+def test_int_and_pair_fields_tolerate_bad_stored_values(qtbot):
+    from xpman.gui.forms.widgets import FloatPairFieldWidget, IntFieldWidget
+
+    iw = IntFieldWidget(minimum=0, maximum=10)
+    qtbot.addWidget(iw)
+    iw.set_value("nope")  # no raise
+    fp = FloatPairFieldWidget()
+    qtbot.addWidget(fp)
+    fp.set_value("not-a-pair")  # no raise
+    fp.set_value(("x", "y"))    # no raise
+
+
+def test_schema_form_builds_with_a_type_invalid_stored_param(qtbot):
+    """The whole reported crash: a Condition with background_gray='oops' must build a form, not raise
+    (the bad leaf lands at its default; save-time validation still flags it)."""
+    form = SchemaForm(FPVSConditionParams, initial_values={"background_gray": "oops"})
+    qtbot.addWidget(form)
+    # Background_gray fell back to a numeric default rather than crashing.
+    assert isinstance(form._field_widgets["background_gray"].get_value(), float)
