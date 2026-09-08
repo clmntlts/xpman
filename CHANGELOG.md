@@ -3,9 +3,12 @@
 All notable changes to xpman are recorded here. Dates are ISO‑8601. This project follows
 semantic versioning (`MAJOR.MINOR.PATCH`).
 
-> **Not yet hardware‑verified.** Every timing/trigger/rendering claim below is built to a
-> specification and covered by automated tests, but has **not** been measured on a real EEG rig.
-> See `docs/verification_protocol.md`; run that lab session before relying on the timing.
+> **Core timing hardware‑verified (2026‑09‑07).** The base FPVS paradigm was measured on a real
+> BioSemi rig (in‑amplifier photodiode + serial MMBT‑S trigger box): **0 dropped frames**, screen
+> inter‑flip SD ≤ 0.27 ms, **trigger jitter SD ~0.25 ms**, ~8.8 ms pulse, base/oddball frame‑exact
+> at 5.997 / 1.199 Hz — at least as good as the legacy app on the same rig. The **advanced**
+> scenarios (parallel‑port backend, dual streams, frequency sweep, position/size variation) are not
+> yet individually measured on hardware. See `docs/verification_protocol.md`.
 
 ## [0.5.0] — 2026-09-07
 

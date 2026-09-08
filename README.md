@@ -10,9 +10,12 @@ plain SQLite + Parquet/CSV, and is meant to be freely shared with other labs.
 
 Status: core data model, runtime engine, dummy + FPVS tasks, and the full PySide6 GUI (build
 an experiment, edit/reorder it, launch a run, view/export results) are working end-to-end, and
-xpman now packages into a standalone Windows build (see Setup below). Hardware timing
-verification against a real EEG rig is still open — see [`TODO.md`](TODO.md). See
-`docs/architecture.md` for the technology choices, package layout, data model, and roadmap.
+xpman now packages into a standalone Windows build (see Setup below). Core FPVS timing and triggers
+have been **verified on a real BioSemi rig** (2026-09-07: photodiode + serial MMBT-S, 0 dropped
+frames, trigger jitter SD ~0.25 ms, frame-exact 6/1.2 Hz); the advanced scenarios (parallel backend,
+dual streams, sweep, position/size variation) remain to be measured — see
+[`docs/verification_protocol.md`](docs/verification_protocol.md). See `docs/architecture.md` for the
+technology choices, package layout, data model, and roadmap.
 
 **New to xpman?** [`docs/tutorial.md`](docs/tutorial.md) is the full user-facing walkthrough —
 what every screen does, a step-by-step guide to building and running a real FPVS session, a

@@ -191,6 +191,52 @@ class PositionJitterParams(BaseModel):
         return self.x_range_pix == (0.0, 0.0) and self.y_range_pix == (0.0, 0.0)
 
 
+class SizeVariationParams(BaseModel):
+    """Optional per-stimulus (or per-trial) random rescaling of each image, drawn uniformly in
+    ``[min_scale, max_scale]`` of the image's native pixel size.
+
+    In canonical face FPVS (Rossion 2014; Liu-Shuang, Norcia & Rossion 2014) stimulus size is
+    randomly varied every cycle (~74-120%) so the periodic oddball response reflects **high-level
+    individuation** rather than low-level pixel-wise adaptation to a repeated retinal image -- a
+    change in size shifts the low-level image without changing identity. Only the image is scaled;
+    the fixation marker and the photodiode patch are untouched.
+
+    ``per`` chooses a fresh scale for every image onset (``'stimulus'``) or one fixed scale reused
+    for a whole trial (``'trial'``). The scale multiplies both native dimensions, so aspect ratio is
+    preserved. Disabled by default, and defaults to a degenerate ``1.0..1.0`` range so an enabled
+    range that was never widened is a visible no-op rather than a hidden one.
+
+    Currently supported for a single-stream Condition only; enabling it with a second/additional
+    stream is rejected on the Condition (dual-stream size variation is not yet wired -- #5)."""
+
+    enabled: bool = Field(
+        default=False, description="Randomize each image's size within the scale range below."
+    )
+    min_scale: float = Field(
+        default=1.0, gt=0.0, description="Smallest size as a multiple of the image's native size (e.g. 0.74)."
+    )
+    max_scale: float = Field(
+        default=1.0, gt=0.0, description="Largest size as a multiple of the image's native size (e.g. 1.2)."
+    )
+    per: Literal["stimulus", "trial"] = Field(
+        default="stimulus",
+        description="'stimulus' draws a new scale for every image onset; 'trial' draws one per trial.",
+    )
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "SizeVariationParams":
+        if self.max_scale < self.min_scale:
+            raise ValueError(
+                f"size_variation.max_scale ({self.max_scale}) must be >= min_scale ({self.min_scale})"
+            )
+        return self
+
+    def is_noop(self) -> bool:
+        """True when the range can produce no size change (min == max), so enabling it would do
+        nothing -- surfaced as a ``check_triggers`` advisory, not a hard error."""
+        return self.min_scale == self.max_scale
+
+
 class EqualizationParams(BaseModel):
     """Optional luminance/contrast equalization across every pool a Condition presents (base +
     oddball + any active stream pools), per ``docs/Luminance and Contrast equalisation.pdf``.
@@ -436,6 +482,11 @@ class FPVSConditionParams(BaseModel):
         description="Randomize each image's position within a region (image only; the fixation stays put).",
         json_schema_extra={"section": "General"},
     )
+    size_variation: SizeVariationParams = Field(
+        default_factory=SizeVariationParams,
+        description="Randomize each image's size within a scale range (image only; low-level adaptation control).",
+        json_schema_extra={"section": "General"},
+    )
     photodiode: PhotodiodeParams = Field(
         default_factory=PhotodiodeParams,
         description="Photodiode sync patch for validating presentation timing against real hardware.",
@@ -564,6 +615,16 @@ class FPVSConditionParams(BaseModel):
         # Only the main stream is active: single-stream, nothing to check (untouched).
         if not active_extra:
             return self
+
+        # HARD: size variation is wired for the single-stream path only. Silently ignoring it with a
+        # second/additional stream would drop a configured low-level-adaptation control from the
+        # recorded data, so reject it here rather than no-op (dual-stream size variation is #5).
+        if self.size_variation.enabled:
+            raise ValueError(
+                "size_variation is only supported for a single-stream Condition; disable it or "
+                "remove the second/additional streams (dual-stream size variation is not yet "
+                "implemented -- #5)."
+            )
 
         # HARD: every active stream position (main + each active extra) must be pairwise-distinct.
         positions = [tuple(self.main_stream.position_pix)] + [tuple(s.position_pix) for s in active_extra]
@@ -856,8 +917,10 @@ class FPVSSchema:
     #: replaces the main stream's scattered top-level fields (``base``/``oddball``/``base_selector``/
     #: ``oddball_selector``/``modulation``/``sweep``/``stream_position_pix``) with one ``main_stream``
     #: field of the same ``StreamParams`` shape every other stream already uses (re-freeze such
-    #: dev-only Instances, same as v4). Every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "9"
+    #: dev-only Instances, same as v4). v10 adds ``size_variation`` (per-stimulus random image
+    #: rescaling, the low-level-adaptation control -- additive, default off, single-stream only).
+    #: Every other bump is additive. See ``migrate``.
+    SCHEMA_VERSION = "10"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -886,11 +949,12 @@ class FPVSSchema:
         # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4", "5", "6", "7", "8"):
+        if old_version not in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8 are additive (position_jitter, distractor,
-        # oddball pattern + go_nogo, sweep, additional_streams + per-stream oddball_enabled,
-        # equalization: disabled/None/[]/False defaults fill in). v3->v4 drops the SepStim selector filters:
+        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8, v9->v10 are additive (position_jitter,
+        # distractor, oddball pattern + go_nogo, sweep, additional_streams + per-stream
+        # oddball_enabled, equalization, size_variation: disabled/None/[]/False defaults fill in).
+        # v3->v4 drops the SepStim selector filters:
         # strip them from base/oddball selectors so the migrated dict carries only
         # subdirectory/filename_pattern.
         migrated = dict(data)

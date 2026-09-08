@@ -33,10 +33,15 @@ run at, or what a trigger code means: you configure all of it per Condition.
 
 ## 2. Installing and starting xpman
 
-xpman is not yet packaged as a standalone installer (see [Section 9](#9-known-limitations)) —
-for now it runs from a Python environment.
+**If you just want to run xpman** (not develop it), use the packaged Windows installer —
+`xpman-setup-<version>.exe`. Get it from your lab's shared copy or the project's GitHub **Releases**
+page, double-click it, and click through the wizard: it installs **per-user** (no admin rights
+needed), adds a Start Menu entry, and registers a normal uninstall entry in "Apps & Features". Then
+launch **xpman** from the Start Menu — no Python required. Your data lives in a `data\` folder next
+to the app and is never touched by uninstalling. **The rest of this tutorial assumes this packaged
+install.**
 
-**One-time setup**, from the repo root, in PowerShell:
+**If you're developing xpman** (running from source), from the repo root in PowerShell:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -45,7 +50,8 @@ pip install -e .[dev]
 ```
 
 Python must be exactly 3.11 (`pyproject.toml` pins this) — PsychoPy, the timing engine xpman
-is built on, does not reliably install on newer interpreters.
+is built on, does not reliably install on newer interpreters. (See the README for a one-command
+`setup_dev_env.ps1` that does all of this, and for how to build the installer yourself.)
 
 If you'll be sending EEG trigger codes over a parallel port, also run, **as Administrator**:
 
@@ -55,16 +61,17 @@ scripts\install_parallel_port_driver.ps1
 
 See [Section 7](#7-troubleshooting) if this fails.
 
-**Every time you want to run xpman:**
+**Starting xpman:** a packaged install launches from its **Start Menu** entry. From a source
+checkout, activate the environment and run the module (from the repo root):
 
 ```powershell
 .venv\Scripts\Activate.ps1
 python -m xpman.gui.app
 ```
 
-This opens (creating if it doesn't exist yet) a local database at `data\xpman.db`, and stores
-per-run event logs under `data\runs\`. Both are relative to wherever you run the command from
-— run it from the repo root every time so you always land on the same data.
+Either way, xpman opens (creating if it doesn't exist yet) a local database at `data\xpman.db` and
+stores per-run event logs under `data\runs\`, in the app's working folder — so always start it the
+same way (the Start Menu entry, or the command from the repo root) to land on the same data.
 
 ## 3. Concepts: the object hierarchy
 
@@ -399,8 +406,8 @@ Program and Experiment have no parameters. Condition parameters:
 
 ### 6.2 FPVS task
 
-Program and Experiment have no parameters. Condition parameters are grouped into seven
-sections, shown as labeled boxes in the form:
+Program and Experiment have no parameters. Condition parameters are grouped into labeled
+sections, shown as boxes in the form:
 
 **Base sequence** (`base`)
 
@@ -515,6 +522,50 @@ hardware timing verification (e.g. taping a photodiode sensor to it):
 `toggle_strategy` options: `every_stimulus_onset` (flips on every image shown), `every_n_frames`
 (flips every N screen frames regardless of stimulus), `oddball_onset_only` (flips only on
 oddball images — useful for marking just the oddball events on an EEG channel).
+
+**Position jitter** (`position_jitter`) — randomize each image's on-screen position within a region,
+so the response isn't tied to one exact retinal location. Only the **image** moves; the fixation
+marker and photodiode patch stay put. Off by default. Each onset logs its `[x, y]` offset.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | checkbox | off | Turn position jitter on. |
+| `region` | dropdown | `rectangle` | Shape of the allowed area: axis-aligned `rectangle` or `disk`. |
+| `x_range_pix` / `y_range_pix` | two numbers (min, max) | (0, 0) | *Rectangle only:* horizontal / vertical offset range from center. |
+| `radius_pix` | number | 0 | *Disk only:* radius; positions are drawn uniformly over the disk **area**. |
+| `per` | dropdown | `stimulus` | Draw a fresh position for **every image** (`stimulus`) or **once per trial** (`trial`). |
+
+"Check Triggers…" warns if jitter is enabled but the region has **zero extent** (all ranges 0 → no
+displacement), if the offset could push an image **off screen**, and — for dual streams — if a large
+jitter could cross the midline onto the other stream or onto the photodiode patch.
+
+**Size variation** (`size_variation`) — randomly rescale each image within a range of its native
+size, the canonical FPVS control against **low-level pixel-wise adaptation** (so the oddball response
+reflects high-level individuation, not a repeated retinal image). Only the image is scaled; fixation
+and the photodiode patch are untouched. Off by default. Each onset logs its `size` scale.
+
+| Field | Type | Default | Constraints | Meaning |
+|---|---|---|---|---|
+| `enabled` | checkbox | off | — | Turn size variation on. |
+| `min_scale` / `max_scale` | number | 1.0 / 1.0 | > 0, `max ≥ min` | Smallest / largest size as a multiple of the image's native size (canonical FPVS uses ~**0.74–1.2**). |
+| `per` | dropdown | `stimulus` | — | Draw a fresh scale for **every image** (`stimulus`) or **once per trial** (`trial`). |
+
+Currently supported for a **single-stream** Condition only — enabling it together with a
+`second_stream`/`additional_streams` is **rejected** at save/freeze time (rather than silently
+ignored). "Check Triggers…" warns if it's enabled but `min_scale == max_scale` (a no-op).
+
+**Luminance / contrast equalization** (`equalization`) — optionally normalize every pool the
+Condition presents (base + oddball + any stream pools) toward the **combined** pool's mean, so a
+luminance/contrast gap **between** the base and oddball categories can't masquerade as a
+categorization response at the oddball frequency. Scope is the combined pool, not per-pool. Off by
+default (a real per-study decision).
+
+| Field | Type | Default | Constraints | Meaning |
+|---|---|---|---|---|
+| `enabled` | checkbox | off | — | Turn equalization on. |
+| `equalize_luminance` | checkbox | on | — | Scale each image's mean luminance toward the combined pool's mean. |
+| `equalize_contrast` | checkbox | on | — | Scale each image's RMS contrast toward the combined pool's mean. |
+| `strength` | number | 1.0 | 0–1 | 0 = no change, 1 = image mean/contrast becomes exactly the pool's. |
 
 > **Note — only one attention task at a time.** The behavioural attention tasks (`distractor`,
 > `go_nogo`, and any future one) are **not additive**: at most **one** may be enabled per Condition.
@@ -637,8 +688,11 @@ base-only streams and one oddball-carrying stream all at the same base rate, to 
 oddball's *position* (not frequency) modulates the response; base-only streams contribute no energy
 at any oddball frequency, so nothing becomes ambiguous. "Check Triggers…" additionally warns about
 softer **harmonic/intermodulation** collisions (`|n·f1 ± m·f2|` landing on a tagged frequency — these
-depend on trial length, so they're advisory, not blocking) and midline-crossover / photodiode-overlap
-from large position jitter.
+depend on trial length, so they're advisory, not blocking), about **rounding collisions** — two
+streams whose *requested* rates differ but round to the **same achieved frequency** on the frame grid
+(the block above compares requested rates; this catches the ones frame-quantization creates, and the
+run re-checks it against the real monitor) — and midline-crossover / photodiode-overlap from large
+position jitter.
 
 ## 7. Troubleshooting
 
@@ -688,7 +742,16 @@ The Launch dialog's status message includes the underlying error text. Common ca
 Some misconfigurations don't stop a Run but are worth catching. "Check Triggers…" (and the
 pre-freeze check) warn when **no trigger codes are set** (the EEG would have no event markers and
 be unanalyzable) or when **both fades are 0 s** (an abrupt onset transient can contaminate the
-periodic response). At run time, the event log records advisories when the stimulus set's measured
+periodic response). They also flag frequency-grid issues: a base rate that **isn't frame-exact** on
+the monitor (it doesn't divide the refresh evenly, so it's quantized to the nearest whole
+frames/cycle and the tag lands off the intended FFT bin — e.g. 6 Hz on a 75 Hz monitor becomes
+6.25 Hz, dragging a 1.2 Hz oddball to 1.25 Hz; the check names the nearest frame-exact rate), and a
+cross-stream **rounding collision** (two streams whose requested rates differ but round to the same
+achieved frequency). Both are computed for a nominal 60 Hz monitor at design time and **re-checked
+against the real refresh at run time** (the achieved base/oddball frequencies are always recorded in
+the per-trial result, so what actually ran on screen is never in doubt). Enabling `size_variation`
+with `min_scale == max_scale` (a no-op), or `position_jitter` with a zero-extent region, is flagged
+the same way. At run time, the event log records advisories when the stimulus set's measured
 mean luminance diverges from `background_gray` (opacity modulation stops being true *contrast*
 modulation) or when images have **heterogeneous pixel dimensions** (they'd render at different
 on-screen sizes). The luminance check is also done **per pool**: the base and oddball pools are
@@ -775,10 +838,12 @@ This requires writing Python, unlike everything else in this tutorial.
 - An Instance runs **one** experiment per launch (chosen in the Launch dialog); a Program's
   experiments are alternative protocols, not one big sequence.
 - The FPVS core base+oddball paradigm is implemented, along with contrast modulation,
-  familiarization, position jitter, the fixation distractor task, the spatial go/no-go task,
-  flexible base/oddball ordering patterns (BBBO…), the stepped **frequency sweep**, the per-trial
-  **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions (size
-  modulation, intra-category oddball, etc.) are listed in `TODO.md`.
+  familiarization, position jitter, **size variation** (random per-image rescaling, the low-level
+  adaptation control), luminance/contrast **equalization**, the fixation distractor task, the spatial
+  go/no-go task, flexible base/oddball ordering patterns (BBBO…), the stepped **frequency sweep**, the
+  per-trial **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions
+  (size-as-oddball modulation, intra-category oddball, and dual-stream size variation, etc.) are
+  listed in `TODO.md`.
 - Hardware timing verification against a real EEG rig is an ongoing manual step — see
   [`docs/verification_protocol.md`](verification_protocol.md) and the turnkey
   [`docs/lab_test_tutorial.md`](lab_test_tutorial.md). After a run, cross-check that xpman's

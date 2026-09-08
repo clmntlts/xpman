@@ -10,6 +10,7 @@ from xpman.tasks.fpvs.schema import (
     FPVSConditionParams,
     FPVSSchema,
     PositionJitterParams,
+    SizeVariationParams,
     StimulusSelector,
     StreamParams,
 )
@@ -99,13 +100,13 @@ def test_program_params_display_geometry_rejects_non_positive_values():
 
 
 def test_schema_version_is_set():
-    assert FPVSSchema.SCHEMA_VERSION == "9"
+    assert FPVSSchema.SCHEMA_VERSION == "10"
 
 
 def test_migrate_same_version_is_noop():
     schema = FPVSSchema()
-    version, data = schema.migrate("9", {"x": 1})
-    assert version == "9"
+    version, data = schema.migrate("10", {"x": 1})
+    assert version == "10"
     assert data == {"x": 1}
 
 
@@ -119,7 +120,7 @@ def test_migrate_v3_to_v4_drops_legacy_sepstim_selector_keys():
         "oddball_selector": {"category": "face", "variant": "negated"},
     }
     version, data = schema.migrate("3", v3)
-    assert version == "9"
+    assert version == "10"
     # only supported selector keys survive, and both selectors land under main_stream (v9).
     assert data["main_stream"]["base_selector"] == {"filename_pattern": "*a*"}
     assert data["main_stream"]["oddball_selector"] == {}
@@ -129,6 +130,41 @@ def test_migrate_unknown_version_raises():
     schema = FPVSSchema()
     with pytest.raises(ValueError):
         schema.migrate("999", {})
+
+
+def test_size_variation_rejects_max_below_min():
+    with pytest.raises(ValidationError, match="max_scale"):
+        SizeVariationParams(enabled=True, min_scale=1.2, max_scale=0.8)
+
+
+def test_size_variation_is_noop_when_min_equals_max():
+    assert SizeVariationParams(enabled=True, min_scale=1.0, max_scale=1.0).is_noop()
+    assert not SizeVariationParams(enabled=True, min_scale=0.8, max_scale=1.2).is_noop()
+
+
+def test_size_variation_defaults_are_a_disabled_noop():
+    sv = SizeVariationParams()
+    assert sv.enabled is False
+    assert sv.is_noop()
+
+
+def test_size_variation_rejected_with_a_second_stream():
+    """Size variation is wired for single-stream Conditions only; enabling it with a second stream
+    must be rejected (not silently ignored -- that would drop a configured control from the data)."""
+    params = FPVSConditionParams()
+    params.main_stream.position_pix = (-200.0, 0.0)
+    params.second_stream.enabled = True
+    params.second_stream.position_pix = (200.0, 0.0)
+    params.size_variation = SizeVariationParams(enabled=True, min_scale=0.8, max_scale=1.2)
+    with pytest.raises(ValidationError, match="size_variation is only supported"):
+        FPVSConditionParams.model_validate(params.model_dump())
+
+
+def test_size_variation_allowed_single_stream():
+    params = FPVSConditionParams()
+    params.size_variation = SizeVariationParams(enabled=True, min_scale=0.74, max_scale=1.2)
+    # No second/additional streams -> validates fine.
+    FPVSConditionParams.model_validate(params.model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +238,7 @@ def test_migrate_v1_to_current_passes_data_through():
     schema = FPVSSchema()
     v1_data = {"base": {"base_freq_hz": 6.0}, "oddball": {"oddball_freq_hz": 1.2}}
     version, data = schema.migrate("1", v1_data)
-    assert version == "9"
+    assert version == "10"
     assert data == {
         "main_stream": {
             "enabled": True,
@@ -219,7 +255,7 @@ def test_migrate_v2_to_current_passes_data_through():
     schema = FPVSSchema()
     v2_data = {"base": {"base_freq_hz": 6.0}, "position_jitter": {"enabled": False}}
     version, data = schema.migrate("2", v2_data)
-    assert version == "9"
+    assert version == "10"
     assert data == {
         "position_jitter": {"enabled": False},
         "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
@@ -267,7 +303,7 @@ def test_migrate_v5_to_v6_is_additive_passthrough():
     schema = FPVSSchema()
     v5 = {"base": {"base_freq_hz": 6.0}, "go_nogo": {"enabled": False}}
     version, data = schema.migrate("5", v5)
-    assert version == "9"
+    assert version == "10"
     assert data == {
         "go_nogo": {"enabled": False},
         "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
@@ -285,7 +321,7 @@ def test_migrate_v6_to_v7_is_additive_passthrough():
         "stream_position_pix": (0.0, 0.0),
     }
     version, data = schema.migrate("6", v6)
-    assert version == "9"
+    assert version == "10"
     assert data == {
         "second_stream": {"enabled": False},
         "main_stream": {
@@ -307,7 +343,7 @@ def test_migrate_v7_to_v8_is_additive_passthrough():
     schema = FPVSSchema()
     v7 = {"base": {"base_freq_hz": 6.0}, "additional_streams": []}
     version, data = schema.migrate("7", v7)
-    assert version == "9"
+    assert version == "10"
     assert data == {
         "additional_streams": [],
         "main_stream": {"enabled": True, "oddball_enabled": True, "base": {"base_freq_hz": 6.0}},
