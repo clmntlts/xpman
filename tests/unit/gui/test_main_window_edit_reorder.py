@@ -502,3 +502,49 @@ def test_preview_button_triggers_preview_for_current_condition(qtbot, session):
 
     mock_info.assert_called_once()
     assert len(task.preview_calls) == 1
+
+
+# -- confirm-before-save: a "legitimate but usually a mistake" Condition asks first -------------
+
+
+class _ConfirmingTask(_CheckableTask):
+    """A task that always wants the researcher to confirm before a Condition is saved."""
+
+    def confirm_before_save(self, condition_params: dict) -> list[str]:
+        return ["stream 0's oddball frequency (1.2 Hz) exactly equals stream 1's oddball frequency"]
+
+
+def _selected_condition_window(session, registry, qtbot):
+    fixture = _build_fixture(session)
+    window = MainWindow(session, fixture["profile"].id, registry)
+    qtbot.addWidget(window)
+    node = window._tree.model_.node_at(_find_index(window, "condition", fixture["condition"].id))
+    window._on_node_selected(node)
+    return window
+
+
+def test_save_is_abandoned_when_the_user_declines_the_confirmation(qtbot, session):
+    window = _selected_condition_window(session, TaskRegistry([_ConfirmingTask()]), qtbot)
+    with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.No) as prompt:
+        window._on_save()
+    prompt.assert_called_once()
+    # The reason and an explicit question are both in the prompt the user saw.
+    body = prompt.call_args[0][2]
+    assert "exactly equals" in body and "save anyway" in body.lower()
+    assert "Saved" not in window.statusBar().currentMessage()
+
+
+def test_save_proceeds_when_the_user_confirms(qtbot, session):
+    window = _selected_condition_window(session, TaskRegistry([_ConfirmingTask()]), qtbot)
+    with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Yes) as prompt:
+        window._on_save()
+    prompt.assert_called_once()
+    assert "Saved" in window.statusBar().currentMessage()
+
+
+def test_no_confirmation_prompt_when_the_task_has_nothing_to_confirm(qtbot, session, registry):
+    window = _selected_condition_window(session, registry, qtbot)
+    with patch.object(QMessageBox, "warning") as prompt:
+        window._on_save()
+    prompt.assert_not_called()
+    assert "Saved" in window.statusBar().currentMessage()

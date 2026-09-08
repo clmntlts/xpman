@@ -213,6 +213,20 @@ class TaskModule(ABC):
         """
         return []
 
+    def confirm_before_save(self, condition_params: dict) -> list[str]:
+        """Optional "are you sure?" checks for a Condition, run by the GUI **before** saving.
+
+        Returns human-readable reasons the researcher should explicitly confirm (empty = save
+        silently). This is for configurations that are **legitimate but usually a mistake** -- the
+        save is allowed, the GUI just asks first. It is deliberately distinct from:
+
+        - pydantic validation, which *refuses* genuinely unusable configurations outright, and
+        - :meth:`check_triggers`, which is an on-demand advisory list the user asks for.
+
+        Default: nothing to confirm.
+        """
+        return []
+
     def run_metadata(self) -> dict:
         """Optional run-level provenance a task can expose *after* ``prepare`` has run, for the
         engine to persist onto the ``Run`` row. Recognized keys (all optional):
