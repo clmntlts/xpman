@@ -69,8 +69,10 @@ from xpman.tasks.fpvs.schema import (
     FPVSProgramParams,
     FPVSSchema,
     PositionJitterParams,
+    SizeVariationParams,
     StimulusSelector,
 )
+from xpman.tasks.fpvs.size import sample_size_scale
 from xpman.tasks.fpvs.stimulus_inspect import inspect_pool
 
 if TYPE_CHECKING:
@@ -190,7 +192,16 @@ def _build_image_stim(
 ) -> "psychopy.visual.ImageStim":
     import psychopy.visual as visual
 
-    return visual.ImageStim(window, image=str(source_path or entry.path), units="pix")
+    stim = visual.ImageStim(window, image=str(source_path or entry.path), units="pix")
+    # Capture the image's NATIVE pixel size once, before any size-variation scaling can touch it, so
+    # ``_ImageWithFixation.set_size`` scales from a stable native baseline (the ImageStim is cached
+    # for the whole Run, so reading ``.size`` back later could return a previously-scaled value).
+    try:
+        native = tuple(float(v) for v in stim.size)
+        stim._xpman_native_size = (native[0], native[1])  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a mock/headless stim may not expose a numeric size; set_size then no-ops
+        stim._xpman_native_size = None  # type: ignore[attr-defined]
+    return stim
 
 
 def _get_image_stim(
@@ -308,13 +319,15 @@ def _run_familiarization(
     fixation_stim,
     refresh_rate_hz: float,
     position_provider: "Callable[[], tuple[float, float]] | None" = None,
+    size_provider: "Callable[[], float] | None" = None,
 ) -> None:
     """Show a base-only familiarization stream (no oddball) before the real sequence, framed by
     start/stop triggers and followed by a fixation-only blank. Reuses ``run_base_sequence`` (the
     existing base-only engine) with the familiarization frequency/duration/modulation.
 
-    ``position_provider`` (WP-B): forwarded so the familiarization stream jitters consistently with
-    the real sequence when enabled; ``None`` keeps it centered."""
+    ``position_provider`` (WP-B) / ``size_provider`` (#5): forwarded so the familiarization stream
+    jitters/rescales consistently with the real sequence when enabled; ``None`` keeps it
+    centered/native."""
     ctx.event_sink.log(
         "familiarization_start",
         # start_trigger_code makes this marker self-describing: it records the exact TTL code sent
@@ -341,6 +354,7 @@ def _run_familiarization(
         modulation=fam.modulation,
         rng=ctx.rng,
         position_provider=position_provider,
+        size_provider=size_provider,
     )
 
     if fam.stop_trigger_code is not None:
@@ -368,6 +382,7 @@ def _run_baseline(
     base_freq_hz: float,
     modulation,
     position_provider: "Callable[[], tuple[float, float]] | None" = None,
+    size_provider: "Callable[[], float] | None" = None,
 ) -> None:
     """Present one base-only (no-oddball) baseline segment -- the within-trial reference. Runs at the
     Condition's own ``base_freq_hz`` + ``modulation`` + base pool (so it is the main stimulation minus
@@ -397,6 +412,7 @@ def _run_baseline(
         modulation=modulation,
         rng=ctx.rng,
         position_provider=position_provider,
+        size_provider=size_provider,
     )
 
     if baseline.stop_trigger_code is not None:
@@ -437,6 +453,29 @@ def _build_position_provider(
     return lambda: sample_position(position_rng, jitter)
 
 
+def _build_size_provider(
+    size_variation: SizeVariationParams, size_rng: "numpy.random.Generator"
+) -> "Callable[[], float] | None":
+    """Build the ``size_provider`` the paradigm calls per stimulus, or ``None`` when size variation
+    is disabled (the sequence then presents images at native size -- ``_present_stimulus`` resets any
+    stale scale to 1.0 on the None path, exactly as it re-centers position).
+
+    ``size_rng`` is a **dedicated, decoupled** sub-stream (``ctx.rng.spawn(1)[0]`` in ``run_trial``,
+    spawned only when enabled), independent of the main ``ctx.rng`` and of the position sub-stream --
+    so enabling size variation never perturbs the trial/pool order or the position draws.
+
+    ``per="stimulus"`` draws a fresh scale on every call; ``per="trial"`` draws once and reuses that
+    fixed scale for the whole trial's stream."""
+    if not size_variation.enabled:
+        return None
+
+    if size_variation.per == "trial":
+        fixed = sample_size_scale(size_rng, size_variation)
+        return lambda: fixed
+
+    return lambda: sample_size_scale(size_rng, size_variation)
+
+
 def _gray_to_psychopy_rgb(gray: float) -> tuple[float, float, float]:
     """Map a 0..1 gray level to PsychoPy's default rgb color space [-1, 1] (0=black, 0.5=mid
     gray, 1=white -> -1, 0, +1)."""
@@ -472,6 +511,18 @@ class _ImageWithFixation:
         """Move **only** the stimulus image to ``pos`` (pixel offset from center); the fixation
         marker on top stays centered so position jitter never displaces fixation (WP-B)."""
         self._image_stim.pos = pos
+
+    def set_size(self, scale: float) -> None:
+        """Scale **only** the stimulus image to ``scale`` x its NATIVE pixel size; the fixation
+        marker and photodiode patch are untouched, so size variation never resizes fixation.
+
+        Always called per stimulus (``scale == 1.0`` restores native), mirroring ``set_position``'s
+        always-reset: the ImageStim is cached for the whole Run, so a prior size-varied trial could
+        have left a stale scale on this exact stim -- a native/1.0 stimulus must actively reset it or
+        the image silently stays resized while the onset log records ``size: None``."""
+        native = getattr(self._image_stim, "_xpman_native_size", None)
+        if native is not None:
+            self._image_stim.size = (native[0] * scale, native[1] * scale)
 
     def draw(self) -> None:
         self._image_stim.draw()
@@ -900,6 +951,16 @@ class FPVSTask(TaskModule):
             position_rng = ctx.rng.spawn(1)[0]
             position_provider = _build_position_provider(params.position_jitter, position_rng)
 
+        # Size variation (low-level-adaptation control, #5): same decoupled-RNG discipline as position
+        # jitter -- a dedicated ctx.rng.spawn(1) sub-stream drawn ONLY when enabled, so the disabled
+        # path spawns nothing and every existing Instance's RNG (and its position/overlay sub-streams)
+        # is byte-for-byte unchanged. Single-stream only (schema._check_multi_stream rejects it with a
+        # second/additional stream), so it threads through the single-stream sequence path alone.
+        size_provider = None
+        if params.size_variation.enabled:
+            size_rng = ctx.rng.spawn(1)[0]
+            size_provider = _build_size_provider(params.size_variation, size_rng)
+
         # Distractor (attention-control) task. Same decoupled-RNG discipline as position jitter: a
         # dedicated ctx.rng.spawn(1) sub-stream so the event schedule is reproducible per
         # (Instance, Subject) yet enabling the distractor never perturbs the stimulus order. Built
@@ -1012,7 +1073,8 @@ class FPVSTask(TaskModule):
         ran_familiarization = params.familiarization.enabled and trial_index == 0
         if ran_familiarization:
             _run_familiarization(
-                ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider
+                ctx, params.familiarization, base_stims, fixation_stim, refresh, position_provider,
+                size_provider,
             )
 
         # Per-trial baseline (base-only reference), 'before' phase: after familiarization and before
@@ -1028,6 +1090,7 @@ class FPVSTask(TaskModule):
                 params.main_stream.base.base_freq_hz,
                 params.main_stream.modulation,
                 position_provider,
+                size_provider,
             )
 
         # Active streams BEYOND the main (central) stream: the legacy second_stream (if enabled) plus
@@ -1262,6 +1325,7 @@ class FPVSTask(TaskModule):
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
                 position_provider=position_provider,
+                size_provider=size_provider,
                 overlays=overlay_controllers,
             )
         else:
@@ -1283,6 +1347,7 @@ class FPVSTask(TaskModule):
                 n_fade_out_frames=n_fade_out_frames,
                 rng=ctx.rng,
                 position_provider=position_provider,
+                size_provider=size_provider,
                 overlays=overlay_controllers,
             )
 
@@ -1300,6 +1365,7 @@ class FPVSTask(TaskModule):
                 params.main_stream.base.base_freq_hz,
                 params.main_stream.modulation,
                 position_provider,
+                size_provider,
             )
 
         # Fixation-only post-stimulus interval.
@@ -1740,6 +1806,13 @@ class FPVSTask(TaskModule):
                 f"position_jitter is enabled but the '{jitter.region}' region has zero extent "
                 "(radius/ranges are 0) -- every stimulus will be centered, so the jitter does "
                 "nothing. Set the region's radius/ranges, or disable position_jitter."
+            )
+        if params.size_variation.enabled and params.size_variation.is_noop():
+            warnings.append(
+                "size_variation is enabled but min_scale == max_scale "
+                f"({params.size_variation.min_scale:g}) -- every image shows at that fixed scale, so "
+                "the size variation does nothing. Widen the range (canonical FPVS uses ~0.74-1.2), "
+                "or disable size_variation."
             )
         if jitter.enabled:
             if jitter.region == "disk":

@@ -362,6 +362,7 @@ def _present_stimulus(
     modulation_fn: Callable[[int, int], float] | None = None,
     flip_log: "list[tuple[str, dict, float]] | None" = None,
     position: "tuple[float, float] | None" = None,
+    size_scale: "float | None" = None,
     overlays: "list[OverlayController]" = (),
 ) -> tuple[int, bool, float | None]:
     """Present ``stim`` for up to ``n_frames`` monitor frames. Returns
@@ -386,6 +387,16 @@ def _present_stimulus(
     set_position = getattr(stim, "set_position", None)
     if set_position is not None:
         set_position(effective_position)
+
+    # Size variation (#5): scale the image before its frames draw. Mirrors the position reset above --
+    # always applied (size_scale None -> 1.0 = native), because the ImageStim is cached for the whole
+    # Run, so a prior size-varied trial could leave a stale scale on this exact stim; a native/1.0
+    # stimulus must actively reset it or the image silently stays resized while the onset logs
+    # size=None. getattr guard: plain drawables/mocks may have no set_size.
+    effective_scale = size_scale if size_scale is not None else 1.0
+    set_size = getattr(stim, "set_size", None)
+    if set_size is not None:
+        set_size(effective_scale)
 
     for frame_in_stim in range(n_frames):
         if abort_check():
@@ -486,6 +497,10 @@ def _present_stimulus(
                     # centered (jitter off) -- so onsets record position provenance the same way
                     # they record image identity (WP-B).
                     "pos": [position[0], position[1]] if position is not None else None,
+                    # The size scale applied to this image (multiple of native), or None when size
+                    # variation is off -- onset provenance for the low-level-adaptation control (#5),
+                    # recorded the same way as position and identity.
+                    "size": size_scale if size_scale is not None else None,
                 },
                 timestamp=flip_time,
             )
@@ -604,6 +619,7 @@ def run_base_sequence(
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
     position_provider: Callable[[], tuple[float, float]] | None = None,
+    size_provider: Callable[[], float] | None = None,
 ) -> BaseSequenceResult:
     """Present ``stimuli`` (cycled through, wrapping around if shorter than needed) at
     ``params.base_freq_hz``, frame-counted against ``refresh_rate_hz``, for
@@ -683,6 +699,8 @@ def run_base_sequence(
             stim = stimuli[pool.next()]
             # One position draw per stimulus (C3). None provider -> centered (stim_position stays None).
             stim_position = position_provider() if position_provider is not None else None
+            # One size draw per stimulus (#5). None provider -> native (stim_scale stays None).
+            stim_scale = size_provider() if size_provider is not None else None
 
             frames_this_stim, stim_aborted, onset_time = _present_stimulus(
                 window=window,
@@ -702,6 +720,7 @@ def run_base_sequence(
                 modulation_fn=modulation_fn,
                 flip_log=flip_log,
                 position=stim_position,
+                size_scale=stim_scale,
             )
             global_frame_index += frames_this_stim
             frames_presented += frames_this_stim
@@ -936,6 +955,7 @@ def _present_oddball_segment(
     abort_check: Callable[[], bool],
     rng: "numpy.random.Generator | None",
     position_provider: Callable[[], tuple[float, float]] | None,
+    size_provider: Callable[[], float] | None,
     overlays: "list[OverlayController]",
     onsets: list[OnsetRecord],
     flip_log: "list[tuple[str, dict, float]]",
@@ -971,6 +991,8 @@ def _present_oddball_segment(
         # -> centered (stim_position stays None). Named stim_position to avoid shadowing the
         # 1-indexed stream ``position`` loop variable.
         stim_position = position_provider() if position_provider is not None else None
+        # One size draw per stimulus (#5), base and oddball alike. None provider -> native.
+        stim_scale = size_provider() if size_provider is not None else None
 
         frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
@@ -990,6 +1012,7 @@ def _present_oddball_segment(
             modulation_fn=plan.modulation_fn,
             flip_log=flip_log,
             position=stim_position,
+            size_scale=stim_scale,
             overlays=overlays,
         )
         global_frame_index += frames_this_stim
@@ -1029,6 +1052,7 @@ def _run_oddball_segments(
     n_fade_out_frames: int,
     rng: "numpy.random.Generator | None",
     position_provider: Callable[[], tuple[float, float]] | None,
+    size_provider: Callable[[], float] | None = None,
     overlays: "list[OverlayController]" = (),
 ) -> BaseOddballSequenceResult:
     """Present an ordered list of constant-frequency ``segments`` of a single ``stream`` back-to-back,
@@ -1125,6 +1149,7 @@ def _run_oddball_segments(
                 abort_check=abort_check,
                 rng=rng,
                 position_provider=position_provider,
+                size_provider=size_provider,
                 overlays=overlays,
                 onsets=onsets,
                 flip_log=flip_log,
@@ -1720,6 +1745,7 @@ def run_base_oddball_sequence(
     n_fade_out_frames: int = 0,
     rng: "numpy.random.Generator | None" = None,
     position_provider: Callable[[], tuple[float, float]] | None = None,
+    size_provider: Callable[[], float] | None = None,
     overlays: "list[OverlayController]" = (),
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
@@ -1785,5 +1811,6 @@ def run_base_oddball_sequence(
         n_fade_out_frames=n_fade_out_frames,
         rng=rng,
         position_provider=position_provider,
+        size_provider=size_provider,
         overlays=overlays,
     )
