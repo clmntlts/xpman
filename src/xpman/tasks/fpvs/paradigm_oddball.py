@@ -269,6 +269,11 @@ class StreamOutcome:
     achieved_oddball_freq_hz: float
     n_stimuli_shown: int
     n_oddballs_shown: int
+    #: Requested (expected) rates for this stream, so the per-trial results carry a full
+    #: requested-vs-achieved pair per stream (not just the main stream's). ``requested_oddball_freq_hz``
+    #: is None for a base-only stream. Defaulted for backward-compatibility with any older caller.
+    requested_base_freq_hz: float = 0.0
+    requested_oddball_freq_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +287,10 @@ class SegmentOutcome:
     achieved_oddball_freq_hz: float
     n_stimuli_shown: int
     n_oddballs_shown: int
+    #: Requested (expected) rates for this segment, so per-segment results carry a full
+    #: requested-vs-achieved pair. ``requested_oddball_freq_hz`` is None when the segment has no oddball.
+    requested_base_freq_hz: float = 0.0
+    requested_oddball_freq_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1169,6 +1178,8 @@ def _run_oddball_segments(
                         achieved_oddball_freq_hz=plan.achieved_oddball_hz,
                         n_stimuli_shown=seg_run.stimuli_shown,
                         n_oddballs_shown=seg_run.oddballs_shown,
+                        requested_base_freq_hz=seg.base_freq_hz,
+                        requested_oddball_freq_hz=seg_oddball.oddball_freq_hz,
                     )
                 )
                 event_sink.log(
@@ -1654,6 +1665,10 @@ def _run_dual_stream(
                         achieved_oddball_freq_hz=_seg_plan0.achieved_oddball_hz,
                         n_stimuli_shown=_seg_stimuli,
                         n_oddballs_shown=_seg_oddballs,
+                        requested_base_freq_hz=seg_list[0].base_freq_hz,
+                        requested_oddball_freq_hz=(
+                            seg_list[0].oddball.oddball_freq_hz if seg_list[0].oddball else None
+                        ),
                     )
                 )
                 event_sink.log(
@@ -1716,6 +1731,12 @@ def _run_dual_stream(
                 achieved_oddball_freq_hz=rt.plan.achieved_oddball_hz,
                 n_stimuli_shown=rt.n_stimuli_shown,
                 n_oddballs_shown=rt.n_oddballs_shown,
+                requested_base_freq_hz=first_seg_list[rt.stream_index].base_freq_hz,
+                requested_oddball_freq_hz=(
+                    first_seg_list[rt.stream_index].oddball.oddball_freq_hz
+                    if first_seg_list[rt.stream_index].oddball
+                    else None
+                ),
             )
             for rt in runtimes
         ),

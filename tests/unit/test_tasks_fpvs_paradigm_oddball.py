@@ -2123,6 +2123,12 @@ def test_dual_stream_base_only_sibling_shows_base_stimuli_and_zero_oddballs(tmp_
     assert result.per_stream[1].achieved_oddball_freq_hz == 0.0
     assert result.per_stream[1].n_stimuli_shown == 12
     assert result.per_stream[1].achieved_base_freq_hz == pytest.approx(12.0)
+    # Requested (expected) rates are carried per stream too (#74 follow-up), so the results summary
+    # can do a requested-vs-observed check for every stream. Base-only stream 1 -> oddball is None.
+    assert result.per_stream[1].requested_base_freq_hz == pytest.approx(12.0)
+    assert result.per_stream[1].requested_oddball_freq_hz is None
+    assert result.per_stream[0].requested_base_freq_hz == pytest.approx(6.0)
+    assert result.per_stream[0].requested_oddball_freq_hz is not None
     # Stream 0 (the oddball-carrying stream) is unaffected: exactly one oddball, real tagged frequency.
     assert result.per_stream[0].n_oddballs_shown == 1
     assert result.per_stream[0].achieved_oddball_freq_hz == pytest.approx(1.2)
