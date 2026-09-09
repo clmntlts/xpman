@@ -103,10 +103,17 @@ def pair_onsets(
 
     The device latency shifts every detected onset by roughly the same constant, which can far exceed
     ``tolerance_seconds`` (a per-onset jitter window). So a coarse constant offset is estimated first
-    -- the median of the order-aligned differences over the matchable prefix -- and removed before
-    nearest-neighbour matching; the pairs returned keep the ORIGINAL scheduled/measured times, so the
-    real latency is preserved for ``onset_jitter_stats`` (mean latency) and only the jitter around it
-    is what ``tolerance_seconds`` bounds. Greedy nearest matching, each detection used at most once.
+    and removed before nearest-neighbour matching; the pairs returned keep the ORIGINAL
+    scheduled/measured times, so the real latency is preserved for ``onset_jitter_stats`` (mean
+    latency) and only the jitter around it is what ``tolerance_seconds`` bounds. Greedy nearest
+    matching, each detection used at most once.
+
+    The offset is the median of each detected onset's difference to its NEAREST scheduled onset
+    (not an order-aligned prefix). Order alignment is biased by a whole interval when the FIRST
+    onset(s) drop out or a spurious detection precedes the train; the nearest-neighbour estimate is
+    immune to that as long as the latency stays within half the click interval -- which holds for
+    calibration, where device latency (a few to tens of ms) is far below the click spacing. A
+    handful of dropouts/spurious detections only perturb a median, so the estimate stays robust.
     """
     if tolerance_seconds <= 0:
         raise ValueError(f"tolerance_seconds must be > 0, got {tolerance_seconds!r}")
@@ -115,10 +122,12 @@ def pair_onsets(
     if not sched or not det:
         return PairingResult(pairs=[], missed=list(sched), spurious=list(det))
 
-    # Coarse constant offset (playback latency): order-align the common prefix and take the median
-    # difference -- robust to a few missed/extra onsets at the ends.
-    k = min(len(sched), len(det))
-    offset = float(np.median([det[i] - sched[i] for i in range(k)]))
+    # Coarse constant offset (playback latency): median of each detection's difference to its nearest
+    # scheduled onset. Robust to leading/trailing dropouts and a few spurious detections, provided
+    # |latency| < interval/2 (true for a calibration loopback).
+    sched_arr = np.asarray(sched, dtype=np.float64)
+    nearest_diffs = [float(d - sched_arr[int(np.argmin(np.abs(sched_arr - d)))]) for d in det]
+    offset = float(np.median(nearest_diffs))
 
     used = [False] * len(det)
     pairs: list[tuple[float, float]] = []
