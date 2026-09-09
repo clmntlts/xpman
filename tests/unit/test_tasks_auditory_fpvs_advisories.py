@@ -31,15 +31,18 @@ def test_base_not_sample_exact():
     assert any("base frequency" in m and "sample-exact" in m for m in msgs)
 
 
-def test_oddball_not_sample_exact():
-    msgs = condition_advisories(_params(oddball={"oddball_freq_hz": 0.7000001}))
-    assert any("oddball frequency" in m and "sample-exact" in m for m in msgs)
-
-
-def test_non_integer_ratio_flagged():
-    # base 4, oddball 0.9 -> ratio 4.44, not integer.
+def test_non_integer_ratio_flagged_with_achieved_rate():
+    # base 4, oddball 0.9 -> ratio 4.44, not integer; message reports the achieved every-Nth rate.
     msgs = condition_advisories(_params(oddball={"oddball_freq_hz": 0.9}))
-    assert any("not an integer" in m for m in msgs)
+    assert any("not an integer" in m and "achieved oddball rate" in m for m in msgs)
+
+
+def test_oddball_at_barbero_1p333_is_clean():
+    # 4 Hz base, 1.333 Hz oddball = base/3 exactly (the Barbero 2021 voice paradigm). Even though
+    # 1.333 does not divide the sample rate, the oddball is every 3rd base token, so it must NOT be
+    # flagged as a non-integer ratio.
+    msgs = condition_advisories(_params(oddball={"oddball_freq_hz": 1.333}))
+    assert not any("not an integer" in m for m in msgs)
 
 
 def test_integer_ratio_not_flagged():
