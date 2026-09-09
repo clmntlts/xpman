@@ -122,6 +122,16 @@ def condition_advisories(params: AuditoryFPVSConditionParams) -> list[str]:
             "there is no category change at the oddball rate and no valid oddball response. Point the "
             "base and oddball selectors at different subdirectories/patterns."
         )
+    elif not params.equalization.enabled:
+        # 7b. Distinct pools but equalization OFF: any between-category loudness/energy difference
+        #     recurs at the oddball rate as a low-level confound (it is exactly the step RMS
+        #     equalization removes). Parameter-only: we can't measure the pools' actual energy here,
+        #     only that the guard is off while the categories differ.
+        messages.append(
+            "RMS equalization is off while base and oddball use different pools -- any between-category "
+            "loudness/energy difference will recur at the oddball rate as a low-level confound (the "
+            "step equalization removes). Enable equalization unless the pools are already energy-matched."
+        )
 
     # 8. Analysis window (trial minus the fade regions, which are excluded from analysis) is not an
     #    integer number of oddball cycles -> spectral leakage off the oddball bin. For a clean FFT the

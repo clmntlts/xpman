@@ -16,9 +16,11 @@ def _params(**over):
         "token": {"duration_seconds": 0.15, "ramp_seconds": 0.015},
         "audio": {"sample_rate_hz": 48000},
         # Distinct pools by default so the baseline is genuinely advisory-free (identical selectors
-        # would -- correctly -- raise the "same sound selector" advisory).
+        # would -- correctly -- raise the "same sound selector" advisory), and equalization ON so the
+        # "eq off with distinct pools" advisory doesn't fire on the clean baseline.
         "base_selector": {"subdirectory": "objects"},
         "oddball_selector": {"subdirectory": "voices"},
+        "equalization": {"enabled": True},
     }
     for k, v in over.items():
         data[k] = {**data.get(k, {}), **v} if isinstance(v, dict) and isinstance(data.get(k), dict) else v
@@ -33,6 +35,19 @@ def test_identical_selectors_flagged():
     msgs = condition_advisories(_params(base_selector={"subdirectory": "all"},
                                         oddball_selector={"subdirectory": "all"}))
     assert any("SAME sound selector" in m for m in msgs)
+
+
+def test_equalization_off_with_distinct_pools_flagged():
+    msgs = condition_advisories(_params(equalization={"enabled": False}))
+    assert any("equalization is off" in m.lower() for m in msgs)
+
+
+def test_equalization_off_not_flagged_when_pools_identical():
+    # When the pools are identical, the "same selector" advisory covers it; don't also nag about eq.
+    msgs = condition_advisories(_params(equalization={"enabled": False},
+                                        base_selector={"subdirectory": "x"},
+                                        oddball_selector={"subdirectory": "x"}))
+    assert not any("equalization is off" in m.lower() for m in msgs)
 
 
 def test_non_integer_analysis_window_flagged():

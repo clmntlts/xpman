@@ -77,10 +77,20 @@ def evaluate_gate(
             "-- run the audio calibration before recording."
         )
         if not fingerprint.has_low_latency_path():
+            # No low-latency host API AT ALL is a distinct, more fundamental problem than "just not
+            # calibrated yet" -- calibration can't pass here without different hardware -- so report it
+            # as its own status rather than folding it into NEEDS_CALIBRATION.
             warnings.append(
                 "No low-latency audio host API (ASIO / WASAPI / WDM-KS / Core Audio) is available on "
                 "this machine -- onset timing is unlikely to meet the jitter budget without a "
                 "dedicated low-latency audio interface."
+            )
+            return GateResult(
+                status="NO_LOW_LATENCY_PATH",
+                requires_confirmation=True,
+                warnings=tuple(warnings),
+                profile=None,
+                budget_seconds=budget,
             )
         return GateResult(
             status="NEEDS_CALIBRATION",

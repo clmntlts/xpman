@@ -7,11 +7,12 @@ sample clock as the timing master instead of the monitor's frame clock. Everythi
 to describe one auditory trial lives here as one Pydantic model, satisfying the same
 ``ParameterSchema`` protocol (``tasks/base.py``) the dummy and FPVS schemas do.
 
-Scope of THIS increment (deliberately hardware-independent): the parameter surface and its
-validators, plus the pure sample-clock schedule math in ``schedule.py``. The PsychPortAudio playback
-backend, trigger firing, verification (mic/loopback onset detection) and GUI/entry-point registration
-are later increments, gated on the Phase 0 hardware-latency measurements -- see the dev plan. This
-task is therefore not yet registered as an ``xpman.tasks`` entry point.
+This module is the parameter surface + validators; the pure sample-clock math lives in
+``schedule.py`` and the runnable task (engine, PsychPortAudio playback, trigger firing, sound pools,
+the calibration gate) in the sibling modules. The task **is registered** as the ``auditory_fpvs``
+``xpman.tasks`` entry point and is launchable through the GUI; what remains gated on the Phase 0
+hardware-latency measurements is not the code but the *trust* in its onset timing -- an uncalibrated
+machine records only behind the advisory calibration gate (see ``docs/audio_calibration_gate.md``).
 
 Design decisions carried from the feasibility review and baked into the defaults/validators here:
 - **Base rate ceiling 2-4 Hz.** Auditory tokens must not overlap (each token has to fit inside one
