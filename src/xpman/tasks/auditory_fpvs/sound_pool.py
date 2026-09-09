@@ -66,6 +66,67 @@ def _resample(data: "np.ndarray", src_rate: int, dst_rate: int) -> "np.ndarray":
     return resample_poly(data, dst_rate // g, src_rate // g)
 
 
+def decode_mono(path: str | Path) -> tuple["np.ndarray", int]:
+    """Decode one audio file to a mono ``float64`` array at its **native** sample rate, returning
+    ``(data, native_rate)``.
+
+    This is the expensive step (real ``soundfile`` I/O + libsndfile decode + a channel downmix), and
+    it is deliberately split out from resampling/gating so a task can decode every file **once**, up
+    front (``AuditoryFPVSTask.on_before_run``), and cache the raw waveform keyed by path. The cheap,
+    per-Condition steps -- resample to the target rate and gate to a token -- then run against the
+    cached array with no further file I/O in ``run_trial``'s hot path. ``load_pool`` still does the
+    whole decode+resample+gate in one call for callers that don't preload."""
+    import soundfile as sf
+
+    data, src_rate = sf.read(str(path), dtype="float64", always_2d=False)
+    return _to_mono(data), int(src_rate)
+
+
+def _rms(token: "np.ndarray") -> float:
+    """Root-mean-square amplitude of a token (its loudness proxy). 0.0 for an all-zero/empty token."""
+    if token.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(np.asarray(token, dtype=np.float64)))))
+
+
+def equalize_pools(
+    base_tokens: list["np.ndarray"],
+    oddball_tokens: list["np.ndarray"],
+    *,
+    strength: float,
+) -> tuple[list["np.ndarray"], list["np.ndarray"]]:
+    """Scale every token toward the **combined** (base + oddball) pool's mean RMS, returning new
+    ``(base, oddball)`` lists (inputs are never mutated).
+
+    The confound this removes is the between-category loudness step: base and oddball tokens are
+    usually different categories with different natural energy, and that difference would recur at
+    the oddball frequency, masquerading as a category response. Equalizing across the union of every
+    token -- not per-pool -- collapses both pools onto one shared target RMS (see
+    ``schema.AudioEqualizationParams`` for the rationale).
+
+    Each token is scaled by ``1 + strength * (target/token_rms - 1)`` (RMS-preserving toward the
+    target): ``strength=0`` leaves it unchanged, ``strength=1`` makes its RMS exactly the target,
+    intermediate values interpolate. A silent token (``token_rms == 0``) has no defined ratio and is
+    left untouched. When the combined pool has no signal at all (target 0) every token is returned
+    unchanged."""
+    combined = list(base_tokens) + list(oddball_tokens)
+    rms_values = [_rms(t) for t in combined]
+    non_zero = [r for r in rms_values if r > 0]
+    if not non_zero:
+        # Nothing to equalize against (all silent): return copies unchanged.
+        return [t.copy() for t in base_tokens], [t.copy() for t in oddball_tokens]
+    target = float(np.mean(non_zero))
+
+    def _scale(token: "np.ndarray") -> "np.ndarray":
+        rms = _rms(token)
+        if rms == 0.0:
+            return token.copy()
+        factor = 1.0 + strength * (target / rms - 1.0)
+        return (np.asarray(token, dtype=np.float64) * factor).astype(token.dtype)
+
+    return [_scale(t) for t in base_tokens], [_scale(t) for t in oddball_tokens]
+
+
 def gate_token(data: "np.ndarray", sample_rate_hz: int, token: TokenParams) -> "np.ndarray":
     """Trim/pad ``data`` (already mono, at ``sample_rate_hz``) to the token duration and apply the
     raised-cosine gate. Shorter clips are zero-padded to length; longer clips are truncated. The
@@ -88,8 +149,6 @@ def load_pool(
     """Load every file the ``selector`` picks, each decoded to mono at ``sample_rate_hz`` and gated to
     a token. Returns one array per file (multi-exemplar pool). Raises ``FileNotFoundError`` when the
     selector matches nothing -- a Condition can't run without at least one token."""
-    import soundfile as sf
-
     files = select_files(resource_dir, selector)
     if not files:
         raise FileNotFoundError(
@@ -98,8 +157,7 @@ def load_pool(
         )
     tokens: list[np.ndarray] = []
     for path in files:
-        data, src_rate = sf.read(str(path), dtype="float64", always_2d=False)
-        mono = _to_mono(data)
-        resampled = _resample(mono, int(src_rate), sample_rate_hz)
+        mono, src_rate = decode_mono(path)
+        resampled = _resample(mono, src_rate, sample_rate_hz)
         tokens.append(gate_token(resampled, sample_rate_hz, token))
     return tokens

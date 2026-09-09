@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from xpman.tasks.auditory_fpvs.engine import plan_trial
+from xpman.tasks.auditory_fpvs.engine import apply_sequence_fade, plan_trial
 from xpman.tasks.auditory_fpvs.schema import AuditoryFPVSConditionParams
 
 
@@ -17,7 +17,12 @@ def _params(**over):
         "audio": {"sample_rate_hz": 48000},
     }
     for k, v in over.items():
-        data[k] = {**data.get(k, {}), **v}
+        # Nested param groups (base/oddball/token/audio) merge; scalar top-level fields (the
+        # sequence fades) are assigned directly.
+        if isinstance(v, dict):
+            data[k] = {**data.get(k, {}), **v}
+        else:
+            data[k] = v
     return AuditoryFPVSConditionParams(**data)
 
 
@@ -98,3 +103,68 @@ def test_empty_pools_rejected():
         plan_trial(params, base_tokens=[], oddball_tokens=_pool(1, 0.9), rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="oddball token pool is empty"):
         plan_trial(params, base_tokens=_pool(1, 0.5), oddball_tokens=[], rng=np.random.default_rng(0))
+
+
+class TestApplySequenceFade:
+    def test_no_fade_returns_unchanged_copy(self):
+        buf = np.ones(1000, dtype=np.float32)
+        out = apply_sequence_fade(buf, 48000, 0.0, 0.0)
+        assert np.array_equal(out, buf)
+        assert out is not buf  # a copy, never the same array
+
+    def test_fades_start_and_end_at_zero(self):
+        sr = 1000
+        buf = np.ones(sr, dtype=np.float32)  # 1 s of full-scale
+        out = apply_sequence_fade(buf, sr, 0.1, 0.2)
+        assert out[0] == pytest.approx(0.0, abs=1e-6)
+        assert out[-1] == pytest.approx(0.0, abs=1e-6)
+
+    def test_flat_middle_equals_pre_fade(self):
+        sr = 1000
+        buf = np.full(sr, 0.5, dtype=np.float32)
+        in_s, out_s = 0.1, 0.2
+        out = apply_sequence_fade(buf, sr, in_s, out_s)
+        in_n = int(round(in_s * sr))
+        out_n = int(round(out_s * sr))
+        middle = out[in_n:sr - out_n]
+        assert np.allclose(middle, 0.5, atol=1e-6)
+
+    def test_fade_in_is_monotone_nondecreasing(self):
+        sr = 1000
+        buf = np.ones(sr, dtype=np.float32)
+        out = apply_sequence_fade(buf, sr, 0.25, 0.0)
+        ramp = out[: int(0.25 * sr)]
+        assert np.all(np.diff(ramp) >= -1e-7)
+
+    def test_does_not_mutate_input(self):
+        buf = np.ones(100, dtype=np.float32)
+        before = buf.copy()
+        apply_sequence_fade(buf, 1000, 0.01, 0.01)
+        assert np.array_equal(buf, before)
+
+    def test_returns_float32(self):
+        out = apply_sequence_fade(np.ones(100, dtype=np.float64), 1000, 0.01, 0.0)
+        assert out.dtype == np.float32
+
+
+class TestPlanTrialFade:
+    def test_fade_applied_and_recorded(self):
+        # 1 s trial, 0.25 s fades each side; buffer starts/ends silent and the plan records the fades.
+        params = _params(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 1.0},
+            oddball={"oddball_freq_hz": 2.0},
+            fade_in_seconds=0.25,
+            fade_out_seconds=0.25,
+        )
+        planned = plan_trial(params, base_tokens=_pool(1, 0.5), oddball_tokens=_pool(1, 0.9),
+                             rng=np.random.default_rng(0))
+        assert planned.fade_in_seconds == 0.25
+        assert planned.fade_out_seconds == 0.25
+        assert planned.buffer[0] == pytest.approx(0.0, abs=1e-6)
+        assert planned.buffer[-1] == pytest.approx(0.0, abs=1e-6)
+
+    def test_no_fade_by_default(self):
+        params = _params(base={"base_freq_hz": 4.0, "trial_duration_seconds": 1.0}, oddball={"oddball_freq_hz": 2.0})
+        planned = plan_trial(params, base_tokens=_pool(1, 0.5), oddball_tokens=_pool(1, 0.9),
+                             rng=np.random.default_rng(0))
+        assert planned.fade_in_seconds == 0.0 and planned.fade_out_seconds == 0.0

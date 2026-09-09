@@ -21,9 +21,19 @@ import time
 
 from xpman.tasks.auditory_fpvs.advisories import condition_advisories
 from xpman.tasks.auditory_fpvs.engine import plan_trial
-from xpman.tasks.auditory_fpvs.schema import AuditoryFPVSConditionParams, AuditoryFPVSSchema
+from xpman.tasks.auditory_fpvs.schema import (
+    AuditoryFPVSConditionParams,
+    AuditoryFPVSSchema,
+    SoundSelector,
+)
 from xpman.tasks.auditory_fpvs.schedule import achieved_frequency_hz, samples_per_cycle
-from xpman.tasks.auditory_fpvs.sound_pool import load_pool, select_files
+from xpman.tasks.auditory_fpvs.sound_pool import (
+    _resample,
+    decode_mono,
+    equalize_pools,
+    gate_token,
+    select_files,
+)
 from xpman.tasks.base import TaskContext, TaskModule, TrialResult
 
 #: How far ahead of "now" playback is scheduled, so the device has started before the first token
@@ -39,9 +49,15 @@ class AuditoryFPVSTask(TaskModule):
     def __init__(self) -> None:
         self._audio_opened = False
         self._opened_config: tuple | None = None
-        # Pools are cached per (selector, sample_rate, token) so repeated trials of one Condition
-        # don't re-decode the sound files each time.
-        self._pool_cache: dict[tuple, list] = {}
+        # Two-stage sound cache so no trial pays a file-decode cost in its hot path (mirrors how the
+        # visual task GPU-uploads every image up front). ``_decode_cache`` holds each file's raw mono
+        # waveform at its NATIVE rate, decoded exactly once (in on_before_run, before trial 1, so the
+        # expensive libsndfile decode is front-loaded). ``_resample_cache`` holds the cheap, lazily
+        # computed resample to a given output rate, keyed by (path, sample_rate_hz). Per-trial pool
+        # assembly (gate + optional RMS equalization) then runs against these cached arrays with no
+        # soundfile.read on the run_trial path.
+        self._decode_cache: dict[str, tuple] = {}
+        self._resample_cache: dict[tuple[str, int], object] = {}
 
     # -- lifecycle -----------------------------------------------------------------------------
     def prepare(self, ctx: TaskContext) -> None:
@@ -57,6 +73,26 @@ class AuditoryFPVSTask(TaskModule):
                  "note": "onset timing not verified on this machine; run the audio calibration"},
             )
 
+    def on_before_run(self, ctx: TaskContext) -> None:
+        """Decode every audio file in the resource directory once, up front, before trial 1 -- the
+        auditory analogue of the visual task eagerly GPU-uploading every discovered image here.
+
+        Without this, each file is decoded lazily the first trial that happens to draw it, so
+        trial-start latency depends on which files that trial's randomized pool draw touches for the
+        first time -- inconsistent trial to trial, and worst on trial 1. Front-loading the decode
+        means every trial (trial 1 included) assembles its pools from an already-warm cache with no
+        ``soundfile.read`` on the hot path.
+
+        Decode is at each file's NATIVE rate (this hook has no Condition params, so the output sample
+        rate isn't known yet), keyed by path. The cheap per-Condition resample to the actual output
+        rate is done lazily in ``_load_pools`` and cached by (path, sample_rate_hz). Every audio file
+        under the resource directory is decoded, not just the ones a given Condition selects, since
+        prepare()/on_before_run() don't see the trial sequence."""
+        files = select_files(ctx.resource_dir, SoundSelector())
+        for path in files:
+            self._decode(path)
+        ctx.event_sink.log("sounds_preloaded", {"n_sounds": len(files)})
+
     def cleanup(self, ctx: TaskContext) -> None:
         try:
             ctx.audio_player.stop()
@@ -64,7 +100,8 @@ class AuditoryFPVSTask(TaskModule):
             if self._audio_opened:
                 ctx.audio_player.close()
                 self._audio_opened = False
-            self._pool_cache.clear()
+            self._decode_cache.clear()
+            self._resample_cache.clear()
             ctx.event_sink.log("cleanup", {"task_id": self.task_id})
 
     # -- per trial -----------------------------------------------------------------------------
@@ -128,6 +165,8 @@ class AuditoryFPVSTask(TaskModule):
                 "achieved_oddball_freq_hz": achieved_frequency_hz(sr, samples_per_cycle(sr, params.oddball.oddball_freq_hz)),
                 "sample_rate_hz": sr,
                 "trial_duration_seconds": params.base.trial_duration_seconds,
+                "fade_in_seconds": planned.fade_in_seconds,
+                "fade_out_seconds": planned.fade_out_seconds,
                 "aborted": aborted,
             }
         )
@@ -189,16 +228,49 @@ class AuditoryFPVSTask(TaskModule):
         self._opened_config = cfg
         ctx.event_sink.log("audio_device_opened", ctx.audio_player.describe())
 
+    def _decode(self, path) -> tuple:
+        """Raw mono waveform at the file's native rate, decoded at most once per path (cached). This
+        is the only place ``soundfile`` I/O happens; on_before_run warms it for every file so no trial
+        pays a decode."""
+        key = str(path)
+        if key not in self._decode_cache:
+            self._decode_cache[key] = decode_mono(path)
+        return self._decode_cache[key]
+
+    def _resampled(self, path, sample_rate_hz: int):
+        """The file's mono waveform resampled to ``sample_rate_hz`` (cheap, band-limited), cached by
+        (path, sample_rate_hz). Decodes on a cache miss, so this is safe even if on_before_run hasn't
+        run -- but after it has, every decode is already cached and only the resample is computed."""
+        key = (str(path), sample_rate_hz)
+        if key not in self._resample_cache:
+            mono, native_rate = self._decode(path)
+            self._resample_cache[key] = _resample(mono, native_rate, sample_rate_hz)
+        return self._resample_cache[key]
+
     def _load_pools(self, ctx: TaskContext, params: AuditoryFPVSConditionParams):
+        """Assemble this Condition's (base, oddball) gated-token pools with NO file I/O on the hot
+        path: select the files, pull each one's decoded+resampled waveform from the cache (decoding on
+        a cache miss), gate each to a fixed-length token, and -- when equalization is enabled -- scale
+        every token toward the combined pool's mean RMS. Raises ``FileNotFoundError`` if a selector
+        matches nothing, since a Condition can't run without at least one token per pool."""
         sr = params.audio.sample_rate_hz
         tok = params.token
-        results = []
-        for selector in (params.base_selector, params.oddball_selector):
-            key = (selector.subdirectory, selector.filename_pattern, sr, tok.duration_seconds, tok.ramp_seconds)
-            if key not in self._pool_cache:
-                self._pool_cache[key] = load_pool(ctx.resource_dir, selector, sample_rate_hz=sr, token=tok)
-            results.append(self._pool_cache[key])
-        return results[0], results[1]
+        pools: list[list] = []
+        for label, selector in (("base", params.base_selector), ("oddball", params.oddball_selector)):
+            files = select_files(ctx.resource_dir, selector)
+            if not files:
+                raise FileNotFoundError(
+                    f"no audio files matched the {label} selector "
+                    f"(subdirectory={selector.subdirectory!r}, "
+                    f"filename_pattern={selector.filename_pattern!r}) under {ctx.resource_dir!r}"
+                )
+            pools.append([gate_token(self._resampled(p, sr), sr, tok) for p in files])
+        base_tokens, oddball_tokens = pools
+        if params.equalization.enabled:
+            base_tokens, oddball_tokens = equalize_pools(
+                base_tokens, oddball_tokens, strength=params.equalization.strength
+            )
+        return base_tokens, oddball_tokens
 
     def _wait_until(self, ctx: TaskContext, target: float) -> bool:
         """Block until ``ctx.clock`` reaches ``target`` (seconds), polling ``abort_check``. Returns
