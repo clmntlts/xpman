@@ -177,6 +177,87 @@ class TestCheckTriggers:
         assert any("Oddball pool: 2" in line for line in lines)
 
 
+class CapturingPlayer(NullAudioPlayer):
+    """A NullAudioPlayer that also keeps a copy of every buffer it is asked to play, so a test can
+    inspect what the overlay's in-place buffer modification actually produced."""
+
+    def __init__(self):
+        super().__init__()
+        self.buffers = []
+
+    def play(self, buffer, *, when):
+        self.buffers.append(np.array(buffer, copy=True))
+        return super().play(buffer, when=when)
+
+
+class TestCatchOverlay:
+    """Headless run_trial with the volume-decrement catch task enabled: onsets logged, buffer
+    attenuated at the target tokens, and a score summarised into the outcome."""
+
+    def _catch_condition(self):
+        # A 10 s / 4 Hz trial (40 tokens) leaves ample room for the catch targets; no per-token base
+        # trigger so nothing competes with the catch onsets in this check.
+        return _condition(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 10.0, "base_trigger_code": None},
+            oddball={"oddball_freq_hz": 0.8, "oddball_trigger_code": None},
+            catch={"enabled": True, "target_count": 3, "guard_seconds": 1.0,
+                   "min_separation_seconds": 1.0, "decrement_factor": 12.5},
+        )
+
+    def test_catch_onsets_logged_and_buffer_attenuated(self, tmp_path):
+        _resource_dir(tmp_path)
+        sink = FakeSink()
+        player = CapturingPlayer()
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path, sink=sink, audio=player)
+        task.prepare(ctx)
+        result = task.run_trial(ctx, self._catch_condition(), trial_index=0)
+
+        # Every scheduled catch target fired (FakeClock resolves each onset immediately).
+        onsets = sink.of_type("catch_onset")
+        assert len(onsets) == 3
+        assert sink.of_type("catch_scored")
+        assert result.outcome_summary["catch_enabled"] is True
+        # No key capture available headlessly -> all targets are misses, no hits/false alarms.
+        assert result.outcome_summary["catch_n_events"] == 3
+        assert result.outcome_summary["catch_n_hits"] == 0
+        assert result.outcome_summary["catch_n_misses"] == 3
+
+        # The played buffer is attenuated exactly at each catch target token, relative to a reference
+        # run with the catch disabled (same seed -> identical base render).
+        catch_buffer = player.buffers[0]
+        ref_player = CapturingPlayer()
+        ref_task = AuditoryFPVSTask()
+        ref_ctx = _ctx(tmp_path, sink=FakeSink(), audio=ref_player)
+        ref_task.prepare(ref_ctx)
+        ref_task.run_trial(ref_ctx, _condition(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 10.0, "base_trigger_code": None},
+            oddball={"oddball_freq_hz": 0.8, "oddball_trigger_code": None},
+        ), trial_index=0)
+        ref_buffer = ref_player.buffers[0]
+        assert catch_buffer.shape == ref_buffer.shape
+
+        sr = 48000
+        token_len = round(0.15 * sr)
+        target_starts = [round(o[1]["onset_seconds"] * sr) for o in onsets]
+        for start in target_starts:
+            seg_catch = catch_buffer[start:start + token_len]
+            seg_ref = ref_buffer[start:start + token_len]
+            assert np.allclose(seg_catch, seg_ref / 12.5, atol=1e-6)
+        # A sample well away from any target token is untouched between the two renders.
+        assert np.allclose(catch_buffer[0], ref_buffer[0])
+
+    def test_catch_disabled_leaves_buffer_and_events_untouched(self, tmp_path):
+        _resource_dir(tmp_path)
+        sink = FakeSink()
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path, sink=sink)
+        result = task.run_trial(ctx, _condition(), trial_index=0)
+        assert not sink.of_type("catch_onset")
+        assert result.outcome_summary["catch_enabled"] is False
+        assert result.outcome_summary["catch_n_hits"] is None
+
+
 class TestClassAttributes:
     def test_ids(self):
         task = AuditoryFPVSTask()

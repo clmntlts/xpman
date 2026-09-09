@@ -32,6 +32,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.auditory_fpvs.catch import CatchOverlay, VolumeDecrementCatchParams
+
 
 class SoundSelector(BaseModel):
     """Selects a subset of the Program's resource directory as a **sound pool** -- the auditory
@@ -252,6 +254,31 @@ class AuditoryFPVSConditionParams(BaseModel):
         json_schema_extra={"section": "Stream"},
     )
 
+    # -- Attention tasks ------------------------------------------------------------------------
+    catch: VolumeDecrementCatchParams = Field(
+        default_factory=VolumeDecrementCatchParams,
+        description=(
+            "Volume-decrement catch task: a handful of tokens are played quieter and the subject "
+            "presses a key when they notice (the recommended auditory attention check)."
+        ),
+        json_schema_extra={"section": "Attention tasks"},
+    )
+
+    def all_overlays(self) -> list:
+        """Every auditory attention overlay this Condition knows about, wrapped as pluggable
+        :class:`~xpman.tasks.auditory_fpvs.overlay_base.AudioOverlay` adapters -- enabled or not. The
+        run wiring (``task.py``) iterates THESE instead of naming ``catch``, so adding a new attention
+        task is: a new params field above, a new entry in this list, and a module implementing
+        ``AudioOverlay`` -- with no edits to the run loop. ``all_overlays`` (not ``active_overlays``)
+        is what feeds ``outcome_summary`` so a disabled task still reports ``<task>_enabled = False``
+        with null metrics."""
+        return [CatchOverlay(self.catch)]
+
+    def active_overlays(self) -> list:
+        """The subset of :meth:`all_overlays` whose task is ``enabled`` -- what actually runs, applies
+        its buffer modification, and is scored this trial."""
+        return [overlay for overlay in self.all_overlays() if overlay.params.enabled]
+
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "AuditoryFPVSConditionParams":
         if self.oddball.oddball_freq_hz >= self.base.base_freq_hz:
@@ -298,6 +325,24 @@ class AuditoryFPVSConditionParams(BaseModel):
                 f"base.base_trigger_code and oddball.oddball_trigger_code are both {base_code} -- "
                 "base and oddball onsets would be indistinguishable in the recording. Give them "
                 "different codes."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_at_most_one_attention_task(self) -> "AuditoryFPVSConditionParams":
+        # The auditory attention overlays are NOT additive: each collects key presses from the ONE
+        # shared keyboard, so a press during a trial running two of them would be ambiguous (scored by
+        # both), and the trigger path emits at most one overlay code per token onset. Enforce mutual
+        # exclusivity: at most one attention task enabled per Condition, rejected at save/freeze time.
+        # Checked generically over active_overlays, so any future attention task is covered
+        # automatically (there is only the catch task today, but the framework is built for more).
+        active = self.active_overlays()
+        if len(active) > 1:
+            names = ", ".join(sorted(overlay.spawn_key for overlay in active))
+            raise ValueError(
+                f"more than one attention task is enabled ({names}) -- they cannot run together, so "
+                "enable only one per Condition (a key press would be scored by both, and only one "
+                "overlay trigger can fire per token onset). Disable the others."
             )
         return self
 
