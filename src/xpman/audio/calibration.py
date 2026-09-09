@@ -162,7 +162,10 @@ def measure_config(
         threshold=threshold,
         min_interval_seconds=interval * refractory_fraction,
     )
-    pairing = pair_onsets(scheduled, detected, tolerance_seconds=tolerance_seconds)
+    # A match window wider than ~40% of the click spacing could grab an adjacent click; clamp it so a
+    # short --interval-seconds can't cause mis-pairing (the default 20 ms is well under a 250 ms gap).
+    tolerance = min(tolerance_seconds, interval * 0.4)
+    pairing = pair_onsets(scheduled, detected, tolerance_seconds=tolerance)
     if len(pairing.pairs) < 2:
         return ConfigMeasurement(config, _FAILED_STATS, pairing)
     stats = onset_jitter_stats(pairing.scheduled_times, pairing.measured_times)
@@ -173,9 +176,11 @@ def measure_config(
 class CalibrationOutcome:
     """Result of a full sweep: the profile to store (``passed`` reflects whether ANY config cleared
     the budget), every per-config measurement (for a report/plot), and the budget the sweep was judged
-    against. A profile is always produced when at least one config was measured -- a measured failure
-    is recorded (``passed=False``) rather than left looking uncalibrated, which is the P0.3
-    'this machine needs different hardware' signal."""
+    against. A profile is produced whenever at least one config yielded a usable jitter measurement --
+    a measured *failure* is recorded (``passed=False``) rather than left looking uncalibrated, which
+    is the P0.3 'this machine needs different hardware' signal. When NO config detected enough onsets
+    to measure jitter (a dead channel / wiring fault), ``profile`` is ``None`` -- there is nothing
+    trustworthy to store, and the report's NO-SIGNAL rows point at the capture, not the timing."""
 
     profile: AudioProfile | None
     measurements: list[ConfigMeasurement] = field(default_factory=list)
@@ -204,9 +209,11 @@ def run_calibration(
     """Run the loopback sweep over ``configs`` on ``backend`` and assemble a machine profile.
 
     The budget is computed from ``tag_freqs_hz`` (the design this calibration is for). The best
-    *passing* config (lowest jitter) is chosen; if none passes, the lowest-jitter config is stored
-    with ``passed=False`` so the failure is on record. ``now_iso`` and ``xpman_version`` are injected
-    (not read from the clock/metadata here) to keep the function pure and testable.
+    *passing* config (lowest jitter) is chosen; if none passes but at least one produced a finite
+    jitter measurement, the lowest-jitter config is stored with ``passed=False`` so the failure is on
+    record. If NO config detected enough onsets to measure jitter, no profile is returned (rather than
+    persisting an infinite/garbage jitter). ``now_iso`` and ``xpman_version`` are injected (not read
+    from the clock/metadata here) to keep the function pure and testable.
     """
     if not configs:
         raise ValueError("configs must be non-empty")
@@ -225,11 +232,19 @@ def run_calibration(
         )
         for config in configs
     ]
-    points = [m.as_sweep_point() for m in measurements]
+    # Only configs with a finite jitter measurement are selectable; a dead-channel capture yields the
+    # infinite-jitter sentinel and must never be chosen or persisted.
+    finite_points = [
+        m.as_sweep_point() for m in measurements if math.isfinite(m.stats.jitter_sd_seconds)
+    ]
+    if not finite_points:
+        # Nothing measurable -- do not fabricate a profile; the NO-SIGNAL rows tell the operator it is
+        # a capture/wiring fault, and the launch gate stays at NEEDS_CALIBRATION.
+        return CalibrationOutcome(profile=None, measurements=measurements, budget_seconds=budget)
 
-    best = select_best_config(points, budget_seconds=budget)
+    best = select_best_config(finite_points, budget_seconds=budget)
     passed = best is not None
-    chosen = best if best is not None else min(points, key=lambda p: p.stats.jitter_sd_seconds)
+    chosen = best if best is not None else min(finite_points, key=lambda p: p.stats.jitter_sd_seconds)
 
     profile = AudioProfile(
         fingerprint=fingerprint,

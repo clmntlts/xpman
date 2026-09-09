@@ -135,6 +135,16 @@ class TestRunCalibration:
         assert outcome.passed
         assert outcome.profile.latency_class == 3
 
+    def test_all_dead_sweep_yields_no_profile(self):
+        # Regression for the review finding: when NO config detects onsets (a wiring fault), the
+        # outcome must carry no profile -- never a profile with infinite/garbage jitter that would
+        # then serialise as non-standard JSON. The measurements are still returned for the report.
+        backend = FakeBackend({})  # every latency_class -> silence
+        outcome = _run(backend, [CaptureConfig(0), CaptureConfig(3)])
+        assert outcome.profile is None
+        assert outcome.passed is False
+        assert len(outcome.measurements) == 2
+
     def test_profile_carries_source_and_tags(self):
         backend = FakeBackend({3: (0.028, 0.001)})
         outcome = _run(backend, [CaptureConfig(3)], source="amp", tag_freqs_hz=[4.0, 0.8])

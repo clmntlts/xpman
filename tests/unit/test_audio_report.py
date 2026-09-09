@@ -132,3 +132,17 @@ class TestFormat:
         records = [MeasurementRecord(9, None, pairs=[])]
         text = build_calibration_report(_results(records)).format()
         assert "NO-SIGNAL" in text
+
+    def test_caution_when_recommended_config_had_dropouts(self):
+        # The winning config passes on jitter but had a dropout -> the mean-latency (trigger offset)
+        # may be unreliable, so the report must flag it.
+        records = [MeasurementRecord(3, 128, pairs=_pairs(0.028, [0.001, -0.001, 0.001, -0.001]),
+                                     missed=[0.75])]
+        text = build_calibration_report(_results(records)).format()
+        assert "RESULT: PASS" in text
+        assert "CAUTION" in text and "trigger offset" in text
+
+    def test_no_caution_when_recommended_config_is_clean(self):
+        records = [MeasurementRecord(3, 128, pairs=_pairs(0.028, [0.001, -0.001, 0.001, -0.001]))]
+        text = build_calibration_report(_results(records)).format()
+        assert "CAUTION" not in text

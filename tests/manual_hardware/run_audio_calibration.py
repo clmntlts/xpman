@@ -82,7 +82,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-clicks", type=int, default=60, help="Clicks per config (more = tighter jitter estimate).")
     p.add_argument("--interval-seconds", type=float, default=0.25, help="Click spacing.")
     p.add_argument("--output-device-index", type=int, default=None)
-    p.add_argument("--input-device-index", type=int, default=None)
+    p.add_argument("--input-device-index", type=int, default=None,
+                   help="Capture device. Full-duplex loopback uses ONE device, so leave unset (or "
+                        "equal to --output-device-index); a different device is not yet supported.")
     p.add_argument("--out", type=Path, default=None, help="Results JSON path (default: data/audio_calibration/<fingerprint>.<timestamp>.json).")
     p.add_argument("--profiles-dir", type=Path, default=REPO_ROOT / "data" / "audio_profiles", help="Where machine audio profiles live.")
     p.add_argument("--save-profile", action="store_true", help="Save the machine profile so the launch gate finds it.")

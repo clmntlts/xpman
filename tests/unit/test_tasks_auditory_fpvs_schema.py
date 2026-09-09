@@ -34,14 +34,23 @@ class TestDefaults:
         assert s.filename_pattern is None
 
 
-class TestBaseRateCeiling:
-    def test_base_rate_capped_at_4hz(self):
-        # Auditory tokens are discrete and must not overlap, so unlike the 6 Hz visual default the
-        # base rate has a hard ceiling.
-        with pytest.raises(ValidationError):
-            AuditoryFPVSConditionParams(base={"base_freq_hz": 6.0})
+class TestBaseRate:
+    def test_no_hard_cap_when_token_fits(self):
+        # No hard rate ceiling: a 6 Hz base is allowed as long as the token fits inside one cycle
+        # (1/6 = 0.167 s here, so the default 0.15 s token fits). The ceiling is an advisory, not a
+        # validation error (see test_tasks_auditory_fpvs_advisories.py).
+        c = AuditoryFPVSConditionParams(base={"base_freq_hz": 6.0})
+        assert c.base.base_freq_hz == 6.0
 
-    def test_base_rate_at_ceiling_is_allowed(self):
+    def test_high_rate_still_rejected_when_token_cannot_fit(self):
+        # The physical constraint (token fits one cycle) still bites: a 6 Hz base with a 0.2 s token
+        # cannot fit and is rejected -- feasibility, not an arbitrary cap.
+        with pytest.raises(ValidationError, match="fit within one base cycle"):
+            AuditoryFPVSConditionParams(
+                base={"base_freq_hz": 6.0}, token={"duration_seconds": 0.2, "ramp_seconds": 0.01}
+            )
+
+    def test_default_at_4hz(self):
         c = AuditoryFPVSConditionParams(base={"base_freq_hz": 4.0})
         assert c.base.base_freq_hz == 4.0
 
