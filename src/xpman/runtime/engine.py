@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     import psychopy.visual
 
     from xpman.core.models import Instance
+    from xpman.hardware.audio import AudioPlayer
     from xpman.hardware.clock import Clock
     from xpman.hardware.trigger import TriggerSender
     from xpman.runtime.logging_sink import EventSink
@@ -153,6 +154,7 @@ def execute_run(
     experiment_id: int | None = None,
     on_before_trial: Callable[[int], None] | None = None,
     data_dir: "Path | None" = None,
+    audio_player: "AudioPlayer | None" = None,
 ) -> Run:
     """Drive ``run`` (already persisted, so ``run.id`` is set) through its full trial sequence.
 
@@ -174,6 +176,9 @@ def execute_run(
     # if derive_seed's derivation ever changes.
     rng_seed = derive_seed(instance, subject.id, experiment_id=experiment_id)
 
+    # audio_player is optional: only auditory tasks use it. Omitting it lets TaskContext fall back to
+    # its silent NullAudioPlayer default, so visual runs and existing callers are unaffected.
+    ctx_audio = {} if audio_player is None else {"audio_player": audio_player}
     ctx = TaskContext(
         window=window,
         trigger=trigger,
@@ -184,6 +189,7 @@ def execute_run(
         resource_dir=frozen_program["resource_main_directory"],
         event_sink=event_sink,
         abort_check=abort_check,
+        **ctx_audio,
     )
     # Everything that can fail for a bad Instance runs inside ONE try below -- including building the
     # trial sequence (which raises a documented ValueError for a Trial whose Condition was deleted
