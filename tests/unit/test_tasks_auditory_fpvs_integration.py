@@ -166,3 +166,123 @@ def test_catch_code_ignored_when_catch_disabled():
         catch={"enabled": False, "trigger_code": 5},
     )
     assert c.base.base_trigger_code == 5
+
+
+# --- Review fixes: achieved-oddball reporting, sample-rate guard, gate wiring, pool overlap --------
+
+
+def test_achieved_oddball_is_base_over_period_not_independent_grid(tmp_path):
+    # base 4 Hz, oddball entered as 1.333 -> every 3rd token; the reported achieved oddball rate must
+    # be achieved_base/3 = 1.3333, NOT achieved_frequency_hz(1.333) = 1.3330.
+    _resource_dir(tmp_path)
+    task = AuditoryFPVSTask()
+    ctx = _ctx(tmp_path, NullAudioPlayer(), FakeSink())
+    task.prepare(ctx)
+    result = task.run_trial(ctx, _condition(base={"base_freq_hz": 4.0, "trial_duration_seconds": 1.0},
+                                            oddball={"oddball_freq_hz": 1.333}), trial_index=0)
+    assert result.outcome_summary["oddball_period_tokens"] == 3
+    assert result.outcome_summary["achieved_oddball_freq_hz"] == pytest.approx(4.0 / 3, abs=1e-6)
+
+
+def test_sample_rate_change_mid_run_is_rejected(tmp_path):
+    _resource_dir(tmp_path)
+    task = AuditoryFPVSTask()
+    ctx = _ctx(tmp_path, NullAudioPlayer(), FakeSink())
+    task.prepare(ctx)
+    task.run_trial(ctx, _condition(audio={"sample_rate_hz": 48000}), trial_index=0)
+    with pytest.raises(RuntimeError, match="sample_rate_hz changed mid-Run"):
+        task.run_trial(ctx, _condition(audio={"sample_rate_hz": 44100}), trial_index=1)
+
+
+def test_check_triggers_flags_overlapping_pools(tmp_path):
+    # Two selectors that resolve to overlapping files (a shared file present in both globs).
+    _write_wav(tmp_path / "pool" / "shared.wav")
+    _write_wav(tmp_path / "pool" / "base_only.wav")
+    task = AuditoryFPVSTask()
+    cond = _condition(base_selector={"subdirectory": "pool", "filename_pattern": "*.wav"},
+                      oddball_selector={"subdirectory": "pool", "filename_pattern": "shared*.wav"})
+    warnings = task.check_triggers(cond, resource_dir=str(tmp_path))
+    assert any("share" in w and "file" in w for w in warnings)
+
+
+class _FingerprintPlayer(NullAudioPlayer):
+    """A silent player that also advertises a machine fingerprint, so the calibration-gate path runs
+    headlessly (as it would with a real backend)."""
+
+    def __init__(self, fingerprint):
+        super().__init__()
+        self._fp = fingerprint
+
+    def machine_fingerprint(self):
+        return self._fp
+
+
+def _fingerprint():
+    from xpman.audio.fingerprint import build_fingerprint
+
+    return build_fingerprint(hostname="LAB-PC", host_api="Windows WASAPI", output_device="Speakers",
+                             sample_rate_hz=48000, available_host_apis=["MME", "Windows WASAPI"])
+
+
+def test_gate_skipped_with_null_backend(tmp_path):
+    _resource_dir(tmp_path)
+    sink = FakeSink()
+    task = AuditoryFPVSTask()
+    ctx = _ctx(tmp_path, NullAudioPlayer(), sink)  # no fingerprint -> skipped
+    task.prepare(ctx)
+    task.run_trial(ctx, _condition(), trial_index=0)
+    assert sink.of_type("auditory_calibration_skipped")
+    assert not sink.of_type("auditory_calibration_gate")
+
+
+def test_gate_needs_calibration_when_no_profile(tmp_path):
+    _resource_dir(tmp_path)
+    sink = FakeSink()
+    task = AuditoryFPVSTask()
+    ctx = TaskContext(
+        window=None, trigger=NullTrigger(), clock=FakeClock(),
+        rng=np.random.default_rng(0), subject=SubjectInfo(id=1, first_name="T", last_name="E"),
+        instance_params={"audio_profiles_dir": str(tmp_path / "profiles")},  # empty -> no profile
+        resource_dir=str(tmp_path), event_sink=sink, abort_check=lambda: False,
+        audio_player=_FingerprintPlayer(_fingerprint()),
+    )
+    task.prepare(ctx)
+    task.run_trial(ctx, _condition(), trial_index=0)
+    events = sink.of_type("auditory_calibration_gate")
+    assert events and events[0][1]["status"] == "NEEDS_CALIBRATION"
+    assert events[0][1]["requires_confirmation"] is True
+    # And it lands in run metadata.
+    assert task.run_metadata()["calibration_gate"]["status"] == "NEEDS_CALIBRATION"
+
+
+def test_gate_ok_and_records_mean_latency_when_profile_passes(tmp_path):
+    _resource_dir(tmp_path)
+    from xpman.audio.jitter import OnsetJitterStats
+    from xpman.audio.profile import AudioProfile, ProfileStore
+
+    fp = _fingerprint()
+    profile = AudioProfile(
+        fingerprint=fp, latency_class=3, buffer_size=128,
+        stats=OnsetJitterStats(n=100, mean_latency_seconds=0.031, jitter_sd_seconds=0.0015,
+                               max_abs_deviation_seconds=0.004),
+        budget_seconds=0.003, passed=True, source="amp", measured_at="2026-09-09T10:00:00Z",
+        xpman_version="0.6.0", tag_freqs_hz=(4.0, 2.0),
+    )
+    profiles_dir = tmp_path / "profiles"
+    ProfileStore(profiles_dir).save(profile)
+
+    sink = FakeSink()
+    task = AuditoryFPVSTask()
+    ctx = TaskContext(
+        window=None, trigger=NullTrigger(), clock=FakeClock(),
+        rng=np.random.default_rng(0), subject=SubjectInfo(id=1, first_name="T", last_name="E"),
+        instance_params={"audio_profiles_dir": str(profiles_dir)},
+        resource_dir=str(tmp_path), event_sink=sink, abort_check=lambda: False,
+        audio_player=_FingerprintPlayer(fp),
+    )
+    task.prepare(ctx)
+    # Trial tags 4/2 Hz -> ERP-locked 3 ms budget; measured 1.5 ms passes.
+    task.run_trial(ctx, _condition(), trial_index=0)
+    gate = sink.of_type("auditory_calibration_gate")[0][1]
+    assert gate["status"] == "OK"
+    assert gate["mean_latency_seconds"] == pytest.approx(0.031)

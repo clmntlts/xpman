@@ -27,6 +27,10 @@ from xpman.tasks.auditory_fpvs.schedule import raised_cosine_envelope
 #: others are what libsndfile handles out of the box.
 _AUDIO_EXTENSIONS = (".wav", ".flac", ".aiff", ".aif", ".ogg")
 
+#: Peak-amplitude ceiling equalization won't exceed. Below 1.0 so a token never clips on the DAC
+#: (which would inject broadband splatter at the tag frequencies) -- see ``equalize_pools``.
+_PEAK_HEADROOM = 0.98
+
 
 def select_files(resource_dir: str | Path, selector: SoundSelector) -> list[Path]:
     """The sound files a selector picks from ``resource_dir``, sorted for reproducibility. Mirrors the
@@ -108,7 +112,14 @@ def equalize_pools(
     target): ``strength=0`` leaves it unchanged, ``strength=1`` makes its RMS exactly the target,
     intermediate values interpolate. A silent token (``token_rms == 0``) has no defined ratio and is
     left untouched. When the combined pool has no signal at all (target 0) every token is returned
-    unchanged."""
+    unchanged.
+
+    **Peak guard.** RMS equalization scales by RMS, but clipping is governed by *peak*: a token with a
+    higher crest factor than the pool can be scaled up until its peak exceeds full scale, and float32
+    stores that silently -- the clip only happens on the DAC, injecting broadband distortion (spectral
+    splatter) exactly at the token it distorts, i.e. potentially at a tag frequency. So after scaling,
+    if any token's peak exceeds :data:`_PEAK_HEADROOM`, every token is divided by one shared factor;
+    uniform gain preserves the equalized RMS *ratios* while bringing the loudest peak into range."""
     combined = list(base_tokens) + list(oddball_tokens)
     rms_values = [_rms(t) for t in combined]
     non_zero = [r for r in rms_values if r > 0]
@@ -124,19 +135,37 @@ def equalize_pools(
         factor = 1.0 + strength * (target / rms - 1.0)
         return (np.asarray(token, dtype=np.float64) * factor).astype(token.dtype)
 
-    return [_scale(t) for t in base_tokens], [_scale(t) for t in oddball_tokens]
+    scaled_base = [_scale(t) for t in base_tokens]
+    scaled_oddball = [_scale(t) for t in oddball_tokens]
+
+    peak = max(
+        (float(np.max(np.abs(t))) for t in scaled_base + scaled_oddball if t.size), default=0.0
+    )
+    if peak > _PEAK_HEADROOM:
+        reduction = _PEAK_HEADROOM / peak
+        scaled_base = [(t * reduction).astype(t.dtype) for t in scaled_base]
+        scaled_oddball = [(t * reduction).astype(t.dtype) for t in scaled_oddball]
+    return scaled_base, scaled_oddball
 
 
 def gate_token(data: "np.ndarray", sample_rate_hz: int, token: TokenParams) -> "np.ndarray":
     """Trim/pad ``data`` (already mono, at ``sample_rate_hz``) to the token duration and apply the
-    raised-cosine gate. Shorter clips are zero-padded to length; longer clips are truncated. The
-    result is a fixed-length float32 array with click-free edges."""
+    raised-cosine gate. Longer clips are truncated to the token length; shorter clips are zero-padded
+    to it. The result is a fixed-length float32 array with click-free edges.
+
+    The gate is applied over the token's **actual content length** (``min(len(data), n)``), not the
+    fixed token length ``n``. A clip shorter than the token would otherwise keep the envelope's flat
+    plateau (== 1.0) right up to where its content stops and then cut straight to the zero-pad -- a
+    full-amplitude step, i.e. exactly the broadband click the gate exists to prevent. Ramping the
+    content itself out at its true end keeps every token click-free regardless of clip length."""
     n = max(int(round(token.duration_seconds * sample_rate_hz)), 1)
     out = np.zeros(n, dtype=np.float64)
     take = min(len(data), n)
     out[:take] = data[:take]
-    envelope = raised_cosine_envelope(n, int(round(token.ramp_seconds * sample_rate_hz)))
-    return (out * envelope).astype(np.float32)
+    content = max(take, 1)
+    envelope = raised_cosine_envelope(content, int(round(token.ramp_seconds * sample_rate_hz)))
+    out[:content] *= envelope
+    return out.astype(np.float32)
 
 
 def load_pool(

@@ -97,6 +97,29 @@ def test_multi_exemplar_selection_varies():
     assert len(first_samples) > 1
 
 
+def test_no_immediate_exemplar_repetition():
+    # Long base-only-ish run with a 2-token base pool: consecutive base tokens must never be the same
+    # exemplar (the adaptation control). Use distinct first-sample values to identify the exemplar.
+    params = _params(base={"base_freq_hz": 4.0, "trial_duration_seconds": 5.0}, oddball={"oddball_freq_hz": 0.8})
+    base_pool = [np.full(7200, 0.2, dtype=np.float32), np.full(7200, 0.8, dtype=np.float32)]
+    planned = plan_trial(params, base_tokens=base_pool, oddball_tokens=_pool(1, 1.0),
+                         rng=np.random.default_rng(3))
+    base_first_samples = [
+        float(planned.buffer[int(t.onset_seconds * 48000)]) for t in planned.triggers if not t.is_oddball
+    ]
+    # Both exemplars are used, and no two consecutive base tokens are identical.
+    assert set(round(v, 3) for v in base_first_samples) == {0.2, 0.8}
+    assert all(a != b for a, b in zip(base_first_samples, base_first_samples[1:]))
+
+
+def test_single_exemplar_pool_repeats_are_unavoidable():
+    # With one token there is no choice -- must not crash / infinite-loop.
+    params = _params(base={"base_freq_hz": 4.0, "trial_duration_seconds": 1.0}, oddball={"oddball_freq_hz": 0.8})
+    planned = plan_trial(params, base_tokens=_pool(1, 0.5), oddball_tokens=_pool(1, 0.9),
+                         rng=np.random.default_rng(0))
+    assert len(planned.triggers) == 4
+
+
 def test_empty_pools_rejected():
     params = _params()
     with pytest.raises(ValueError, match="base token pool is empty"):
