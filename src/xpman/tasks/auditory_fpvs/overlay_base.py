@@ -212,3 +212,11 @@ class AudioOverlay(Protocol):
         Condition's cross-field disjointness check can cover any overlay generically (no hardcoding).
         Empty when the overlay sends no trigger."""
         ...
+
+    def resolve_onset_code(self, base_code: "int | None", is_oddball: bool) -> "int | None":
+        """The SINGLE trigger code to emit when this overlay targets a token whose underlying
+        base/oddball code is ``base_code``. Because an auditory overlay target lands ON a token onset
+        (it cannot be nudged off, unlike a visual overlay), firing the overlay's own code separately
+        would clobber the base/oddball code on the same pulse -- so the overlay resolves the collision
+        to one combined/reserved code here, and the run loop fires exactly that one code per onset."""
+        ...

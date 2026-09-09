@@ -150,15 +150,6 @@ def test_catch_code_colliding_with_base_is_rejected(tmp_path):
         )
 
 
-def test_catch_code_distinct_is_accepted():
-    c = AuditoryFPVSConditionParams(
-        base={"base_trigger_code": 5},
-        oddball={"oddball_trigger_code": 6},
-        catch={"enabled": True, "trigger_code": 7},
-    )
-    assert c.catch.trigger_code == 7
-
-
 def test_catch_code_ignored_when_catch_disabled():
     # A catch trigger_code equal to base's is fine when the catch task is disabled (it never fires).
     c = AuditoryFPVSConditionParams(
@@ -166,6 +157,79 @@ def test_catch_code_ignored_when_catch_disabled():
         catch={"enabled": False, "trigger_code": 5},
     )
     assert c.base.base_trigger_code == 5
+
+
+# --- #98: catch/base-oddball trigger coincidence codes --------------------------------------------
+
+
+def test_catch_trigger_with_base_code_requires_coincidence_code():
+    # catch trigger + base code both set, but no reserved coincidence code -> rejected (would collide).
+    with pytest.raises(ValidationError, match="base_coincidence_code"):
+        AuditoryFPVSConditionParams(
+            base={"base_trigger_code": 5},
+            catch={"enabled": True, "trigger_code": 7},
+        )
+
+
+def test_catch_trigger_with_oddball_code_requires_coincidence_code():
+    with pytest.raises(ValidationError, match="oddball_coincidence_code"):
+        AuditoryFPVSConditionParams(
+            base={"base_trigger_code": 5}, oddball={"oddball_trigger_code": 6},
+            catch={"enabled": True, "trigger_code": 7, "base_coincidence_code": 8},
+        )
+
+
+def test_full_coincidence_config_accepted():
+    c = AuditoryFPVSConditionParams(
+        base={"base_trigger_code": 5}, oddball={"oddball_trigger_code": 6},
+        catch={"enabled": True, "trigger_code": 7,
+               "base_coincidence_code": 8, "oddball_coincidence_code": 9},
+    )
+    assert c.catch.base_coincidence_code == 8 and c.catch.oddball_coincidence_code == 9
+
+
+def test_coincidence_code_must_be_disjoint_from_others():
+    # A reserved coincidence code equal to another emitted code is rejected by the disjointness check.
+    with pytest.raises(ValidationError, match="indistinguishable"):
+        AuditoryFPVSConditionParams(
+            base={"base_trigger_code": 5}, oddball={"oddball_trigger_code": 6},
+            catch={"enabled": True, "trigger_code": 7,
+                   "base_coincidence_code": 5,  # collides with base
+                   "oddball_coincidence_code": 9},
+        )
+
+
+def test_catch_trigger_alone_needs_no_coincidence_code():
+    # catch trigger set but NO base/oddball codes -> no collision possible, coincidence codes optional.
+    c = AuditoryFPVSConditionParams(catch={"enabled": True, "trigger_code": 7})
+    assert c.catch.trigger_code == 7
+
+
+def test_coincidence_code_emitted_on_catch_target_onset(tmp_path):
+    # End-to-end: with base code + catch code + base_coincidence_code, a catch target that is a base
+    # token fires ONE resolved code = the coincidence code (not the base code, not two pulses).
+    _resource_dir(tmp_path)
+    trigger = NullTrigger()
+    sink = FakeSink()
+    task = AuditoryFPVSTask()
+    ctx = _ctx(tmp_path, NullAudioPlayer(), sink)
+    # 4 Hz base, oddball 2 Hz (period 2), base code 5 / oddball code 6, catch on all early tokens.
+    cond = _condition(
+        base={"base_freq_hz": 4.0, "trial_duration_seconds": 1.0, "base_trigger_code": 5},
+        oddball={"oddball_freq_hz": 2.0, "oddball_trigger_code": 6},
+        catch={"enabled": True, "target_count": 1, "guard_seconds": 0.0, "min_separation_seconds": 0.1,
+               "trigger_code": 7, "base_coincidence_code": 8, "oddball_coincidence_code": 9},
+    )
+    task.prepare(ctx)
+    task.run_trial(ctx, cond, trial_index=0)
+    task.cleanup(ctx)
+    codes = [s.code for s in trigger.sent]
+    # The one catch target contributes a single coincidence code (8 or 9); no plain 7 was ever sent
+    # alongside a base/oddball code on the same onset.
+    coincidence = [t for t in sink.of_type("trigger_sent") if t[1].get("is_coincidence")]
+    assert len(coincidence) == 1
+    assert coincidence[0][1]["code"] in (8, 9)
+    assert 7 not in codes  # the standalone catch code never fires when base/oddball codes are present
 
 
 # --- Review fixes: achieved-oddball reporting, sample-rate guard, gate wiring, pool overlap --------

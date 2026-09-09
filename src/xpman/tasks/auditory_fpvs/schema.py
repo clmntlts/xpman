@@ -423,6 +423,31 @@ class AuditoryFPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_catch_coincidence_codes(self) -> "AuditoryFPVSConditionParams":
+        # A catch target lands ON a base/oddball token onset, so when the catch task fires a trigger
+        # AND that token also carries a base/oddball code, the two would collide on the port (the
+        # second set_code clobbers the first before the amp samples it). The task resolves this by
+        # firing ONE reserved coincidence code instead -- but only if it is configured. Require the
+        # relevant reserved code whenever the collision can occur, so it can never silently drop the
+        # base/oddball marker (#98). Disjointness of these codes from everything else is handled by
+        # _check_trigger_codes_disjoint (they appear via the overlay's trigger_codes()).
+        if not (self.catch.enabled and self.catch.trigger_code is not None):
+            return self
+        if self.base.base_trigger_code is not None and self.catch.base_coincidence_code is None:
+            raise ValueError(
+                "catch.trigger_code and base.base_trigger_code are both set, so a catch target on a "
+                "base token would collide on the port. Set catch.base_coincidence_code (a reserved "
+                "code emitted instead of both), or clear one of the trigger codes."
+            )
+        if self.oddball.oddball_trigger_code is not None and self.catch.oddball_coincidence_code is None:
+            raise ValueError(
+                "catch.trigger_code and oddball.oddball_trigger_code are both set, so a catch target "
+                "on an oddball token would collide. Set catch.oddball_coincidence_code, or clear one "
+                "of the trigger codes."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _check_at_most_one_attention_task(self) -> "AuditoryFPVSConditionParams":
         # The auditory attention overlays are NOT additive: each collects key presses from the ONE
         # shared keyboard, so a press during a trial running two of them would be ambiguous (scored by

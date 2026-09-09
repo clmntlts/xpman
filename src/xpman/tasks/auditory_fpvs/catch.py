@@ -71,9 +71,31 @@ class VolumeDecrementCatchParams(AudioOverlayParams):
         ge=1,
         le=255,
         description=(
-            "Optional 8-bit EEG trigger sent on each quiet-token onset. NOTE: a catch target IS a "
-            "token onset, so this code coincides with any base/oddball code on that token -- set it "
-            "only when the recording can carry a distinct catch marker. None sends no catch trigger."
+            "Optional 8-bit EEG trigger for a quiet-token onset. Used only when that token has NO "
+            "base/oddball code (no collision). When the token DOES carry a base/oddball code, the "
+            "reserved coincidence code below is emitted instead -- one port pulse, no clobbering. "
+            "None sends no catch trigger."
+        ),
+    )
+    base_coincidence_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "Reserved 8-bit code emitted when a catch target lands on a BASE token that also carries "
+            "base.base_trigger_code -- a SINGLE pulse encoding 'base token + catch target', so the two "
+            "codes never fight for the same onset. Required when the catch trigger and the base "
+            "trigger are both set."
+        ),
+    )
+    oddball_coincidence_code: int | None = Field(
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "Reserved 8-bit code emitted when a catch target lands on an ODDBALL token that also "
+            "carries oddball.oddball_trigger_code. Required when the catch trigger and the oddball "
+            "trigger are both set."
         ),
     )
 
@@ -275,10 +297,35 @@ class CatchOverlay:
         }
 
     def trigger_codes(self) -> list[tuple[str, int]]:
-        """The single catch trigger code, when set -- for the Condition's disjointness check."""
+        """Every code this overlay may emit -- the standalone catch code and the two reserved
+        coincidence codes -- for the Condition's disjointness check (they must all be distinct from
+        each other and from the base/oddball codes)."""
+        out: list[tuple[str, int]] = []
+        for label, code in (
+            ("catch.trigger_code", self._params.trigger_code),
+            ("catch.base_coincidence_code", self._params.base_coincidence_code),
+            ("catch.oddball_coincidence_code", self._params.oddball_coincidence_code),
+        ):
+            if code is not None:
+                out.append((label, code))
+        return out
+
+    def resolve_onset_code(self, base_code: "int | None", is_oddball: bool) -> "int | None":
+        """The SINGLE trigger code to emit when this overlay targets a token whose underlying
+        base/oddball code is ``base_code`` -- so exactly one pulse fires per onset and the catch code
+        can never clobber the base/oddball code (issue #98's coincidence-code resolution):
+
+        - catch not triggering (``trigger_code`` unset) -> pass the base/oddball code through unchanged;
+        - the token has no base/oddball code -> emit the standalone catch code (no collision);
+        - the token has a base/oddball code -> emit the reserved coincidence code for its kind
+          (validated present whenever this case can occur)."""
         if self._params.trigger_code is None:
-            return []
-        return [(f"{self.spawn_key}.trigger_code", self._params.trigger_code)]
+            return base_code
+        if base_code is None:
+            return self._params.trigger_code
+        return (
+            self._params.oddball_coincidence_code if is_oddball else self._params.base_coincidence_code
+        )
 
     def outcome_fields(self, score: "CatchScore | None") -> dict:
         """The prefixed fields this overlay contributes to a trial's ``outcome_summary`` (all-None
