@@ -32,6 +32,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.auditory_fpvs.catch import CatchOverlay, VolumeDecrementCatchParams
+
 
 class SoundSelector(BaseModel):
     """Selects a subset of the Program's resource directory as a **sound pool** -- the auditory
@@ -199,6 +201,38 @@ class AudioOutputParams(BaseModel):
     )
 
 
+class AudioEqualizationParams(BaseModel):
+    """Optional loudness (RMS/energy) equalization across every token pool a Condition presents
+    (base + oddball together), the auditory analogue of the visual FPVS luminance/contrast
+    equalization (see ``tasks.fpvs.schema.EqualizationParams``). Disabled by default: RMS matching
+    is common auditory-FPAS practice but a real per-study decision, not something to silently turn
+    on.
+
+    **Scope is the COMBINED pool, not per-pool.** Base and oddball tokens are typically different
+    categories (e.g. different syllables or speakers) with different natural loudness; equalizing
+    each pool to its own mean RMS would leave the BETWEEN-category loudness difference untouched, and
+    it is exactly that difference that turns every oddball onset into a low-level loudness step
+    recurring at the oddball frequency -- a confound that would masquerade as a category response.
+    Equalizing the union of every token to one shared target RMS removes it, so a discriminable
+    oddball response cannot be driven by raw energy.
+
+    See ``sound_pool.equalize_pools`` for the exact scaling: each token is scaled toward the combined
+    pool's mean RMS, and ``strength`` interpolates between "leave it alone" (0) and "match the target
+    exactly" (1) via ``scale = 1 + strength * (target/token_rms - 1)``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Equalize RMS/energy across the combined (base + oddball) token pool this Condition presents.",
+    )
+    strength: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        description="0 = no equalization, 1 = full equalization (each token's RMS becomes exactly the pool's mean).",
+    )
+
+
 class AuditoryFPVSProgramParams(BaseModel):
     """No program-level parameters needed yet (the sound pool is selected per Condition via
     ``SoundSelector`` against the Program's resource directory, exactly as FPVS does for images)."""
@@ -229,6 +263,32 @@ class AuditoryFPVSConditionParams(BaseModel):
         description="Audio device / backend settings for playback (hardware only; no effect on the schedule).",
         json_schema_extra={"section": "General"},
     )
+    equalization: AudioEqualizationParams = Field(
+        default_factory=AudioEqualizationParams,
+        description="RMS/energy equalization across the combined (base + oddball) token pool (see AudioEqualizationParams).",
+        json_schema_extra={"section": "General"},
+    )
+
+    # -- Trial phases: whole-sequence amplitude shaping ----------------------------------------
+    fade_in_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Raised-cosine fade-in applied to the whole rendered sequence (0 = none). Ramps the "
+            "sequence amplitude 0->1 over this many seconds at the start, so the stream begins "
+            "gently rather than at full level (Barbero et al. 2021 use ~2 s)."
+        ),
+        json_schema_extra={"section": "Trial phases"},
+    )
+    fade_out_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Raised-cosine fade-out applied to the whole rendered sequence (0 = none). Ramps the "
+            "sequence amplitude 1->0 over this many seconds at the end."
+        ),
+        json_schema_extra={"section": "Trial phases"},
+    )
 
     # -- Stream: the single auditory base+oddball stream ---------------------------------------
     base: AuditoryBaseParams = Field(
@@ -251,6 +311,31 @@ class AuditoryFPVSConditionParams(BaseModel):
         description="Which sounds are the oddballs (multi-exemplar pool recommended).",
         json_schema_extra={"section": "Stream"},
     )
+
+    # -- Attention tasks ------------------------------------------------------------------------
+    catch: VolumeDecrementCatchParams = Field(
+        default_factory=VolumeDecrementCatchParams,
+        description=(
+            "Volume-decrement catch task: a handful of tokens are played quieter and the subject "
+            "presses a key when they notice (the recommended auditory attention check)."
+        ),
+        json_schema_extra={"section": "Attention tasks"},
+    )
+
+    def all_overlays(self) -> list:
+        """Every auditory attention overlay this Condition knows about, wrapped as pluggable
+        :class:`~xpman.tasks.auditory_fpvs.overlay_base.AudioOverlay` adapters -- enabled or not. The
+        run wiring (``task.py``) iterates THESE instead of naming ``catch``, so adding a new attention
+        task is: a new params field above, a new entry in this list, and a module implementing
+        ``AudioOverlay`` -- with no edits to the run loop. ``all_overlays`` (not ``active_overlays``)
+        is what feeds ``outcome_summary`` so a disabled task still reports ``<task>_enabled = False``
+        with null metrics."""
+        return [CatchOverlay(self.catch)]
+
+    def active_overlays(self) -> list:
+        """The subset of :meth:`all_overlays` whose task is ``enabled`` -- what actually runs, applies
+        its buffer modification, and is scored this trial."""
+        return [overlay for overlay in self.all_overlays() if overlay.params.enabled]
 
     @model_validator(mode="after")
     def _check_oddball_below_base(self) -> "AuditoryFPVSConditionParams":
@@ -288,16 +373,65 @@ class AuditoryFPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_trigger_codes_disjoint(self) -> "AuditoryFPVSConditionParams":
-        # If both the base and oddball send triggers, they must use different codes -- otherwise a base
-        # onset and an oddball onset would be indistinguishable in the EEG recording.
-        base_code = self.base.base_trigger_code
-        oddball_code = self.oddball.oddball_trigger_code
-        if base_code is not None and oddball_code is not None and base_code == oddball_code:
+    def _check_fades_fit_trial(self) -> "AuditoryFPVSConditionParams":
+        # The fade-in and fade-out are applied to the same rendered buffer, so together they cannot
+        # exceed the trial duration -- otherwise the ramps would overlap and there would be no
+        # full-amplitude plateau (or the envelope would be ill-defined). fade_in + fade_out <= trial.
+        total_fade = self.fade_in_seconds + self.fade_out_seconds
+        trial = self.base.trial_duration_seconds
+        if total_fade > trial:
             raise ValueError(
-                f"base.base_trigger_code and oddball.oddball_trigger_code are both {base_code} -- "
-                "base and oddball onsets would be indistinguishable in the recording. Give them "
-                "different codes."
+                f"fade_in_seconds ({self.fade_in_seconds}) + fade_out_seconds "
+                f"({self.fade_out_seconds}) = {total_fade} s must not exceed "
+                f"base.trial_duration_seconds ({trial} s). Shorten the fades or lengthen the trial."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_trigger_codes_disjoint(self) -> "AuditoryFPVSConditionParams":
+        # Every enabled subsystem that can emit an EEG trigger code -- the base onset, the oddball
+        # onset, and (when the catch task is enabled) its per-target code -- must use a DISTINCT code,
+        # or those events would be indistinguishable in the recording. A catch target IS a token
+        # onset, so a catch code equal to the base/oddball code on that token collides on the port;
+        # this rejects that at save/freeze time. Collected generically so a future overlay's code is
+        # covered by adding it here.
+        labeled: list[tuple[str, int]] = []
+
+        def add(label: str, code: "int | None") -> None:
+            if code is not None:
+                labeled.append((label, code))
+
+        add("base.base_trigger_code", self.base.base_trigger_code)
+        add("oddball.oddball_trigger_code", self.oddball.oddball_trigger_code)
+        if self.catch.enabled:
+            add("catch.trigger_code", self.catch.trigger_code)
+
+        seen: dict[int, str] = {}
+        for label, code in labeled:
+            if code in seen:
+                raise ValueError(
+                    f"trigger code {code} is used by both '{seen[code]}' and '{label}' -- these "
+                    "events would be indistinguishable in the EEG recording. Give each enabled "
+                    "trigger-emitting field its own code."
+                )
+            seen[code] = label
+        return self
+
+    @model_validator(mode="after")
+    def _check_at_most_one_attention_task(self) -> "AuditoryFPVSConditionParams":
+        # The auditory attention overlays are NOT additive: each collects key presses from the ONE
+        # shared keyboard, so a press during a trial running two of them would be ambiguous (scored by
+        # both), and the trigger path emits at most one overlay code per token onset. Enforce mutual
+        # exclusivity: at most one attention task enabled per Condition, rejected at save/freeze time.
+        # Checked generically over active_overlays, so any future attention task is covered
+        # automatically (there is only the catch task today, but the framework is built for more).
+        active = self.active_overlays()
+        if len(active) > 1:
+            names = ", ".join(sorted(overlay.spawn_key for overlay in active))
+            raise ValueError(
+                f"more than one attention task is enabled ({names}) -- they cannot run together, so "
+                "enable only one per Condition (a key press would be scored by both, and only one "
+                "overlay trigger can fire per token onset). Disable the others."
             )
         return self
 
