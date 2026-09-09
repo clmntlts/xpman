@@ -41,8 +41,10 @@ class SoundSelector(BaseModel):
 
     A pool is meant to hold **multiple exemplars** of one category (many different tokens), so the
     periodic response reflects a category change rather than adaptation to one repeated waveform --
-    the auditory counterpart of varying image size/identity in visual FPVS. A single-file pool is
-    allowed but flagged as a low-level-adaptation risk by ``check_triggers`` (a later increment).
+    the auditory counterpart of varying image size/identity in visual FPVS. Whether a pool actually
+    resolves to a single file can only be known once the resource directory is scanned, so that
+    single-exemplar check belongs to the (not-yet-built) run-time pool resolution, not to this
+    parameter-only schema.
     """
 
     subdirectory: str | None = Field(
@@ -92,19 +94,21 @@ class AuditoryBaseParams(BaseModel):
     """The base (fast, periodic) auditory stream: one token every ``1/base_freq_hz`` seconds for the
     whole trial. Directly analogous to the visual ``BaseSequenceParams``, but at auditory rates.
 
-    ``base_freq_hz`` defaults to 4 Hz and is capped at 4 Hz (see the field constraint): tokens are
-    discrete sounds that must not overlap, so unlike the 6 Hz visual default the base rate has a hard
-    upper bound. Sub-Hz base rates are allowed but unusual. Per-token EEG triggers are optional
-    (default off): set ``base_trigger_code`` to emit an 8-bit code on every base-token onset.
+    ``base_freq_hz`` defaults to 4 Hz. There is **no hard rate cap**: the real physical constraint is
+    that a token must fit inside one base cycle (``duration <= 1/base_freq``), which
+    ``_check_token_fits_cycle`` enforces on the Condition -- so a higher rate is allowed as long as
+    the token is short enough. A base rate above the ~2-4 Hz typical for discrete auditory tokens is
+    surfaced as an advisory (see ``advisories.condition_advisories``), not rejected, so an unusual but
+    feasible design is not blocked. Sub-Hz base rates are allowed but unusual. Per-token EEG triggers
+    are optional (default off): set ``base_trigger_code`` to emit an 8-bit code on every base onset.
     """
 
     base_freq_hz: float = Field(
         default=4.0,
         gt=0,
-        le=4.0,
         description=(
-            "Base tokens per second (2-4 Hz typical). Capped at 4 Hz: auditory tokens are discrete "
-            "and must not overlap, so the base rate is far below the visual 6 Hz."
+            "Base tokens per second (2-4 Hz typical for discrete auditory tokens). No hard cap -- the "
+            "token-fits-one-cycle check governs feasibility; rates above ~4 Hz raise an advisory."
         ),
     )
     trial_duration_seconds: float = Field(
@@ -126,7 +130,8 @@ class AuditoryOddballParams(BaseModel):
     to the visual ``OddballParams``; ``oddball_freq_hz`` must be strictly below the base rate (enforced
     on the Condition). ``base / oddball`` gives the oddball period in tokens (see
     ``schedule.oddball_period_tokens``); it need not be an exact integer, but a non-integer ratio is
-    surfaced as an advisory.
+    surfaced as an advisory (see ``advisories.condition_advisories``) because the oddball then can't
+    fall on a strictly regular token position.
     """
 
     oddball_freq_hz: float = Field(

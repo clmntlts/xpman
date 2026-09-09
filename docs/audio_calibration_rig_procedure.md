@@ -100,8 +100,10 @@ With the line-out→line-in loopback wired and the room quiet:
   tightest tag governs; ERP-locked caps it at ~3 ms). Use the frequencies your study will run.
 - `--latency-classes` / `--buffer-sizes` define the sweep. Higher latency class = more aggressive/
   lower-latency but more device-exclusive; smaller buffer = lower latency, higher underrun risk.
-- `--output-device-index` / `--input-device-index` force specific devices (default: the low-latency
-  auto-pick from `--list-devices`).
+- `--output-device-index` forces a specific output device (default: the low-latency auto-pick from
+  `--list-devices`). `--input-device-index` is for the capture side, but full-duplex loopback uses
+  **one** device, so leave it unset (or equal to the output) — a separate capture device is not yet
+  supported and the backend will say so rather than silently record the wrong input.
 - `--save-profile` writes the winning config as this machine's profile so the FPAS launch gate finds
   it. Omit it for an exploratory run.
 

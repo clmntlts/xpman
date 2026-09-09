@@ -106,6 +106,18 @@ class PtbCaptureBackend:  # pragma: no cover - hardware
         n_record = int(record_seconds * sample_rate_hz)
         playback = np.asarray(playback, dtype=np.float32).reshape(-1, 1)
 
+        # A single full-duplex PsychPortAudio stream plays and captures on ONE device (one clock).
+        # Capturing from a DIFFERENT device than playback would need two clock-synced streams, which
+        # this backend does not yet do -- so reject that explicitly instead of silently recording
+        # from the playback device (the earlier bug, where input_device_index was accepted but never
+        # used). For a loopback, use one full-duplex-capable interface for both directions.
+        if self.input_device_index is not None and self.input_device_index != self.output_device_index:
+            raise NotImplementedError(
+                f"separate capture device (input_device_index={self.input_device_index}) is not "
+                f"supported: full-duplex loopback uses one device for both play and record. Use a "
+                f"single interface (leave input_device_index unset, or equal to output_device_index)."
+            )
+
         # mode=3 -> full duplex (simultaneous playback + capture on one clock).
         stream = ptb_audio.Stream(
             device_id=self.output_device_index,

@@ -73,6 +73,14 @@ class TestOk:
         # ERP-locked 3 ms target governs.
         assert result.budget_seconds == 0.003
 
+    def test_frequency_domain_only_uses_looser_budget(self):
+        fp = _fp()
+        # A profile at 8 ms jitter FAILS the ERP-locked 3 ms budget but PASSES the looser
+        # frequency-domain 4 Hz bar (~12 ms) when ERP locking is off.
+        result = evaluate_gate(fp, _profile(fp, sd=0.008), [4.0, 0.8], erp_locked=False)
+        assert result.status == "OK"
+        assert result.budget_seconds > 0.01
+
 
 class TestBudgetNotMet:
     def test_profile_jitter_above_trial_budget(self):

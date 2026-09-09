@@ -109,6 +109,30 @@ class TestPairOnsets:
         assert res.missed == pytest.approx([0.5])
         assert len(res.pairs) == 3
 
+    def test_leading_dropout_does_not_bias_latency(self):
+        # Regression for the review finding: if the FIRST onset drops out, an order-aligned offset
+        # estimate would pair every scheduled onset with the NEXT detection (mean latency off by a
+        # whole interval). Nearest-neighbour offset must instead pair correctly and mark 0.0 missed.
+        scheduled = [0.0, 0.25, 0.5, 0.75]
+        latency = 0.030
+        detected = [s + latency for s in scheduled[1:]]  # first click not detected
+        res = pair_onsets(scheduled, detected, tolerance_seconds=0.01)
+        assert res.missed == pytest.approx([0.0])
+        assert len(res.pairs) == 3
+        # Each surviving pair keeps its true 30 ms latency (not ~280 ms).
+        for s, m in res.pairs:
+            assert m - s == pytest.approx(latency, abs=1e-9)
+
+    def test_leading_spurious_does_not_bias_latency(self):
+        scheduled = [0.0, 0.25, 0.5, 0.75]
+        latency = 0.030
+        detected = [0.001] + [s + latency for s in scheduled]  # a spurious blip before the train
+        res = pair_onsets(scheduled, detected, tolerance_seconds=0.01)
+        assert len(res.pairs) == 4
+        assert res.spurious == pytest.approx([0.001])
+        for s, m in res.pairs:
+            assert m - s == pytest.approx(latency, abs=1e-9)
+
     def test_detects_a_spurious_detection(self):
         scheduled = [0.0, 0.25, 0.5]
         detected = [0.03, 0.28, 0.40, 0.53]  # 0.40 is spurious
