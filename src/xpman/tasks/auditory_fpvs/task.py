@@ -26,7 +26,11 @@ from xpman.tasks.auditory_fpvs.schema import (
     AuditoryFPVSSchema,
     SoundSelector,
 )
-from xpman.tasks.auditory_fpvs.schedule import achieved_frequency_hz, samples_per_cycle
+from xpman.tasks.auditory_fpvs.schedule import (
+    achieved_frequency_hz,
+    oddball_period_tokens,
+    samples_per_cycle,
+)
 from xpman.tasks.auditory_fpvs.sound_pool import (
     _resample,
     decode_mono,
@@ -64,6 +68,10 @@ class AuditoryFPVSTask(TaskModule):
         # than a fresh Keyboard per trial). None until then, and left None if construction fails so a
         # headless/no-keyboard run still works (0 responses). See _ensure_response_collector.
         self._response_collector: ResponseCollector | None = None
+        # Calibration gate: evaluated once per Run (on the first trial, when the audio device + its
+        # tags are known) and cached, so its advisory status is logged and carried into run metadata.
+        self._gate_evaluated = False
+        self._gate_summary: dict = {}
 
     # -- lifecycle -----------------------------------------------------------------------------
     def prepare(self, ctx: TaskContext) -> None:
@@ -106,16 +114,20 @@ class AuditoryFPVSTask(TaskModule):
             if self._audio_opened:
                 ctx.audio_player.close()
                 self._audio_opened = False
+            self._opened_config = None  # fresh provenance for the next Run
             self._decode_cache.clear()
             self._resample_cache.clear()
             # Drop the Run-wide keyboard collector so the next Run builds a fresh one.
             self._response_collector = None
+            self._gate_evaluated = False
+            self._gate_summary = {}
             ctx.event_sink.log("cleanup", {"task_id": self.task_id})
 
     # -- per trial -----------------------------------------------------------------------------
     def run_trial(self, ctx: TaskContext, trial_params: dict, trial_index: int) -> TrialResult:
         params = AuditoryFPVSConditionParams.model_validate(trial_params)
         self._ensure_audio_open(ctx, params)
+        self._evaluate_calibration_gate(ctx, params)
         base_tokens, oddball_tokens = self._load_pools(ctx, params)
 
         planned = plan_trial(
@@ -182,6 +194,13 @@ class AuditoryFPVSTask(TaskModule):
             overlay_outcome.update(overlay.outcome_fields(overlay_scores.get(overlay.spawn_key)))
 
         sr = params.audio.sample_rate_hz
+        achieved_base = achieved_frequency_hz(sr, samples_per_cycle(sr, params.base.base_freq_hz))
+        # The oddball has NO independent sample grid -- it is every N-th base token, so its realised
+        # rate is the achieved base rate divided by that integer period, NOT achieved_frequency_hz of
+        # the requested oddball value (which would report a rate the stimulus never produces). This is
+        # the frequency a downstream FFT pipeline must place the oddball bin at.
+        oddball_period = oddball_period_tokens(params.base.base_freq_hz, params.oddball.oddball_freq_hz)
+        achieved_oddball = achieved_base / oddball_period
         return TrialResult(
             outcome_summary={
                 "n_base_tokens": planned.n_base,
@@ -189,9 +208,10 @@ class AuditoryFPVSTask(TaskModule):
                 "onsets_reached": onsets_reached,
                 "triggers_fired": triggers_fired,
                 "requested_base_freq_hz": params.base.base_freq_hz,
-                "achieved_base_freq_hz": achieved_frequency_hz(sr, samples_per_cycle(sr, params.base.base_freq_hz)),
+                "achieved_base_freq_hz": achieved_base,
                 "requested_oddball_freq_hz": params.oddball.oddball_freq_hz,
-                "achieved_oddball_freq_hz": achieved_frequency_hz(sr, samples_per_cycle(sr, params.oddball.oddball_freq_hz)),
+                "achieved_oddball_freq_hz": achieved_oddball,
+                "oddball_period_tokens": oddball_period,
                 "sample_rate_hz": sr,
                 "trial_duration_seconds": params.base.trial_duration_seconds,
                 "fade_in_seconds": planned.fade_in_seconds,
@@ -209,18 +229,34 @@ class AuditoryFPVSTask(TaskModule):
         params = AuditoryFPVSConditionParams.model_validate(condition_params)
         warnings = list(condition_advisories(params))
         if resource_dir is not None:
+            pool_files: dict[str, set] = {}
             for label, selector in (("base", params.base_selector), ("oddball", params.oddball_selector)):
                 try:
-                    n = len(select_files(resource_dir, selector))
+                    files = set(select_files(resource_dir, selector))
                 except OSError:
-                    n = 0
-                if n == 0:
+                    files = set()
+                pool_files[label] = files
+                if len(files) == 0:
                     warnings.append(f"{label} sound pool matches no files under the resource directory.")
-                elif n == 1:
+                elif len(files) == 1:
                     warnings.append(
                         f"{label} sound pool has only 1 file -- a single repeated token invites "
                         "low-level adaptation; use multiple exemplars."
                     )
+            # Resource-aware overlap check: even when the selectors DIFFER, they may resolve to
+            # overlapping files (no category contrast on the shared ones -> a weakened/invalid oddball
+            # response). The identical-selector case is already flagged parameter-only by
+            # condition_advisories; this catches partial overlap that needs the actual files to see.
+            overlap = pool_files.get("base", set()) & pool_files.get("oddball", set())
+            if overlap and not (
+                params.base_selector.subdirectory == params.oddball_selector.subdirectory
+                and params.base_selector.filename_pattern == params.oddball_selector.filename_pattern
+            ):
+                warnings.append(
+                    f"base and oddball pools share {len(overlap)} file(s) -- those tokens carry no "
+                    "category change at the oddball rate, weakening (or invalidating) the oddball "
+                    "response. Use disjoint sound sets for base and oddball."
+                )
         return warnings
 
     def describe_condition_resources(self, condition_params: dict, resource_dir: str) -> list[str]:
@@ -234,7 +270,10 @@ class AuditoryFPVSTask(TaskModule):
         return lines
 
     def run_metadata(self) -> dict:
-        return {"audio_config": self._opened_config_summary()}
+        return {
+            "audio_config": self._opened_config_summary(),
+            "calibration_gate": self._gate_summary,
+        }
 
     # -- attention overlays --------------------------------------------------------------------
     def _build_overlays(self, ctx: TaskContext, params: AuditoryFPVSConditionParams, planned):
@@ -350,9 +389,26 @@ class AuditoryFPVSTask(TaskModule):
                params.audio.output_device)
         if self._audio_opened:
             if cfg != self._opened_config:
-                # Reopening the device mid-run is disruptive; the audio config is expected to be
-                # constant across a Program's Conditions. Keep the first device and record the
-                # mismatch rather than silently churning it.
+                opened_sr = self._opened_config[0] if self._opened_config else None
+                if params.audio.sample_rate_hz != opened_sr:
+                    # A DIFFERENT sample rate mid-Run corrupts timing silently: the device stays at the
+                    # first rate, but the buffer is rendered and every trigger onset is computed at the
+                    # new rate (onset_sample / new_sr) -- so the token grid plays at the wrong speed and
+                    # the trigger-to-sound alignment drifts across the trial. There is no safe way to
+                    # honour it without reopening the device, so fail loudly instead of playing wrong.
+                    ctx.event_sink.log(
+                        "audio_sample_rate_conflict",
+                        {"opened_hz": opened_sr, "requested_hz": params.audio.sample_rate_hz},
+                    )
+                    raise RuntimeError(
+                        f"audio.sample_rate_hz changed mid-Run ({opened_sr} Hz -> "
+                        f"{params.audio.sample_rate_hz} Hz). The audio device is opened once per Run, so "
+                        "every Condition in a Program must use the same sample_rate_hz. Use one rate "
+                        "across the Program's Conditions."
+                    )
+                # Non-rate device params (latency_class/buffer_size/device) can't be re-applied to the
+                # open device either, but they don't corrupt the rendered timing -- record and keep the
+                # first device rather than churning it.
                 ctx.event_sink.log("audio_config_change_ignored",
                                    {"opened": list(self._opened_config), "requested": list(cfg)})
             return
@@ -365,6 +421,51 @@ class AuditoryFPVSTask(TaskModule):
         self._audio_opened = True
         self._opened_config = cfg
         ctx.event_sink.log("audio_device_opened", ctx.audio_player.describe())
+
+    def _evaluate_calibration_gate(self, ctx: TaskContext, params: AuditoryFPVSConditionParams) -> None:
+        """Evaluate the per-machine audio-timing calibration gate once per Run (first trial) and log
+        the result, so an uncalibrated or under-budget machine is on record and recoverable in
+        analysis. This is the runtime side of the advisory gate: it never blocks (the interactive
+        confirm/override belongs to the launch UI), but it turns the calibration profile from
+        unconnected tooling into a logged, run-metadata fact.
+
+        The machine fingerprint comes from the audio backend (``None`` for the silent dev/Null player,
+        so the gate is skipped with a log line). The profile store directory is taken from the
+        Instance params (``audio_profiles_dir``), defaulting to ``data/audio_profiles``. When a passing
+        profile is found, its measured mean latency is recorded (a constant trigger offset analysis can
+        subtract) -- the correction is not applied to trigger timing here (that is gated on the
+        timing-realization work and the offset's threshold-referencing caveat)."""
+        if self._gate_evaluated:
+            return
+        self._gate_evaluated = True
+        tags = [params.base.base_freq_hz, params.oddball.oddball_freq_hz]
+
+        fingerprint = ctx.audio_player.machine_fingerprint()
+        if fingerprint is None:
+            self._gate_summary = {"status": "SKIPPED", "reason": "no real audio device on this backend"}
+            ctx.event_sink.log("auditory_calibration_skipped", self._gate_summary)
+            return
+
+        from pathlib import Path
+
+        from xpman.audio.gate import evaluate_gate
+        from xpman.audio.profile import ProfileStore
+
+        profiles_dir = Path(ctx.instance_params.get("audio_profiles_dir") or "data/audio_profiles")
+        profile = ProfileStore(profiles_dir).lookup(fingerprint)
+        result = evaluate_gate(fingerprint, profile, tags)
+        self._gate_summary = {
+            "status": result.status,
+            "requires_confirmation": result.requires_confirmation,
+            "budget_seconds": result.budget_seconds,
+            "warnings": list(result.warnings),
+            "fingerprint_id": fingerprint.fingerprint_id,
+            # Recorded (not applied) so analysis can subtract this constant trigger offset if wanted.
+            "mean_latency_seconds": (
+                profile.stats.mean_latency_seconds if (profile is not None and result.ok) else None
+            ),
+        }
+        ctx.event_sink.log("auditory_calibration_gate", self._gate_summary)
 
     def _decode(self, path) -> tuple:
         """Raw mono waveform at the file's native rate, decoded at most once per path (cached). This

@@ -98,8 +98,17 @@ def apply_sequence_fade(
     return out
 
 
-def _pick(pool: "list[np.ndarray]", rng: "np.random.Generator") -> "np.ndarray":
-    return pool[int(rng.integers(len(pool)))]
+def _pick_index(n: int, rng: "np.random.Generator", avoid: "int | None") -> int:
+    """A uniform random index in ``[0, n)`` that is **not** ``avoid`` (when possible). Picking the
+    next exemplar this way forbids an immediate repeat within a pool: two consecutive tokens from the
+    same category are never the identical waveform, which is the point of multi-exemplar variation --
+    a back-to-back repeat reintroduces exactly the low-level adaptation/repetition priming the
+    paradigm is designed to remove. With a single-exemplar pool (``n == 1``) there is no choice. One
+    RNG draw, so seeded schedules stay reproducible."""
+    if n <= 1 or avoid is None:
+        return int(rng.integers(n))
+    k = int(rng.integers(n - 1))  # uniform over the n-1 allowed indices
+    return k if k < avoid else k + 1  # map [0, n-1) onto [0, n) \ {avoid}
 
 
 def plan_trial(
@@ -134,10 +143,18 @@ def plan_trial(
     n_base = n_oddball = 0
     base_code = params.base.base_trigger_code
     oddball_code = params.oddball.oddball_trigger_code
+    last_base_idx: int | None = None
+    last_oddball_idx: int | None = None
 
     for onset in onsets:
-        pool = oddball_tokens if onset.is_oddball else base_tokens
-        token = _pick(pool, rng)
+        if onset.is_oddball:
+            idx = _pick_index(len(oddball_tokens), rng, last_oddball_idx)
+            last_oddball_idx = idx
+            token = oddball_tokens[idx]
+        else:
+            idx = _pick_index(len(base_tokens), rng, last_base_idx)
+            last_base_idx = idx
+            token = base_tokens[idx]
         start = onset.onset_sample
         end = min(start + len(token), total)
         if end > start:

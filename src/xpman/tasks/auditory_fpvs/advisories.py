@@ -32,6 +32,10 @@ TYPICAL_BASE_CEILING_HZ = 4.0
 #: How close base/oddball must be to a whole number to count as an integer token period.
 _INTEGER_RATIO_TOL = 1e-3
 
+#: How close the analysis window's oddball-cycle count must be to a whole number to count as
+#: integer-cycle (bin-clean). Loose enough to tolerate sample-rate quantisation of the achieved rate.
+_INTEGER_CYCLE_TOL = 1e-2
+
 #: Fraction of the base cycle the token may occupy before the inter-token silence gets uncomfortably
 #: short (tokens nearly abut, risking perceptual streaming / masking of the onset).
 _TOKEN_FILL_WARN_FRACTION = 0.9
@@ -102,5 +106,42 @@ def condition_advisories(params: AuditoryFPVSConditionParams) -> list[str]:
             "onset effectively (aim for ~10-20 ms). A hard edge injects broadband energy that smears "
             "the tagged frequencies."
         )
+
+    # 7. Base and oddball drawn from the SAME pool: no category contrast, so no valid oddball
+    #    response. The paradigm requires the oddball to be a different category presented periodically
+    #    among the base items; identical selectors make every "oddball" statistically a base token and
+    #    the tagged response collapses to noise. (This is a parameter-only check -- identical
+    #    subdirectory + filename_pattern selects the identical file set regardless of what is on disk;
+    #    the subtler partial-overlap case is caught by the resource-aware check_triggers.)
+    if (
+        params.base_selector.subdirectory == params.oddball_selector.subdirectory
+        and params.base_selector.filename_pattern == params.oddball_selector.filename_pattern
+    ):
+        messages.append(
+            "base and oddball use the SAME sound selector -- both pools are the identical set, so "
+            "there is no category change at the oddball rate and no valid oddball response. Point the "
+            "base and oddball selectors at different subdirectories/patterns."
+        )
+
+    # 8. Analysis window (trial minus the fade regions, which are excluded from analysis) is not an
+    #    integer number of oddball cycles -> spectral leakage off the oddball bin. For a clean FFT the
+    #    oddball tag must sit on a single bin: oddball_freq * analysis_window must be a whole number
+    #    (the base then follows, since base = N * oddball). Barbero used 64 s total with 2 s fades so
+    #    the analysed 60 s window is integer-cycle; a 60 s trial WITH fades is not.
+    fade_in = getattr(params, "fade_in_seconds", 0.0)
+    fade_out = getattr(params, "fade_out_seconds", 0.0)
+    analysis_window = params.base.trial_duration_seconds - fade_in - fade_out
+    if analysis_window > 0:
+        base_achieved = achieved_frequency_hz(sr, samples_per_cycle(sr, base))
+        oddball_achieved = base_achieved / max(round(base / oddball), 1)
+        cycles = analysis_window * oddball_achieved
+        if abs(cycles - round(cycles)) > _INTEGER_CYCLE_TOL:
+            messages.append(
+                f"the analysis window (trial {params.base.trial_duration_seconds:g}s minus "
+                f"{fade_in + fade_out:g}s of fades = {analysis_window:g}s) holds {cycles:.2f} oddball "
+                "cycles, not a whole number -- the oddball tag will leak across FFT bins. Choose a "
+                "trial/fade combination whose analysed window is an integer number of oddball cycles "
+                f"(e.g. a multiple of {1.0 / oddball_achieved:.4g}s)."
+            )
 
     return messages

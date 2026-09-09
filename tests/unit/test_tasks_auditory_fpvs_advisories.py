@@ -15,14 +15,44 @@ def _params(**over):
         "oddball": {"oddball_freq_hz": 0.8},
         "token": {"duration_seconds": 0.15, "ramp_seconds": 0.015},
         "audio": {"sample_rate_hz": 48000},
+        # Distinct pools by default so the baseline is genuinely advisory-free (identical selectors
+        # would -- correctly -- raise the "same sound selector" advisory).
+        "base_selector": {"subdirectory": "objects"},
+        "oddball_selector": {"subdirectory": "voices"},
     }
     for k, v in over.items():
-        data[k] = {**data.get(k, {}), **v}
+        data[k] = {**data.get(k, {}), **v} if isinstance(v, dict) and isinstance(data.get(k), dict) else v
     return AuditoryFPVSConditionParams(**data)
 
 
 def test_clean_design_has_no_advisories():
     assert condition_advisories(_params()) == []
+
+
+def test_identical_selectors_flagged():
+    msgs = condition_advisories(_params(base_selector={"subdirectory": "all"},
+                                        oddball_selector={"subdirectory": "all"}))
+    assert any("SAME sound selector" in m for m in msgs)
+
+
+def test_non_integer_analysis_window_flagged():
+    # 60 s trial + 2 s fades = 56 s window; 56 * (4/5=0.8) = 44.8 oddball cycles -> off-bin.
+    msgs = condition_advisories(_params(
+        base={"base_freq_hz": 4.0, "trial_duration_seconds": 60.0},
+        oddball={"oddball_freq_hz": 0.8},
+        fade_in_seconds=2.0, fade_out_seconds=2.0,
+    ))
+    assert any("analysis window" in m and "oddball cycles" in m for m in msgs)
+
+
+def test_integer_analysis_window_not_flagged():
+    # 64 s trial + 2 s fades = 60 s window; 60 * 0.8 = 48 cycles -> clean (Barbero).
+    msgs = condition_advisories(_params(
+        base={"base_freq_hz": 4.0, "trial_duration_seconds": 64.0},
+        oddball={"oddball_freq_hz": 0.8},
+        fade_in_seconds=2.0, fade_out_seconds=2.0,
+    ))
+    assert not any("analysis window" in m for m in msgs)
 
 
 def test_base_not_sample_exact():

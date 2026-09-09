@@ -57,6 +57,13 @@ class AudioPlayer(ABC):
         """Provenance summary for the Run metadata (backend name, device, latency class)."""
         return {"backend": "unknown"}
 
+    def machine_fingerprint(self):
+        """This machine's audio fingerprint (an ``xpman.audio.fingerprint.AudioMachineFingerprint``)
+        for the calibration gate, or ``None`` when there is no real device to fingerprint (the silent
+        dev/CI player). A real backend returns the live fingerprint so the launch gate can look up this
+        machine's measured timing profile. Default: no fingerprint (gate is skipped)."""
+        return None
+
 
 @dataclass
 class PlayedBuffer:
@@ -172,3 +179,12 @@ class PtbAudioPlayer(AudioPlayer):  # pragma: no cover - hardware
             "latency_class": self._latency_class,
             "output_device": self._output_device,
         }
+
+    def machine_fingerprint(self):
+        """The live audio fingerprint from PsychPortAudio's device list, keyed to the configured output
+        device + sample rate, so the calibration gate can find this machine's profile."""
+        from xpman.audio.backend_ptb import gather_live_fingerprint
+
+        return gather_live_fingerprint(
+            output_device_index=self._output_device, sample_rate_hz=self._sample_rate_hz or None
+        )

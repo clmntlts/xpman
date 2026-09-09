@@ -10,12 +10,44 @@ soundfile = pytest.importorskip("soundfile")
 
 from xpman.tasks.auditory_fpvs.schema import SoundSelector, TokenParams  # noqa: E402
 from xpman.tasks.auditory_fpvs.sound_pool import (  # noqa: E402
+    _PEAK_HEADROOM,
     decode_mono,
     equalize_pools,
     gate_token,
     load_pool,
     select_files,
 )
+
+
+class TestEqualizePeakGuard:
+    def test_no_token_clips_after_equalization(self):
+        # A quiet, high-crest-factor oddball would be scaled past full scale by RMS equalization; the
+        # peak guard must keep every token within headroom (else it clips on the DAC = splatter).
+        base = [np.full(4800, 0.6, dtype=np.float32)]
+        spike = np.zeros(4800, dtype=np.float32)
+        spike[0] = 0.99  # high crest factor, low RMS -> large upward scale
+        eq_base, eq_odd = equalize_pools(base, [spike], strength=1.0)
+        peak = max(float(np.max(np.abs(t))) for t in eq_base + eq_odd)
+        assert peak <= _PEAK_HEADROOM + 1e-6
+
+    def test_no_reduction_when_within_headroom(self):
+        base = [np.full(4800, 0.1, dtype=np.float32)]
+        oddball = [np.full(4800, 0.2, dtype=np.float32)]
+        eq_base, eq_odd = equalize_pools(base, oddball, strength=1.0)
+        # Quiet tokens stay in range; RMS still equalized to the combined mean.
+        assert max(float(np.max(np.abs(t))) for t in eq_base + eq_odd) <= _PEAK_HEADROOM
+        assert _rms(eq_base[0]) == pytest.approx(_rms(eq_odd[0]), rel=0.05)
+
+
+class TestGateShortClip:
+    def test_short_clip_ramps_out_at_content_end(self):
+        sr = 48000
+        token = TokenParams(duration_seconds=0.15, ramp_seconds=0.015)
+        take = int(0.08 * sr)  # shorter than token minus ramp
+        gated = gate_token(np.ones(take), sr, token)
+        assert len(gated) == int(0.15 * sr)
+        assert abs(float(gated[take - 1])) < 1e-3  # content ramped down, no abrupt step
+        assert float(np.max(np.abs(np.diff(gated)))) < 0.05  # no full-amplitude jump anywhere
 
 
 def _rms(x):
