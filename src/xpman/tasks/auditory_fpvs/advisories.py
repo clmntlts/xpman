@@ -58,23 +58,21 @@ def condition_advisories(params: AuditoryFPVSConditionParams) -> list[str]:
             "for frequency-domain analysis."
         )
 
-    # 2. Oddball rate not sample-exact (same, for the oddball tag).
-    if not is_sample_exact(sr, oddball):
-        achieved = achieved_frequency_hz(sr, samples_per_cycle(sr, oddball))
-        messages.append(
-            f"oddball frequency {oddball:g} Hz is not sample-exact at {sr} Hz -- the achieved rate "
-            f"will be {achieved:.4f} Hz. Use the achieved rate for analysis."
-        )
-
-    # 3. Non-integer base/oddball ratio: the oddball can't land on a strictly regular token position,
-    #    so the periodic oddball structure is only approximate.
+    # 2. Non-integer base/oddball ratio: the oddball is realised as every N-th BASE token
+    #    (N = round(base/oddball)), so its onset timing is exact whenever the base is -- there is no
+    #    independent "oddball sample grid" to be inexact. What matters is whether base/oddball is a
+    #    whole number: if not, the achieved oddball rate is base/N, not the requested value. (This is
+    #    why 1.333 Hz on a 4 Hz base is perfectly clean -- ratio 3 -- despite 1.333 not dividing the
+    #    sample rate.) Report the achieved oddball rate when the ratio isn't an integer.
     ratio = base / oddball
     nearest = round(ratio)
     if nearest >= 1 and abs(ratio - nearest) > _INTEGER_RATIO_TOL:
+        base_achieved = achieved_frequency_hz(sr, samples_per_cycle(sr, base))
+        oddball_achieved = base_achieved / nearest
         messages.append(
-            f"base/oddball ratio is {ratio:.3f} (not an integer) -- the oddball cannot fall on a "
-            f"regular every-Nth-token position; it will be quantised to every {nearest} tokens. "
-            "Pick an integer ratio (e.g. base/5) for a clean periodic oddball."
+            f"base/oddball ratio is {ratio:.3f} (not an integer) -- the oddball falls on every "
+            f"{nearest}th base token, so the achieved oddball rate is {oddball_achieved:.4f} Hz, not "
+            f"{oddball:g} Hz. Pick an integer ratio (e.g. base/3 or base/5) to hit the intended rate."
         )
 
     # 4. Base rate above the typical discrete-token ceiling: legal if the token fits, but unusual.

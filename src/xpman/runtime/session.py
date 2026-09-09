@@ -26,6 +26,7 @@ from xpman.runtime.logging_sink import EventSink
 if TYPE_CHECKING:
     import psychopy.visual
 
+    from xpman.hardware.audio import AudioPlayer
     from xpman.hardware.clock import Clock
     from xpman.hardware.trigger import TriggerSender
     from xpman.tasks.registry import TaskRegistry
@@ -74,6 +75,7 @@ def launch_run(
     on_run_created: Callable[[Run], None] | None = None,
     experiment_id: int | None = None,
     on_before_trial: Callable[[int], None] | None = None,
+    audio_player: "AudioPlayer | None" = None,
 ) -> Run:
     """Resolve ``instance_id``/``subject_id``, create a Run, and execute it end to end.
 
@@ -165,4 +167,5 @@ def launch_run(
         experiment_id=experiment_id,
         on_before_trial=on_before_trial,
         data_dir=data_dir,
+        audio_player=audio_player,
     )

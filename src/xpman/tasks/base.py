@@ -25,9 +25,19 @@ import numpy.random
 
 if TYPE_CHECKING:
     import psychopy.visual
+    from xpman.hardware.audio import AudioPlayer
     from xpman.hardware.clock import Clock
     from xpman.hardware.trigger import TriggerSender
     from xpman.runtime.logging_sink import EventSink
+
+
+def _default_audio_player() -> "AudioPlayer":
+    """A silent :class:`~xpman.hardware.audio.NullAudioPlayer`, imported lazily so this module keeps
+    its no-``xpman.hardware``-at-load-time property (see the module docstring). Tasks that don't use
+    audio never touch it; visual tasks get this default and ignore it."""
+    from xpman.hardware.audio import NullAudioPlayer
+
+    return NullAudioPlayer()
 
 
 class SubjectInfo(NamedTuple):
@@ -75,6 +85,10 @@ class TaskContext:
     resource_dir: str
     event_sink: "EventSink"
     abort_check: Callable[[], bool]
+    #: Audio output for auditory tasks. Defaults to a silent ``NullAudioPlayer`` so visual tasks and
+    #: existing callers/tests need not pass one; the launcher provides a real player for an auditory
+    #: Run. Last field with a default -- keep new context fields defaulted so no call site breaks.
+    audio_player: "AudioPlayer" = field(default_factory=_default_audio_player)
 
 
 class ParameterSchema(Protocol):
