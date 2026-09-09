@@ -26,6 +26,10 @@ dependencies = [
     # Already installed transitively via PsychoPy, but declared explicitly because the serial
     # (USB virtual-COM) trigger backend imports it directly -- see hardware/trigger_serial.py.
     "pyserial>=3.5",
+    # Transitive via PsychoPy too, but the auditory FPAS task imports them directly to decode and
+    # resample sound-pool files -- see tasks/auditory_fpvs/sound_pool.py.
+    "soundfile>=0.12",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +53,7 @@ xpman-verify-report = "xpman.verification.integration_report:main"
 [project.entry-points."xpman.tasks"]
 dummy = "xpman.tasks.dummy.task:DummyTask"
 fpvs = "xpman.tasks.fpvs.task:FPVSTask"
+auditory_fpvs = "xpman.tasks.auditory_fpvs.task:AuditoryFPVSTask"
 
 [tool.setuptools.packages.find]
 where = ["src"]
