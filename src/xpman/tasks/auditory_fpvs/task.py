@@ -35,6 +35,7 @@ from xpman.tasks.auditory_fpvs.sound_pool import (
     select_files,
 )
 from xpman.tasks.base import TaskContext, TaskModule, TrialResult
+from xpman.tasks.fpvs.response import ResponseCollector
 
 #: How far ahead of "now" playback is scheduled, so the device has started before the first token
 #: onset the trigger loop waits on. Small relative to a trial; generous relative to device start-up.
@@ -58,6 +59,11 @@ class AuditoryFPVSTask(TaskModule):
         # soundfile.read on the run_trial path.
         self._decode_cache: dict[str, tuple] = {}
         self._resample_cache: dict[tuple[str, int], object] = {}
+        # ONE keyboard collector for the whole Run, created lazily on the first trial that has an
+        # active attention overlay and reused after (PsychoPy's key buffer attaches more reliably
+        # than a fresh Keyboard per trial). None until then, and left None if construction fails so a
+        # headless/no-keyboard run still works (0 responses). See _ensure_response_collector.
+        self._response_collector: ResponseCollector | None = None
 
     # -- lifecycle -----------------------------------------------------------------------------
     def prepare(self, ctx: TaskContext) -> None:
@@ -102,6 +108,8 @@ class AuditoryFPVSTask(TaskModule):
                 self._audio_opened = False
             self._decode_cache.clear()
             self._resample_cache.clear()
+            # Drop the Run-wide keyboard collector so the next Run builds a fresh one.
+            self._response_collector = None
             ctx.event_sink.log("cleanup", {"task_id": self.task_id})
 
     # -- per trial -----------------------------------------------------------------------------
@@ -114,6 +122,15 @@ class AuditoryFPVSTask(TaskModule):
             params, base_tokens=base_tokens, oddball_tokens=oddball_tokens, rng=ctx.rng
         )
 
+        # --- Attention overlays (build) ------------------------------------------------------
+        # Schedule + apply every ACTIVE attention overlay (currently just the volume-decrement catch
+        # task) BEFORE playback: an auditory overlay modifies the pre-rendered buffer in place (there
+        # is nothing to draw per frame), so the attenuation must be baked in before the buffer is
+        # handed to the device. Returns the (overlay, events) pairs for end-of-trial scoring and a
+        # token_index -> targets lookup for firing onsets/triggers inside the loop below. Kept as a
+        # self-contained helper so it merges cleanly with other edits to this method.
+        scored_overlays, onset_targets = self._build_overlays(ctx, params, planned)
+
         # Start the pre-rendered buffer slightly in the future and anchor every trigger to the
         # reported start time (dev plan §2) plus each token's known offset.
         when = ctx.clock.get_time() + _PLAYBACK_LEAD_SECONDS
@@ -122,7 +139,7 @@ class AuditoryFPVSTask(TaskModule):
         triggers_fired = 0
         onsets_reached = 0
         aborted = False
-        for ev in planned.triggers:
+        for token_index, ev in enumerate(planned.triggers):
             target = start + ev.onset_seconds
             if not self._wait_until(ctx, target):
                 aborted = True
@@ -145,12 +162,24 @@ class AuditoryFPVSTask(TaskModule):
                     timestamp=target,
                 )
                 triggers_fired += 1
+            # --- Attention overlays (onset) --------------------------------------------------
+            # If this token is an overlay target, stamp its fire time (for RT scoring) and log its
+            # onset + optional trigger. Self-contained; a no-op when no overlay targets this token.
+            self._fire_overlay_onsets(ctx, onset_targets, token_index, target, trial_index)
 
         if not aborted:
             # Let the buffer play out so the trial has its full duration before the next trial starts.
             self._wait_until(ctx, start + planned.duration_seconds)
         ctx.audio_player.stop()
         ctx.trigger.clear_code()
+
+        # --- Attention overlays (score) ------------------------------------------------------
+        # Poll the shared keyboard collector once, then score each overlay that ran against its own
+        # events (only fired ones count, so an aborted trial doesn't inflate misses). Self-contained.
+        overlay_scores = self._score_overlays(ctx, scored_overlays, trial_index)
+        overlay_outcome: dict = {}
+        for overlay in params.all_overlays():
+            overlay_outcome.update(overlay.outcome_fields(overlay_scores.get(overlay.spawn_key)))
 
         sr = params.audio.sample_rate_hz
         return TrialResult(
@@ -168,6 +197,7 @@ class AuditoryFPVSTask(TaskModule):
                 "fade_in_seconds": planned.fade_in_seconds,
                 "fade_out_seconds": planned.fade_out_seconds,
                 "aborted": aborted,
+                **overlay_outcome,
             }
         )
 
@@ -205,6 +235,114 @@ class AuditoryFPVSTask(TaskModule):
 
     def run_metadata(self) -> dict:
         return {"audio_config": self._opened_config_summary()}
+
+    # -- attention overlays --------------------------------------------------------------------
+    def _build_overlays(self, ctx: TaskContext, params: AuditoryFPVSConditionParams, planned):
+        """Schedule and apply every active attention overlay before playback, and prepare the shared
+        keyboard collector. Returns ``(scored_overlays, onset_targets)`` where ``scored_overlays`` is
+        a list of ``(overlay, events)`` (in ``active_overlays`` order, for end-of-trial scoring) and
+        ``onset_targets`` maps a token index to the ``(overlay, event)`` targets landing on it (for
+        the run loop). Both empty when no attention task is enabled -- the trial then plays exactly as
+        rendered, at zero cost.
+
+        Each overlay is scheduled from its OWN decoupled ``ctx.rng.spawn(1)`` sub-stream so enabling
+        one overlay never perturbs another's schedule or the stimulus order. ``apply_to_buffer``
+        modifies ``planned.buffer`` in place (an auditory overlay changes the pre-rendered audio, it
+        does not draw). ``fade_in_seconds``/``fade_out_seconds`` are read defensively via ``getattr``
+        because they are added to the schema by a separate change; absent, targets simply aren't kept
+        clear of a fade that isn't there."""
+        active = params.active_overlays()
+        scored_overlays: list = []
+        onset_targets: dict[int, list] = {}
+        if not active:
+            return scored_overlays, onset_targets
+
+        sr = params.audio.sample_rate_hz
+        fade_in = float(getattr(params, "fade_in_seconds", 0.0) or 0.0)
+        fade_out = float(getattr(params, "fade_out_seconds", 0.0) or 0.0)
+        token_len_samples = max(round(params.token.duration_seconds * sr), 1)
+        for overlay in active:
+            events = overlay.schedule(
+                planned.triggers, sr, ctx.rng.spawn(1)[0],
+                fade_in_seconds=fade_in, fade_out_seconds=fade_out,
+            )
+            overlay.apply_to_buffer(planned.buffer, sr, token_len_samples, events)
+            scored_overlays.append((overlay, events))
+            for event in events:
+                onset_targets.setdefault(event.token_index, []).append((overlay, event))
+            ctx.event_sink.log(
+                "overlay_scheduled", {"overlay": overlay.spawn_key, "n_targets": len(events)}
+            )
+
+        self._ensure_response_collector(ctx)
+        return scored_overlays, onset_targets
+
+    def _ensure_response_collector(self, ctx: TaskContext) -> None:
+        """Create the Run-wide keyboard collector on first use and clear it for this trial. Guarded
+        so a headless/no-PsychoPy environment (dev/CI, NullTrigger) degrades to no key capture rather
+        than crashing: the collector already falls back internally, and any construction failure
+        leaves ``_response_collector`` None (0 responses). Clearing at trial start drops any stray
+        pre-trial press so it isn't attributed to this trial."""
+        if self._response_collector is None:
+            try:
+                self._response_collector = ResponseCollector(enabled=True)
+                ctx.event_sink.log("keyboard_ready", {"backend": self._response_collector.backend})
+            except Exception as exc:  # noqa: BLE001 - never let key capture break a run/test
+                self._response_collector = None
+                ctx.event_sink.log("keyboard_unavailable", {"error": str(exc)})
+        if self._response_collector is not None:
+            self._response_collector.clear()
+
+    def _fire_overlay_onsets(self, ctx: TaskContext, onset_targets, token_index, target, trial_index) -> None:
+        """When a token that is an overlay target onsets: stamp the event's fire time (``onset_time``,
+        for RT scoring), log the overlay's onset event, and fire its optional trigger. A no-op when no
+        overlay targets this token. NOTE: a catch trigger coincides with the base/oddball trigger on
+        the same token onset -- it is off by default (``trigger_code=None``); when set it is emitted
+        after the base/oddball code on that onset."""
+        for overlay, event in onset_targets.get(token_index, ()):
+            event.onset_time = target
+            ctx.event_sink.log(
+                overlay.onset_event_type,
+                {**overlay.onset_payload(event), "trial_index": trial_index},
+                timestamp=target,
+            )
+            code = overlay.trigger_code_for(event)
+            if code is not None:
+                ctx.trigger.set_code(code)
+                ctx.event_sink.log(
+                    "trigger_sent",
+                    {"trial_index": trial_index, "code": code, "overlay": overlay.spawn_key},
+                    timestamp=target,
+                )
+
+    def _score_overlays(self, ctx: TaskContext, scored_overlays, trial_index) -> dict:
+        """Poll the keyboard once and score each overlay that ran. Presses are partitioned by each
+        overlay's own keys (one shared collector, as two Keyboard instances would fight over
+        PsychoPy's single device buffer). Returns ``{spawn_key: score}`` for the overlays that ran;
+        empty when none did (or no key capture was available)."""
+        scores: dict = {}
+        if not scored_overlays:
+            return scores
+        presses = self._response_collector.collect() if self._response_collector is not None else []
+        ctx.event_sink.log(
+            "keyboard_captured",
+            {
+                "n": len(presses),
+                "source": self._response_collector.last_source if self._response_collector else "disabled",
+                "backend": self._response_collector.backend if self._response_collector else "disabled",
+                "keys": [{"name": r.key_name, "time": r.time} for r in presses],
+            },
+        )
+        for overlay, events in scored_overlays:
+            keys = set(overlay.params.keys)
+            overlay_responses = [r for r in presses if r.key_name in keys]
+            score = overlay.score(overlay_responses, events)
+            scores[overlay.spawn_key] = score
+            ctx.event_sink.log(
+                overlay.scored_event_type,
+                {**overlay.scored_payload(score), "trial_index": trial_index},
+            )
+        return scores
 
     # -- internals -----------------------------------------------------------------------------
     def _ensure_audio_open(self, ctx: TaskContext, params: AuditoryFPVSConditionParams) -> None:
