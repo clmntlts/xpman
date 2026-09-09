@@ -255,6 +255,77 @@ def test_gate_needs_calibration_when_no_profile(tmp_path):
     assert task.run_metadata()["calibration_gate"]["status"] == "NEEDS_CALIBRATION"
 
 
+class _CountingPlayer(NullAudioPlayer):
+    """Silent player that counts device-lifecycle calls, to assert the open-once/reuse/close contract
+    (parity with the visual task's tested lifecycle)."""
+
+    def __init__(self):
+        super().__init__()
+        self.opens = 0
+        self.closes = 0
+        self.stops = 0
+
+    def open(self, **kw):
+        self.opens += 1
+        super().open(**kw)
+
+    def close(self):
+        self.closes += 1
+        super().close()
+
+    def stop(self):
+        self.stops += 1
+        super().stop()
+
+
+class _StepClock:
+    """Clock that advances by a fixed small step per read, so the wait loop actually iterates (and
+    consults abort_check) with realistic pacing -- unlike the jump-forward FakeClock."""
+
+    def __init__(self, step=0.01):
+        self.t = 0.0
+        self.step = step
+
+    def get_time(self):
+        self.t += self.step
+        return self.t
+
+
+def test_device_opened_once_and_closed_on_cleanup(tmp_path):
+    _resource_dir(tmp_path)
+    player = _CountingPlayer()
+    task = AuditoryFPVSTask()
+    ctx = _ctx(tmp_path, player, FakeSink())
+    task.prepare(ctx)
+    task.run_trial(ctx, _condition(), trial_index=0)
+    task.run_trial(ctx, _condition(), trial_index=1)  # second trial must REUSE the open device
+    assert player.opens == 1  # opened once for the Run, not per trial
+    task.cleanup(ctx)
+    assert player.closes == 1  # released on cleanup
+    assert player.stops >= 1  # stopped at least once
+
+
+def test_abort_midway_stops_device_and_reports_partial(tmp_path):
+    _resource_dir(tmp_path)
+    player = _CountingPlayer()
+    clock = _StepClock(step=0.01)
+    task = AuditoryFPVSTask()
+    ctx = TaskContext(
+        window=None, trigger=NullTrigger(), clock=clock,
+        rng=np.random.default_rng(0), subject=SubjectInfo(id=1, first_name="T", last_name="E"),
+        instance_params={}, resource_dir=str(tmp_path), event_sink=FakeSink(),
+        # Abort once the clock passes 0.5 s -- after the first couple of token onsets have fired.
+        abort_check=lambda: clock.t > 0.5, audio_player=player,
+    )
+    task.prepare(ctx)
+    result = task.run_trial(ctx, _condition(base={"base_freq_hz": 4.0, "trial_duration_seconds": 2.0},
+                                            oddball={"oddball_freq_hz": 2.0}), trial_index=0)
+    assert result.outcome_summary["aborted"] is True
+    # Some onsets fired before the abort, but not all (2 s trial -> 8 tokens).
+    assert 0 < result.outcome_summary["onsets_reached"] < 8
+    assert player.stops >= 1  # device stopped on the way out
+
+
 def test_gate_ok_and_records_mean_latency_when_profile_passes(tmp_path):
     _resource_dir(tmp_path)
     from xpman.audio.jitter import OnsetJitterStats

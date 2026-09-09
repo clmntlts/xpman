@@ -162,15 +162,23 @@ class AuditoryFPVSTask(TaskModule):
                 # single clear at trial end covers latching boxes. set_code lands at the scheduled
                 # onset; the true command->sound latency is what the rig calibration measures.
                 ctx.trigger.set_code(ev.code)
+            # Capture the ACTUAL clock time the code was placed, right after set_code returns (mirrors
+            # the visual task logging the real flip_time). The event timestamp stays the sample-exact
+            # intended onset (`target`) -- that is the meaningful time for frequency analysis -- but
+            # logging fired_at exposes the wait-loop/serial overshoot (software jitter), which is
+            # otherwise invisible in the event stream. See run_trial docstring / calibration.
+            fired_at = ctx.clock.get_time()
             ctx.event_sink.log(
                 "token_onset",
-                {"trial_index": trial_index, "is_oddball": ev.is_oddball, "code": ev.code},
+                {"trial_index": trial_index, "is_oddball": ev.is_oddball, "code": ev.code,
+                 "fired_at_seconds": fired_at},
                 timestamp=target,
             )
             if ev.code is not None:
                 ctx.event_sink.log(
                     "trigger_sent",
-                    {"trial_index": trial_index, "code": ev.code, "is_oddball": ev.is_oddball},
+                    {"trial_index": trial_index, "code": ev.code, "is_oddball": ev.is_oddball,
+                     "fired_at_seconds": fired_at, "software_jitter_seconds": fired_at - target},
                     timestamp=target,
                 )
                 triggers_fired += 1
@@ -348,9 +356,11 @@ class AuditoryFPVSTask(TaskModule):
             code = overlay.trigger_code_for(event)
             if code is not None:
                 ctx.trigger.set_code(code)
+                fired_at = ctx.clock.get_time()
                 ctx.event_sink.log(
                     "trigger_sent",
-                    {"trial_index": trial_index, "code": code, "overlay": overlay.spawn_key},
+                    {"trial_index": trial_index, "code": code, "overlay": overlay.spawn_key,
+                     "fired_at_seconds": fired_at, "software_jitter_seconds": fired_at - target},
                     timestamp=target,
                 )
 
