@@ -77,7 +77,11 @@ def _condition(**over):
         "oddball_selector": {"subdirectory": "odd"},
     }
     for k, v in over.items():
-        data[k] = {**data.get(k, {}), **v}
+        # Nested param groups merge; scalar top-level fields (the sequence fades) assign directly.
+        if isinstance(v, dict):
+            data[k] = {**data.get(k, {}), **v}
+        else:
+            data[k] = v
     return data
 
 
@@ -146,6 +150,73 @@ class TestRunTrial:
         task.prepare(ctx)
         result = task.run_trial(ctx, _condition(), trial_index=0)
         assert result.outcome_summary["aborted"] is True
+
+
+class TestPreload:
+    def test_on_before_run_populates_decode_cache(self, tmp_path):
+        _resource_dir(tmp_path)  # 3 base + 2 oddball = 5 files
+        task = AuditoryFPVSTask()
+        sink = FakeSink()
+        ctx = _ctx(tmp_path, sink=sink)
+        task.prepare(ctx)
+        task.on_before_run(ctx)
+        assert len(task._decode_cache) == 5
+        preloaded = sink.of_type("sounds_preloaded")
+        assert preloaded and preloaded[0][1]["n_sounds"] == 5
+
+    def test_run_trial_does_no_file_io_after_preload(self, tmp_path, monkeypatch):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        task.on_before_run(ctx)  # all decoding happens here
+
+        calls = {"n": 0}
+        real_read = soundfile.read
+
+        def counting_read(*args, **kwargs):
+            calls["n"] += 1
+            return real_read(*args, **kwargs)
+
+        monkeypatch.setattr(soundfile, "read", counting_read)
+        task.run_trial(ctx, _condition(), trial_index=0)
+        # Hot path pulls from the warm decode cache -- no soundfile.read at all.
+        assert calls["n"] == 0
+
+    def test_run_trial_still_works_without_preload(self, tmp_path):
+        # _load_pools decodes on a cache miss, so a run without on_before_run still succeeds.
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(ctx, _condition(), trial_index=0)
+        assert result.outcome_summary["n_base_tokens"] == 1
+
+
+class TestEqualizationAndFades:
+    def test_equalization_enabled_runs(self, tmp_path):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(
+            ctx, _condition(equalization={"enabled": True, "strength": 1.0}), trial_index=0
+        )
+        assert result.outcome_summary["n_base_tokens"] == 1
+        assert result.outcome_summary["n_oddball_tokens"] == 1
+
+    def test_fades_reported_in_outcome(self, tmp_path):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(
+            ctx,
+            _condition(base={"trial_duration_seconds": 0.5}, fade_in_seconds=0.1, fade_out_seconds=0.1),
+            trial_index=0,
+        )
+        assert result.outcome_summary["fade_in_seconds"] == 0.1
+        assert result.outcome_summary["fade_out_seconds"] == 0.1
 
 
 class TestCheckTriggers:
