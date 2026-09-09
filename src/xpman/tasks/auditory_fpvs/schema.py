@@ -199,6 +199,38 @@ class AudioOutputParams(BaseModel):
     )
 
 
+class AudioEqualizationParams(BaseModel):
+    """Optional loudness (RMS/energy) equalization across every token pool a Condition presents
+    (base + oddball together), the auditory analogue of the visual FPVS luminance/contrast
+    equalization (see ``tasks.fpvs.schema.EqualizationParams``). Disabled by default: RMS matching
+    is common auditory-FPAS practice but a real per-study decision, not something to silently turn
+    on.
+
+    **Scope is the COMBINED pool, not per-pool.** Base and oddball tokens are typically different
+    categories (e.g. different syllables or speakers) with different natural loudness; equalizing
+    each pool to its own mean RMS would leave the BETWEEN-category loudness difference untouched, and
+    it is exactly that difference that turns every oddball onset into a low-level loudness step
+    recurring at the oddball frequency -- a confound that would masquerade as a category response.
+    Equalizing the union of every token to one shared target RMS removes it, so a discriminable
+    oddball response cannot be driven by raw energy.
+
+    See ``sound_pool.equalize_pools`` for the exact scaling: each token is scaled toward the combined
+    pool's mean RMS, and ``strength`` interpolates between "leave it alone" (0) and "match the target
+    exactly" (1) via ``scale = 1 + strength * (target/token_rms - 1)``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Equalize RMS/energy across the combined (base + oddball) token pool this Condition presents.",
+    )
+    strength: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        description="0 = no equalization, 1 = full equalization (each token's RMS becomes exactly the pool's mean).",
+    )
+
+
 class AuditoryFPVSProgramParams(BaseModel):
     """No program-level parameters needed yet (the sound pool is selected per Condition via
     ``SoundSelector`` against the Program's resource directory, exactly as FPVS does for images)."""
@@ -228,6 +260,32 @@ class AuditoryFPVSConditionParams(BaseModel):
         default_factory=AudioOutputParams,
         description="Audio device / backend settings for playback (hardware only; no effect on the schedule).",
         json_schema_extra={"section": "General"},
+    )
+    equalization: AudioEqualizationParams = Field(
+        default_factory=AudioEqualizationParams,
+        description="RMS/energy equalization across the combined (base + oddball) token pool (see AudioEqualizationParams).",
+        json_schema_extra={"section": "General"},
+    )
+
+    # -- Trial phases: whole-sequence amplitude shaping ----------------------------------------
+    fade_in_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Raised-cosine fade-in applied to the whole rendered sequence (0 = none). Ramps the "
+            "sequence amplitude 0->1 over this many seconds at the start, so the stream begins "
+            "gently rather than at full level (Barbero et al. 2021 use ~2 s)."
+        ),
+        json_schema_extra={"section": "Trial phases"},
+    )
+    fade_out_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Raised-cosine fade-out applied to the whole rendered sequence (0 = none). Ramps the "
+            "sequence amplitude 1->0 over this many seconds at the end."
+        ),
+        json_schema_extra={"section": "Trial phases"},
     )
 
     # -- Stream: the single auditory base+oddball stream ---------------------------------------
@@ -284,6 +342,21 @@ class AuditoryFPVSConditionParams(BaseModel):
                 f"token.ramp_seconds ({self.token.ramp_seconds}) is too long: the on+off ramps "
                 f"(2 x {self.token.ramp_seconds} s) must fit within token.duration_seconds "
                 f"({self.token.duration_seconds} s). Shorten the ramp or lengthen the token."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_fades_fit_trial(self) -> "AuditoryFPVSConditionParams":
+        # The fade-in and fade-out are applied to the same rendered buffer, so together they cannot
+        # exceed the trial duration -- otherwise the ramps would overlap and there would be no
+        # full-amplitude plateau (or the envelope would be ill-defined). fade_in + fade_out <= trial.
+        total_fade = self.fade_in_seconds + self.fade_out_seconds
+        trial = self.base.trial_duration_seconds
+        if total_fade > trial:
+            raise ValueError(
+                f"fade_in_seconds ({self.fade_in_seconds}) + fade_out_seconds "
+                f"({self.fade_out_seconds}) = {total_fade} s must not exceed "
+                f"base.trial_duration_seconds ({trial} s). Shorten the fades or lengthen the trial."
             )
         return self
 

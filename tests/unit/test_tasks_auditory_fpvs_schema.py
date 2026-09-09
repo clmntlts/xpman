@@ -159,6 +159,68 @@ class TestAudioOutputParams:
             AudioOutputParams(buffer_size=0)
 
 
+class TestEqualization:
+    def test_disabled_by_default(self):
+        c = AuditoryFPVSConditionParams()
+        assert c.equalization.enabled is False
+        assert c.equalization.strength == 1.0
+
+    def test_can_enable_with_strength(self):
+        c = AuditoryFPVSConditionParams(equalization={"enabled": True, "strength": 0.5})
+        assert c.equalization.enabled is True
+        assert c.equalization.strength == 0.5
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.1])
+    def test_strength_out_of_range_rejected(self, bad):
+        with pytest.raises(ValidationError):
+            AuditoryFPVSConditionParams(equalization={"strength": bad})
+
+    def test_in_general_section(self):
+        field = AuditoryFPVSConditionParams.model_fields["equalization"]
+        assert field.json_schema_extra == {"section": "General"}
+
+
+class TestSequenceFades:
+    def test_no_fades_by_default(self):
+        c = AuditoryFPVSConditionParams()
+        assert c.fade_in_seconds == 0.0
+        assert c.fade_out_seconds == 0.0
+
+    def test_fades_accepted_when_they_fit(self):
+        c = AuditoryFPVSConditionParams(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 60.0},
+            fade_in_seconds=2.0,
+            fade_out_seconds=2.0,
+        )
+        assert c.fade_in_seconds == 2.0
+        assert c.fade_out_seconds == 2.0
+
+    def test_negative_fade_rejected(self):
+        with pytest.raises(ValidationError):
+            AuditoryFPVSConditionParams(fade_in_seconds=-1.0)
+
+    def test_fades_exceeding_trial_rejected(self):
+        with pytest.raises(ValidationError, match="must not exceed"):
+            AuditoryFPVSConditionParams(
+                base={"base_freq_hz": 4.0, "trial_duration_seconds": 3.0},
+                fade_in_seconds=2.0,
+                fade_out_seconds=2.0,
+            )
+
+    def test_fades_summing_exactly_to_trial_allowed(self):
+        c = AuditoryFPVSConditionParams(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 4.0},
+            fade_in_seconds=2.0,
+            fade_out_seconds=2.0,
+        )
+        assert c.fade_in_seconds + c.fade_out_seconds == 4.0
+
+    def test_in_trial_phases_section(self):
+        for name in ("fade_in_seconds", "fade_out_seconds"):
+            field = AuditoryFPVSConditionParams.model_fields[name]
+            assert field.json_schema_extra == {"section": "Trial phases"}
+
+
 class TestSchemaProtocol:
     def test_exposes_the_three_models(self):
         schema = AuditoryFPVSSchema()
