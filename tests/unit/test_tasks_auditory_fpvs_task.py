@@ -77,7 +77,11 @@ def _condition(**over):
         "oddball_selector": {"subdirectory": "odd"},
     }
     for k, v in over.items():
-        data[k] = {**data.get(k, {}), **v}
+        # Nested param groups merge; scalar top-level fields (the sequence fades) assign directly.
+        if isinstance(v, dict):
+            data[k] = {**data.get(k, {}), **v}
+        else:
+            data[k] = v
     return data
 
 
@@ -148,6 +152,73 @@ class TestRunTrial:
         assert result.outcome_summary["aborted"] is True
 
 
+class TestPreload:
+    def test_on_before_run_populates_decode_cache(self, tmp_path):
+        _resource_dir(tmp_path)  # 3 base + 2 oddball = 5 files
+        task = AuditoryFPVSTask()
+        sink = FakeSink()
+        ctx = _ctx(tmp_path, sink=sink)
+        task.prepare(ctx)
+        task.on_before_run(ctx)
+        assert len(task._decode_cache) == 5
+        preloaded = sink.of_type("sounds_preloaded")
+        assert preloaded and preloaded[0][1]["n_sounds"] == 5
+
+    def test_run_trial_does_no_file_io_after_preload(self, tmp_path, monkeypatch):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        task.on_before_run(ctx)  # all decoding happens here
+
+        calls = {"n": 0}
+        real_read = soundfile.read
+
+        def counting_read(*args, **kwargs):
+            calls["n"] += 1
+            return real_read(*args, **kwargs)
+
+        monkeypatch.setattr(soundfile, "read", counting_read)
+        task.run_trial(ctx, _condition(), trial_index=0)
+        # Hot path pulls from the warm decode cache -- no soundfile.read at all.
+        assert calls["n"] == 0
+
+    def test_run_trial_still_works_without_preload(self, tmp_path):
+        # _load_pools decodes on a cache miss, so a run without on_before_run still succeeds.
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(ctx, _condition(), trial_index=0)
+        assert result.outcome_summary["n_base_tokens"] == 1
+
+
+class TestEqualizationAndFades:
+    def test_equalization_enabled_runs(self, tmp_path):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(
+            ctx, _condition(equalization={"enabled": True, "strength": 1.0}), trial_index=0
+        )
+        assert result.outcome_summary["n_base_tokens"] == 1
+        assert result.outcome_summary["n_oddball_tokens"] == 1
+
+    def test_fades_reported_in_outcome(self, tmp_path):
+        _resource_dir(tmp_path)
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path)
+        task.prepare(ctx)
+        result = task.run_trial(
+            ctx,
+            _condition(base={"trial_duration_seconds": 0.5}, fade_in_seconds=0.1, fade_out_seconds=0.1),
+            trial_index=0,
+        )
+        assert result.outcome_summary["fade_in_seconds"] == 0.1
+        assert result.outcome_summary["fade_out_seconds"] == 0.1
+
+
 class TestCheckTriggers:
     def test_advisories_plus_pool_check(self, tmp_path):
         _resource_dir(tmp_path)
@@ -175,6 +246,87 @@ class TestCheckTriggers:
         lines = task.describe_condition_resources(_condition(), str(tmp_path))
         assert any("Base pool: 3" in line for line in lines)
         assert any("Oddball pool: 2" in line for line in lines)
+
+
+class CapturingPlayer(NullAudioPlayer):
+    """A NullAudioPlayer that also keeps a copy of every buffer it is asked to play, so a test can
+    inspect what the overlay's in-place buffer modification actually produced."""
+
+    def __init__(self):
+        super().__init__()
+        self.buffers = []
+
+    def play(self, buffer, *, when):
+        self.buffers.append(np.array(buffer, copy=True))
+        return super().play(buffer, when=when)
+
+
+class TestCatchOverlay:
+    """Headless run_trial with the volume-decrement catch task enabled: onsets logged, buffer
+    attenuated at the target tokens, and a score summarised into the outcome."""
+
+    def _catch_condition(self):
+        # A 10 s / 4 Hz trial (40 tokens) leaves ample room for the catch targets; no per-token base
+        # trigger so nothing competes with the catch onsets in this check.
+        return _condition(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 10.0, "base_trigger_code": None},
+            oddball={"oddball_freq_hz": 0.8, "oddball_trigger_code": None},
+            catch={"enabled": True, "target_count": 3, "guard_seconds": 1.0,
+                   "min_separation_seconds": 1.0, "decrement_factor": 12.5},
+        )
+
+    def test_catch_onsets_logged_and_buffer_attenuated(self, tmp_path):
+        _resource_dir(tmp_path)
+        sink = FakeSink()
+        player = CapturingPlayer()
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path, sink=sink, audio=player)
+        task.prepare(ctx)
+        result = task.run_trial(ctx, self._catch_condition(), trial_index=0)
+
+        # Every scheduled catch target fired (FakeClock resolves each onset immediately).
+        onsets = sink.of_type("catch_onset")
+        assert len(onsets) == 3
+        assert sink.of_type("catch_scored")
+        assert result.outcome_summary["catch_enabled"] is True
+        # No key capture available headlessly -> all targets are misses, no hits/false alarms.
+        assert result.outcome_summary["catch_n_events"] == 3
+        assert result.outcome_summary["catch_n_hits"] == 0
+        assert result.outcome_summary["catch_n_misses"] == 3
+
+        # The played buffer is attenuated exactly at each catch target token, relative to a reference
+        # run with the catch disabled (same seed -> identical base render).
+        catch_buffer = player.buffers[0]
+        ref_player = CapturingPlayer()
+        ref_task = AuditoryFPVSTask()
+        ref_ctx = _ctx(tmp_path, sink=FakeSink(), audio=ref_player)
+        ref_task.prepare(ref_ctx)
+        ref_task.run_trial(ref_ctx, _condition(
+            base={"base_freq_hz": 4.0, "trial_duration_seconds": 10.0, "base_trigger_code": None},
+            oddball={"oddball_freq_hz": 0.8, "oddball_trigger_code": None},
+        ), trial_index=0)
+        ref_buffer = ref_player.buffers[0]
+        assert catch_buffer.shape == ref_buffer.shape
+
+        sr = 48000
+        token_len = round(0.15 * sr)
+        target_starts = [round(o[1]["onset_seconds"] * sr) for o in onsets]
+        for start in target_starts:
+            seg_catch = catch_buffer[start:start + token_len]
+            seg_ref = ref_buffer[start:start + token_len]
+            assert np.allclose(seg_catch, seg_ref / 12.5, atol=1e-6)
+        # A sample well away from any target token is untouched between the two renders.
+        assert np.allclose(catch_buffer[0], ref_buffer[0])
+
+    def test_catch_disabled_leaves_buffer_and_events_untouched(self, tmp_path):
+        _resource_dir(tmp_path)
+        sink = FakeSink()
+        task = AuditoryFPVSTask()
+        ctx = _ctx(tmp_path, sink=sink)
+        result = task.run_trial(ctx, _condition(), trial_index=0)
+        assert not sink.of_type("catch_onset")
+        assert result.outcome_summary["catch_enabled"] is False
+        assert result.outcome_summary["catch_n_hits"] is None
 
 
 class TestClassAttributes:
