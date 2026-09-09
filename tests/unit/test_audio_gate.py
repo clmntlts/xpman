@@ -46,9 +46,11 @@ class TestNeedsCalibration:
         assert not result.ok
         assert any("no audio-timing calibration" in w for w in result.warnings)
 
-    def test_no_profile_and_no_low_latency_path_adds_second_warning(self):
+    def test_no_profile_and_no_low_latency_path_is_distinct_status(self):
+        # No low-latency host API at all is a distinct, more fundamental status than NEEDS_CALIBRATION.
         result = evaluate_gate(_fp(low_latency=False), None, [4.0, 0.8])
-        assert result.status == "NEEDS_CALIBRATION"
+        assert result.status == "NO_LOW_LATENCY_PATH"
+        assert result.requires_confirmation is True
         assert len(result.warnings) == 2
         assert any("low-latency" in w for w in result.warnings)
 
