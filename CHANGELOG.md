@@ -10,6 +10,42 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 > scenarios (parallel‑port backend, dual streams, frequency sweep, position/size variation) are not
 > yet individually measured on hardware. See `docs/verification_protocol.md`.
 
+## [Unreleased]
+
+Adds a second stimulation modality: **auditory FPAS** (Fast Periodic Auditory Stimulation), the
+sample-clock analogue of the visual FPVS task, plus the per-machine audio-timing calibration that
+gates it. No change to the visual tasks; the shared runtime gained an optional audio output that
+defaults to silent, so existing Instances and runs are unaffected.
+
+### Added
+
+- **Auditory FPAS task** (`tasks/auditory_fpvs`, registered as `auditory_fpvs`): a periodic stream
+  of cosine-gated sound tokens with a periodic oddball, timed by the sound card's **sample clock**
+  (`samples_per_cycle = round(sample_rate/freq)`) the way the visual task is timed by monitor frames.
+  Whole-trial pre-render to one buffer (keeps the real-time callback off the GIL), triggers fired on
+  the main thread at each token onset, multi-exemplar sound pools, and a period-not-sample-exact
+  advisory (the auditory analogue of the frame-exactness warning). Configurable and launchable now;
+  **onset timing is not yet hardware-verified**.
+- **Paper-fidelity stimulus controls** (targets Barbero et al. 2021): **RMS/energy equalization**
+  across the combined base+oddball pool (the auditory analogue of luminance/contrast equalization),
+  **whole-sequence fade in/out**, and per-token raised-cosine gating with a first-class ramp.
+- **Pluggable auditory attention overlays** (`overlay_base.py`), mirroring the visual
+  `BehaviouralOverlay` framework, with the first overlay: a **volume-decrement catch task**
+  (`catch.py` — attenuate N target tokens to 1/12.5, signal-detection scoring). Adding another
+  auditory attention task is a new module + one schema field + one line in `active_overlays()`.
+- **Per-machine audio-timing calibration + launch gate** (`xpman/audio/`): a machine **fingerprint**
+  keys a measured **profile** (chosen `latency_class`/`buffer_size`, mean latency, jitter SD vs the
+  §5 budget); the launch gate is **advisory with override** — it warns loudly on an uncalibrated or
+  under-budget machine but never blocks. Reusable **onset detector** ("audio photodiode") + loopback
+  **calibration sweep**, with a rig runner (`tests/manual_hardware/run_audio_calibration.py`) and
+  analyser (`analyze_audio_calibration.py`) in the dummy/fpvs manual-hardware style. See
+  [`docs/audio_calibration_gate.md`](docs/audio_calibration_gate.md) and
+  [`docs/audio_calibration_rig_procedure.md`](docs/audio_calibration_rig_procedure.md).
+- **Up-front sound preload**: `on_before_run` decodes every pool file once into a cache, so no trial
+  pays a file-decode cost on its hot path (the auditory analogue of the FPVS image preload).
+- **Manual rig runner** for the task: `tests/manual_hardware/run_auditory_fpas_task_manual.py`
+  (`--audio-backend {none,ptb}`), defaults reproducing the Barbero 2021 voice paradigm.
+
 ## [0.6.0] — 2026-09-08
 
 Methodology, safety, and usability release. Adds the canonical size-variation control and an in-app

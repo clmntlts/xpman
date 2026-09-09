@@ -1,21 +1,30 @@
 # xpman
 
-An open, dongle-free experiment runner for EEG / vision-science studies, starting with
-Fast Periodic Visual Stimulation (FPVS) paradigms.
+An open, dongle-free experiment runner for EEG / vision-science studies, covering
+Fast Periodic Visual Stimulation (FPVS) and, newly, Fast Periodic Auditory Stimulation (FPAS)
+paradigms.
 
 This is a from-scratch Python replacement for a legacy closed-source Java tool ("XP Man /
 Experiment Manager") that required a hardware dongle to run and stored all data in a
 discontinued proprietary database (db4o). xpman has no licensing dependency, stores data in
 plain SQLite + Parquet/CSV, and is meant to be freely shared with other labs.
 
-Status: core data model, runtime engine, dummy + FPVS tasks, and the full PySide6 GUI (build
-an experiment, edit/reorder it, launch a run, view/export results) are working end-to-end, and
-xpman now packages into a standalone Windows build (see Setup below). Core FPVS timing and triggers
-have been **verified on a real BioSemi rig** (2026-09-07: photodiode + serial MMBT-S, 0 dropped
-frames, trigger jitter SD ~0.25 ms, base/oddball frame-exact at 5.997/1.199 Hz); the advanced scenarios (parallel backend,
-dual streams, sweep, position/size variation) remain to be measured — see
-[`docs/verification_protocol.md`](docs/verification_protocol.md). See [`docs/architecture.md`](docs/architecture.md) for the
-technology choices, package layout, data model, and roadmap.
+Status: core data model, runtime engine, dummy + FPVS + auditory FPAS tasks, and the full PySide6
+GUI (build an experiment, edit/reorder it, launch a run, view/export results) are working
+end-to-end, and xpman now packages into a standalone Windows build (see Setup below). Core FPVS
+timing and triggers have been **verified on a real BioSemi rig** (2026-09-07: photodiode + serial
+MMBT-S, 0 dropped frames, trigger jitter SD ~0.25 ms, base/oddball frame-exact at 5.997/1.199 Hz);
+the advanced scenarios (parallel backend, dual streams, sweep, position/size variation) remain to be
+measured — see [`docs/verification_protocol.md`](docs/verification_protocol.md).
+
+The **auditory FPAS task** (`tasks/auditory_fpvs`, periodic sound-token oddball with RMS
+equalization, sequence fades, and a pluggable volume-decrement catch task) is configurable and
+launchable now, but its onset timing is **not yet hardware-verified**: a per-machine audio
+calibration gate warns (advisory, never blocks) until a loopback measurement passes — see
+[`docs/audio_calibration_gate.md`](docs/audio_calibration_gate.md) and
+[`docs/audio_calibration_rig_procedure.md`](docs/audio_calibration_rig_procedure.md). See
+[`docs/architecture.md`](docs/architecture.md) for the technology choices, package layout, data
+model, and roadmap.
 
 **New to xpman?** [`docs/tutorial.md`](docs/tutorial.md) is the full user-facing walkthrough —
 what every screen does, a step-by-step guide to building and running a real FPVS session, a
@@ -148,7 +157,10 @@ data, Parquet+CSV for per-trial event logs).
 Task modules are plugins registered via `pyproject.toml`'s
 `[project.entry-points."xpman.tasks"]` table, implementing the `TaskModule` ABC in
 `src/xpman/tasks/base.py`. See `src/xpman/tasks/dummy/` for the minimal reference
-implementation and `src/xpman/tasks/fpvs/` for a real paradigm.
+implementation, `src/xpman/tasks/fpvs/` for a real visual paradigm, and
+`src/xpman/tasks/auditory_fpvs/` for the auditory (sample-clock, pre-rendered-buffer) analogue —
+including its pluggable attention-overlay framework (`overlay_base.py` + `catch.py`), the auditory
+sibling of the visual `tasks/fpvs/overlay_base.py`.
 
 ## License
 

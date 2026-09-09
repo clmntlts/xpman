@@ -20,16 +20,50 @@ wrong, jump to [Section 7 — Troubleshooting](#7-troubleshooting).
 ## 1. What xpman is
 
 xpman is a Windows desktop app for building and running EEG/vision-science experiments —
-today, specifically Fast Periodic Visual Stimulation (FPVS) paradigms. It replaces a legacy
-closed-source tool that needed a paid hardware dongle and stored data in a discontinued
-database format. xpman needs no dongle, stores everything in a plain SQLite file plus
-Parquet/CSV logs you can open with any standard tool, and is free to install and share with
-other labs.
+Fast Periodic Visual Stimulation (FPVS) paradigms and, newly, Fast Periodic Auditory Stimulation
+(FPAS) paradigms. It replaces a legacy closed-source tool that needed a paid hardware dongle and
+stored data in a discontinued database format. xpman needs no dongle, stores everything in a plain
+SQLite file plus Parquet/CSV logs you can open with any standard tool, and is free to install and
+share with other labs.
+
+Most of this tutorial describes the visual FPVS task; the **auditory FPAS task** works the same way
+end to end (Programs, Conditions, launching, results) but with sound pools instead of image pools —
+see [§1a](#1a-the-auditory-fpas-task) for what differs and the one extra step (audio calibration) it
+needs before recording.
 
 Everything about an experiment — timing, stimulus selection, trigger codes, fixation marker,
 response keys — is a parameter you set in the GUI, not something hardcoded. There is no
 built-in assumption about which images are "base" and which are "oddball," what frequency to
 run at, or what a trigger code means: you configure all of it per Condition.
+
+### 1a. The auditory FPAS task
+
+Alongside the visual task, xpman includes an **auditory FPAS** task (choose "Auditory FPAS
+(periodic oddball)" as the task type when you create a Program). It's the auditory analogue of FPVS:
+a fast periodic stream of short **sound tokens** with a periodic **oddball** (e.g. a 4 Hz base with
+a category change every 3rd token = 1.333 Hz), tagged in the EEG frequency domain exactly like the
+visual paradigm. What differs from the visual task:
+
+- **Sound pools instead of image pools.** Point the Program's resource directory at your sounds and
+  set each stream's selector `subdirectory`/`filename_pattern` (e.g. `voices` vs `objects`), the same
+  way you select image folders. Use **many exemplars** per category so the response reflects a
+  category change, not one repeated waveform.
+- **Timing is on the sound card's sample clock**, not the monitor. Tokens are cosine-gated (a
+  first-class ramp, ~10 ms, avoids clicks) and must fit within one base cycle, so the base rate is
+  lower than the visual 6 Hz (2–4 Hz is typical).
+- **Extra controls** matching standard auditory-FPAS practice: **RMS equalization** across the
+  combined pool (loudness control), a **whole-sequence fade in/out**, and an orthogonal
+  **volume-decrement catch task** (press a key when a token is quieter) as the attention check — the
+  auditory sibling of the visual attention tasks.
+- **One extra step before recording — audio calibration.** Auditory onset timing is a property of
+  the specific machine's audio hardware and is **not trusted until measured**. The task launches and
+  is fully usable for setup/piloting, but until this computer has passed a loopback **audio
+  calibration**, launching shows a loud (non-blocking) warning. See
+  [`audio_calibration_rig_procedure.md`](audio_calibration_rig_procedure.md) for the one-time
+  per-machine procedure.
+
+Everything else — the object hierarchy (§3), the screens (§4), launching, and results — is identical
+to the visual walkthrough below.
 
 ## 2. Installing and starting xpman
 
@@ -874,6 +908,13 @@ This requires writing Python, unlike everything else in this tutorial.
   per-trial **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions
   (size-as-oddball modulation, intra-category oddball, and dual-stream size variation, etc.) are
   listed in `TODO.md`.
+- The **auditory FPAS** task (§1a) is implemented — base/oddball sound tokens, RMS equalization,
+  sequence fades, multi-exemplar pools, and the volume-decrement catch task — and launchable, but
+  its onset timing is **not yet hardware-verified**: it needs a one-time per-machine audio
+  calibration (loud but non-blocking warning until then), and audio-visual (simultaneous visual +
+  auditory) paradigms are not started. The audio-vs-trigger "amp clock" verification (the auditory
+  analogue of the integration verifier) is also still pending — see
+  [`docs/audio_calibration_rig_procedure.md`](audio_calibration_rig_procedure.md).
 - Hardware timing verification against a real EEG rig is an ongoing manual step — see
   [`docs/verification_protocol.md`](verification_protocol.md) and the turnkey
   [`docs/lab_test_tutorial.md`](lab_test_tutorial.md). After a run, cross-check that xpman's

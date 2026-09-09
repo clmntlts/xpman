@@ -32,8 +32,10 @@ app folder — see `scripts/install_parallel_port_driver.ps1` and
 src/xpman/
 ├── core/       # domain layer: SQLAlchemy models, repository, Instance freeze logic, export.
 │               #   No PsychoPy/Qt/hardware imports — importable and testable headless.
-├── tasks/      # plugin task modules (dummy, fpvs, ...), each implementing TaskModule (base.py)
-├── hardware/   # OS/hardware-specific code behind interfaces (TriggerSender, Clock, display)
+├── tasks/      # plugin task modules (dummy, fpvs, auditory_fpvs, ...) implementing TaskModule (base.py)
+├── audio/      # audio-timing calibration: fingerprint, jitter/budget, profile, launch gate, onset
+│               #   detection, loopback sweep (pure) + PsychPortAudio backend (backend_ptb, at the rig)
+├── hardware/   # OS/hardware-specific code behind interfaces (TriggerSender, AudioPlayer, Clock, display)
 ├── runtime/    # the engine that executes a Block -> Trial -> TaskModule sequence
 └── gui/        # PySide6 UI: tree view, schema-driven parameter forms, dialogs, launch dialog
 ```
@@ -65,6 +67,15 @@ Task modules implement `TaskModule` (`src/xpman/tasks/base.py`) and are register
 plugins use. A task's `run_trial` receives only already-resolved `trial_params` (never a live
 DB handle) and logs events incrementally via `TaskContext.event_sink`, not buffered-and-
 returned, so a crash mid-session still leaves partial data on disk.
+
+Two task families exist. **Visual** tasks (`dummy`, `fpvs`) draw with PsychoPy and time on the
+monitor's frame clock. The **auditory** task (`auditory_fpvs`) is the sample-clock analogue: it
+pre-renders a whole trial to one audio buffer and fires triggers on the main thread at each token's
+scheduled onset. Audio output is a launcher-provided resource on `TaskContext` (`audio_player`, an
+`AudioPlayer`), exactly as `trigger` is — defaulting to a silent `NullAudioPlayer` so visual runs and
+existing callers are unaffected, with a real PsychPortAudio player supplied for an auditory run. Its
+onset timing is gated by a per-machine calibration profile (`xpman/audio/`, advisory with override)
+rather than trusted blindly — see [`audio_calibration_gate.md`](audio_calibration_gate.md).
 
 ## Roadmap
 

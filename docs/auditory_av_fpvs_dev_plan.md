@@ -1,10 +1,27 @@
 # Development plan: auditory & audio-visual FPVS
 
-Status: **plan / not started.** This coordinates the feasibility analysis
-(`auditory_av_fpvs_feasibility.md`) with a four-lens review (timing/sync, PsychoPy-audio,
-xpman-architecture, FPVS-methodology) into a phased, gated plan. **It is a plan only — nothing here
-is to be implemented until the Phase 0 gate passes and the open decisions in §8 are made.** Where
+Status: **Phase 1 (pure auditory FPAS) implemented; Phase 0 hardware gate still pending.** This
+coordinates the feasibility analysis (`auditory_av_fpvs_feasibility.md`) with a four-lens review
+(timing/sync, PsychoPy-audio, xpman-architecture, FPVS-methodology) into a phased, gated plan. Where
 this plan and the feasibility doc disagree, **this plan wins** (it incorporates the corrections).
+
+**Implementation status (updated as built):**
+- **Phase 0 (measurement gate):** the *tooling* is built — machine fingerprint, jitter/§5-budget
+  analysis, best-config selection, the profile store, the launch gate (advisory with override), the
+  onset detector, and the loopback sweep + rig runner/analyser (`xpman/audio/`,
+  `tests/manual_hardware/run_audio_calibration.py`). The **measurement itself has not been run on the
+  lab hardware** — that remains the gate before trusting onset timing. See
+  `docs/audio_calibration_gate.md` and `docs/audio_calibration_rig_procedure.md`.
+- **Phase 1 (pure auditory FPAS, `tasks/auditory_fpvs/`):** **built and launchable** — schema +
+  sample-clock schedule (1a), whole-trial pre-render engine (1b), trigger-at-onset firing + event
+  logging (1c), plus the methodology controls (1e): RMS equalization, whole-sequence fades,
+  multi-exemplar pools, and a pluggable volume-decrement catch task. GUI surface (1f) is automatic
+  via the schema-driven form + entry-point registration. The verification tooling (1d) is the
+  `xpman/audio/` onset detector, exercised at the rig.
+- **Phase 2 (audio-visual, `tasks/audiovisual_fpvs/`):** not started.
+
+The phase sections below are the original plan; treat the status list above as the source of truth
+for what exists today.
 
 ---
 
