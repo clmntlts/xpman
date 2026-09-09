@@ -17,6 +17,9 @@ data/run_*_results.csv
 data/run_*_events.csv
 data/run_*_events.parquet
 data/run_*_manifest.json
+# Auditory-timing calibration outputs + per-machine audio profiles (machine-specific, not shared)
+data/audio_calibration/
+data/audio_profiles/
 
 # Editors
 .vscode/
