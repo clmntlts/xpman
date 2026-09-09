@@ -157,35 +157,51 @@ class AuditoryFPVSTask(TaskModule):
                 aborted = True
                 break
             onsets_reached += 1
-            if ev.code is not None:
+
+            # Resolve the SINGLE trigger code for this onset. An overlay target lands ON this token,
+            # so instead of firing the base/oddball code and then the overlay code (which would clobber
+            # the first on a pulse-mode port, #98), the targeting overlay resolves the collision to one
+            # code -- the base/oddball code, the overlay's own code, or a reserved coincidence code.
+            # With mutual exclusivity there is at most one overlay per onset.
+            hit = onset_targets.get(token_index)
+            code = ev.code
+            is_coincidence = False
+            if hit:
+                overlay, overlay_event = hit[0]
+                overlay_event.onset_time = target  # for RT scoring
+                code = overlay.resolve_onset_code(ev.code, ev.is_oddball)
+                is_coincidence = ev.code is not None and code != ev.code
+                ctx.event_sink.log(
+                    overlay.onset_event_type,
+                    {**overlay.onset_payload(overlay_event), "trial_index": trial_index},
+                    timestamp=target,
+                )
+
+            if code is not None:
                 # MMBT-S in Pulse Mode self-clears (~8 ms), so we do not clear between onsets; a
                 # single clear at trial end covers latching boxes. set_code lands at the scheduled
                 # onset; the true command->sound latency is what the rig calibration measures.
-                ctx.trigger.set_code(ev.code)
+                ctx.trigger.set_code(code)
             # Capture the ACTUAL clock time the code was placed, right after set_code returns (mirrors
             # the visual task logging the real flip_time). The event timestamp stays the sample-exact
-            # intended onset (`target`) -- that is the meaningful time for frequency analysis -- but
-            # logging fired_at exposes the wait-loop/serial overshoot (software jitter), which is
-            # otherwise invisible in the event stream. See run_trial docstring / calibration.
+            # intended onset (`target`); logging fired_at exposes the wait-loop/serial overshoot
+            # (software jitter), otherwise invisible in the event stream.
             fired_at = ctx.clock.get_time()
             ctx.event_sink.log(
                 "token_onset",
-                {"trial_index": trial_index, "is_oddball": ev.is_oddball, "code": ev.code,
-                 "fired_at_seconds": fired_at},
+                {"trial_index": trial_index, "is_oddball": ev.is_oddball, "code": code,
+                 "is_coincidence": is_coincidence, "fired_at_seconds": fired_at},
                 timestamp=target,
             )
-            if ev.code is not None:
+            if code is not None:
                 ctx.event_sink.log(
                     "trigger_sent",
-                    {"trial_index": trial_index, "code": ev.code, "is_oddball": ev.is_oddball,
-                     "fired_at_seconds": fired_at, "software_jitter_seconds": fired_at - target},
+                    {"trial_index": trial_index, "code": code, "is_oddball": ev.is_oddball,
+                     "is_coincidence": is_coincidence, "fired_at_seconds": fired_at,
+                     "software_jitter_seconds": fired_at - target},
                     timestamp=target,
                 )
                 triggers_fired += 1
-            # --- Attention overlays (onset) --------------------------------------------------
-            # If this token is an overlay target, stamp its fire time (for RT scoring) and log its
-            # onset + optional trigger. Self-contained; a no-op when no overlay targets this token.
-            self._fire_overlay_onsets(ctx, onset_targets, token_index, target, trial_index)
 
         if not aborted:
             # Let the buffer play out so the trial has its full duration before the next trial starts.
@@ -339,30 +355,6 @@ class AuditoryFPVSTask(TaskModule):
                 ctx.event_sink.log("keyboard_unavailable", {"error": str(exc)})
         if self._response_collector is not None:
             self._response_collector.clear()
-
-    def _fire_overlay_onsets(self, ctx: TaskContext, onset_targets, token_index, target, trial_index) -> None:
-        """When a token that is an overlay target onsets: stamp the event's fire time (``onset_time``,
-        for RT scoring), log the overlay's onset event, and fire its optional trigger. A no-op when no
-        overlay targets this token. NOTE: a catch trigger coincides with the base/oddball trigger on
-        the same token onset -- it is off by default (``trigger_code=None``); when set it is emitted
-        after the base/oddball code on that onset."""
-        for overlay, event in onset_targets.get(token_index, ()):
-            event.onset_time = target
-            ctx.event_sink.log(
-                overlay.onset_event_type,
-                {**overlay.onset_payload(event), "trial_index": trial_index},
-                timestamp=target,
-            )
-            code = overlay.trigger_code_for(event)
-            if code is not None:
-                ctx.trigger.set_code(code)
-                fired_at = ctx.clock.get_time()
-                ctx.event_sink.log(
-                    "trigger_sent",
-                    {"trial_index": trial_index, "code": code, "overlay": overlay.spawn_key,
-                     "fired_at_seconds": fired_at, "software_jitter_seconds": fired_at - target},
-                    timestamp=target,
-                )
 
     def _score_overlays(self, ctx: TaskContext, scored_overlays, trial_index) -> dict:
         """Poll the keyboard once and score each overlay that ran. Presses are partitioned by each
