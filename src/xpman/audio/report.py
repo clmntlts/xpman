@@ -217,6 +217,15 @@ class CalibrationReport:
                 f"mean latency {ms(b.mean_latency_seconds)} -- apply as the trigger-time offset.",
                 "  Save this as the machine's audio profile (the rig script does so with --save-profile).",
             ]
+            if b.n_missed or b.n_spurious:
+                # The jitter SD is still trustworthy (it is a spread), but the mean latency -- the
+                # trigger offset -- is estimated from the paired onsets, so dropouts/spurious hits on
+                # the winning config mean that offset may be off. Flag it rather than trusting it.
+                lines.append(
+                    f"  CAUTION: the recommended config had {b.n_missed} missed and {b.n_spurious} "
+                    "spurious onset(s) -- the mean-latency (trigger offset) estimate may be unreliable. "
+                    "Re-run with a cleaner capture before trusting the offset."
+                )
         else:
             lines += [
                 "RESULT: FAIL -- no swept config cleared the onset-jitter budget on this machine.",
