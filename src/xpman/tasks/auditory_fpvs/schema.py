@@ -403,8 +403,12 @@ class AuditoryFPVSConditionParams(BaseModel):
 
         add("base.base_trigger_code", self.base.base_trigger_code)
         add("oddball.oddball_trigger_code", self.oddball.oddball_trigger_code)
-        if self.catch.enabled:
-            add("catch.trigger_code", self.catch.trigger_code)
+        # Generic over every ENABLED attention overlay (mirrors the visual
+        # _check_all_trigger_codes_disjoint): each overlay reports its own (label, code) pairs, so a
+        # future overlay's trigger code is covered automatically -- no hardcoding of `catch` here.
+        for overlay in self.active_overlays():
+            for label, code in overlay.trigger_codes():
+                add(label, code)
 
         seen: dict[int, str] = {}
         for label, code in labeled:

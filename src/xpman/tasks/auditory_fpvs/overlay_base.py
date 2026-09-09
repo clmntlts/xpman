@@ -200,3 +200,15 @@ class AudioOverlay(Protocol):
     def onset_payload(self, event: AudioOverlayEvent) -> dict:
         """The ``onset_event_type`` event-log payload for one fired target."""
         ...
+
+    def outcome_fields(self, score: "Any | None") -> dict:
+        """The prefixed fields this overlay contributes to a trial's ``outcome_summary`` (e.g.
+        ``catch_n_hits``), all-None when it didn't run this trial. Declared here (mirroring the visual
+        ``BehaviouralOverlay``) so the run loop can spread every overlay's fields generically."""
+        ...
+
+    def trigger_codes(self) -> "list[tuple[str, int]]":
+        """The ``(label, code)`` pairs for every EEG trigger code this overlay would emit, so the
+        Condition's cross-field disjointness check can cover any overlay generically (no hardcoding).
+        Empty when the overlay sends no trigger."""
+        ...

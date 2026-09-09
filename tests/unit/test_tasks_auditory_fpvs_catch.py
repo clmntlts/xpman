@@ -21,9 +21,26 @@ from xpman.tasks.auditory_fpvs.catch import (
     score_catch_responses,
 )
 from xpman.tasks.auditory_fpvs.engine import TriggerEvent
-from xpman.tasks.auditory_fpvs.overlay_base import AudioOverlayEvent
+from xpman.tasks.auditory_fpvs.overlay_base import AudioOverlay, AudioOverlayEvent
 from xpman.tasks.auditory_fpvs.schema import AuditoryFPVSConditionParams
 from xpman.tasks.fpvs.response import ResponseRecord
+
+
+class TestProtocolConformance:
+    def test_catch_overlay_satisfies_audio_overlay_protocol(self):
+        # Runtime-checkable Protocol conformance: CatchOverlay must implement every AudioOverlay
+        # method, INCLUDING outcome_fields and trigger_codes (added for parity with the visual
+        # BehaviouralOverlay). A missing method would fail this isinstance check.
+        overlay = CatchOverlay(VolumeDecrementCatchParams(enabled=True))
+        assert isinstance(overlay, AudioOverlay)
+        assert hasattr(overlay, "outcome_fields") and hasattr(overlay, "trigger_codes")
+
+    def test_trigger_codes_empty_when_unset(self):
+        assert CatchOverlay(VolumeDecrementCatchParams(enabled=True)).trigger_codes() == []
+
+    def test_trigger_codes_reports_set_code(self):
+        codes = CatchOverlay(VolumeDecrementCatchParams(enabled=True, trigger_code=42)).trigger_codes()
+        assert codes == [("catch.trigger_code", 42)]
 
 SR = 48000
 

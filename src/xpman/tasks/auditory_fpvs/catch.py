@@ -274,6 +274,12 @@ class CatchOverlay:
             "trigger_code": self._params.trigger_code,
         }
 
+    def trigger_codes(self) -> list[tuple[str, int]]:
+        """The single catch trigger code, when set -- for the Condition's disjointness check."""
+        if self._params.trigger_code is None:
+            return []
+        return [(f"{self.spawn_key}.trigger_code", self._params.trigger_code)]
+
     def outcome_fields(self, score: "CatchScore | None") -> dict:
         """The prefixed fields this overlay contributes to a trial's ``outcome_summary`` (all-None
         when the task didn't run this trial), mirroring the visual overlays' ``outcome_fields``."""
