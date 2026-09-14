@@ -35,6 +35,7 @@ the ``if __name__ == "__main__":`` block does that.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import sys
 from pathlib import Path
 from typing import Callable
@@ -295,6 +296,11 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Dump a C-level traceback to stderr if the worker hits a native fault (segfault / access violation
+    # in PsychoPy/pyglet/PsychPortAudio/numpy). Without this a native crash returns only a bare negative
+    # exit code to the LaunchDialog with no clue where it died; with it, the parent captures (and shows)
+    # the faulting stack. Enabled here, not at import, so it's active for the real run path only.
+    faulthandler.enable()
     args = parse_args(argv)
     return run(args)
 
