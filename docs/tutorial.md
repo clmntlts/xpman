@@ -20,54 +20,129 @@ wrong, jump to [Section 7 — Troubleshooting](#7-troubleshooting).
 ## 1. What xpman is
 
 xpman is a Windows desktop app for building and running EEG/vision-science experiments —
-Fast Periodic Visual Stimulation (FPVS) paradigms and, newly, Fast Periodic Auditory Stimulation
+Fast Periodic Visual Stimulation (FPVS) paradigms and Fast Periodic Auditory Stimulation
 (FPAS) paradigms. It replaces a legacy closed-source tool that needed a paid hardware dongle and
 stored data in a discontinued database format. xpman needs no dongle, stores everything in a plain
 SQLite file plus Parquet/CSV logs you can open with any standard tool, and is free to install and
 share with other labs.
-
-Most of this tutorial describes the visual FPVS task; the **auditory FPAS task** works the same way
-end to end (Programs, Conditions, launching, results) but with sound pools instead of image pools —
-see [§1a](#1a-the-auditory-fpas-task) for what differs and the one extra step (audio calibration) it
-needs before recording.
 
 Everything about an experiment — timing, stimulus selection, trigger codes, fixation marker,
 response keys — is a parameter you set in the GUI, not something hardcoded. There is no
 built-in assumption about which images are "base" and which are "oddball," what frequency to
 run at, or what a trigger code means: you configure all of it per Condition.
 
-### 1a. The auditory FPAS task
+### Task types
 
-Alongside the visual task, xpman includes an **auditory FPAS** task (choose "Auditory FPAS
-(periodic oddball)" as the task type when you create a Program). It's the auditory analogue of FPVS:
-a fast periodic stream of short **sound tokens** with a periodic **oddball** (e.g. a 4 Hz base with
-a category change every 3rd token = 1.333 Hz), tagged in the EEG frequency domain exactly like the
-visual paradigm. What differs from the visual task:
+When you create a Program you pick a **task type**, which decides what a trial does and which
+parameters the Condition editor shows. Everything *around* the task — the object hierarchy (§3), the
+screens (§4), building/launching, and results — is identical across task types. There are three:
+
+| Task type (in the GUI) | Modality | Use it for |
+|---|---|---|
+| **FPVS (periodic oddball)** | Visual | Real visual frequency-tagging studies (faces, objects, words, …) — [§1a](#1a-the-visual-fpvs-task) |
+| **Auditory FPAS (periodic oddball)** | Auditory | Real auditory frequency-tagging studies (voices, sounds, …) — [§1b](#1b-the-auditory-fpas-task) |
+| **Dummy timing/trigger proving-ground** | Visual | Checking the rig (screen timing + triggers), **not** a real paradigm — [§1c](#1c-the-dummy-timingtrigger-proving-ground) |
+
+The parameter reference in §6 is the FPVS task's; the auditory task's fields are summarised in §1b.
+
+### 1a. The visual FPVS task
+
+**What it is.** The flagship task: a fast periodic stream of images at a **base rate** (e.g. 6 Hz)
+with a **category change** at a sub-multiple **oddball rate** (e.g. 1.2 Hz = every 5th image). The
+brain's response at the base rate indexes general visual processing; a response at the oddball rate
+indexes **rapid, automatic discrimination** of the oddball category from the base category (Rossion's
+FPVS). Both are recovered in the EEG frequency domain by FFT.
+
+**What it's for.** Objective, no-explicit-task measures of visual categorization — face
+individuation, face/object discrimination, word/letter processing, etc. Its **core timing is
+hardware-verified** on a real BioSemi rig (2026-09-07: 0 dropped frames, trigger jitter SD ~0.25 ms,
+base/oddball frame-exact); the advanced scenarios below are built to spec but not each individually
+measured yet (see [`docs/verification_protocol.md`](verification_protocol.md)).
+
+**What it can do (all per Condition, nothing hardcoded):**
+
+- **Base/oddball frequency tagging** on the **monitor frame clock**: rates are quantised to whole
+  frames (`frames_per_cycle = round(refresh/freq)`) and the *achieved* rate is reported; a
+  **frame-exactness advisory** warns when a requested rate can't sit exactly on the FFT bin.
+- **Stimulus pools** by subdirectory + filename glob (`base_selector`/`oddball_selector`) — any image
+  set laid out in folders; no baked-in "faces vs objects" convention.
+- **Contrast (opacity) modulation** — sinusoidal fade of each image against the background so onsets
+  aren't hard edges (`modulation`, `background_gray`).
+- **Oddball placement** by frequency **or** an explicit **pattern** (e.g. `BBBO…`).
+- **Multiple simultaneous streams** — `main_stream`, `second_stream`, and any number of
+  `additional_streams`, each with its own pool, frequency, screen position, modulation, and a
+  base-only "filler" toggle (dual bilateral streams, N-stream designs).
+- **Frequency sweep** — a stepped sequence of base/oddball rates within a trial (`sweep`), including
+  a shared-timeline sweep across two streams.
+- **Per-trial baseline** — a base-only (no-oddball) reference segment before/after/both, framed by
+  its own triggers, as the within-trial noise floor.
+- **Familiarization** — a one-off base-only warm-up stream shown once at the start of a Run.
+- **Low-level adaptation controls** — **position jitter** (rectangle/disk, per-stimulus or per-trial)
+  and **size variation** (random rescale), so the oddball response reflects high-level individuation
+  rather than pixel-wise adaptation.
+- **Luminance/contrast equalization** across every pool a Condition presents (`equalization`), the
+  standard control for the between-category low-level step at the oddball rate.
+- **Fixation mark** (`fixation`: cross / bars / none) and a **photodiode sync patch** (`photodiode`)
+  for hardware timing verification.
+- **Attention tasks (orthogonal behavioural checks)** — a central-fixation **distractor** or a
+  spatial **go/no-go**, mutually exclusive (at most one per Condition), scored by key presses.
+- **Per-stream EEG triggers** with **reserved coincidence codes** so two onsets on the same frame
+  resolve to one clean port pulse; a validator keeps every emitted code distinct.
+- **Design aids** — "Preview Stimuli…" (what the selectors match, with a degrees-of-visual-angle
+  readout when the Program's display geometry is set), "Check Triggers…" (frequency-grid,
+  separability, and trigger-conflict advisories), and a schematic Condition preview.
+
+Full field-by-field reference: **§6**. Step-by-step build-and-run: **§5**.
+
+### 1b. The auditory FPAS task
+
+**What it is.** The auditory analogue of FPVS (choose "Auditory FPAS (periodic oddball)"): a fast
+periodic stream of short **sound tokens** with a periodic **oddball** (e.g. a 4 Hz base with a
+category change every 3rd token = 1.333 Hz), tagged in the EEG frequency domain exactly like the
+visual paradigm. It works the same end to end (Programs, Conditions, launching, results); what
+differs from the visual task:
 
 - **Sound pools instead of image pools.** Point the Program's resource directory at your sounds and
   set each stream's selector `subdirectory`/`filename_pattern` (e.g. `voices` vs `objects`), the same
   way you select image folders. Use **many exemplars** per category so the response reflects a
-  category change, not one repeated waveform.
-- **Timing is on the sound card's sample clock**, not the monitor. Tokens are cosine-gated (a
-  first-class ramp, ~10 ms, avoids clicks) and must fit within one base cycle, so the base rate is
-  lower than the visual 6 Hz (2–4 Hz is typical).
+  category change, not one repeated waveform. (The task warns if the base and oddball selectors
+  resolve to the same or overlapping files.)
+- **Timing is on the sound card's sample clock**, not the monitor (`samples_per_cycle =
+  round(sample_rate/freq)`). Tokens are cosine-gated (a first-class ramp, ~10 ms, avoids clicks) and
+  must fit within one base cycle, so the base rate is lower than the visual 6 Hz (2–4 Hz is typical).
+  The whole trial is pre-rendered to one audio buffer; triggers fire on the main thread at each token
+  onset.
 - **Extra controls** matching standard auditory-FPAS practice: **RMS equalization** across the
-  combined pool (loudness control), a **whole-sequence fade in/out**, and an orthogonal
-  **volume-decrement catch task** (press a key when a token is quieter) as the attention check — the
-  auditory sibling of the visual attention tasks.
+  combined pool (loudness control, with a peak guard so it can't clip), a **whole-sequence fade
+  in/out**, no immediate exemplar repetition, and an orthogonal **volume-decrement catch task** (press
+  a key when a token is quieter) as the attention check — the auditory sibling of the visual attention
+  tasks. Advisories flag an off-bin analysis window and a non-integer base/oddball ratio.
 - **A fixation screen while listening.** Even though the stimulation is auditory, the trial shows a
   screen: a **background** (`background_gray`, 0=black…1=white, mid-gray by default) with a central
   **fixation cross** the participant fixates. Set the fixation `shape` to `none` to hide it, or
   `bars` for the flanking-bars style — the same fixation shapes as the visual task.
 - **One extra step before recording — audio calibration.** Auditory onset timing is a property of
-  the specific machine's audio hardware and is **not trusted until measured**. The task launches and
-  is fully usable for setup/piloting, but until this computer has passed a loopback **audio
-  calibration**, launching shows a loud (non-blocking) warning. See
+  the specific machine's audio hardware and is **not trusted until measured**. The task launches,
+  plays sound, and is fully usable for setup/piloting, but until this computer has passed a loopback
+  **audio calibration**, launching shows a loud (non-blocking) warning you must confirm. See
+  [`audio_calibration_gate.md`](audio_calibration_gate.md) and
   [`audio_calibration_rig_procedure.md`](audio_calibration_rig_procedure.md) for the one-time
   per-machine procedure.
 
-Everything else — the object hierarchy (§3), the screens (§4), launching, and results — is identical
-to the visual walkthrough below.
+### 1c. The dummy timing/trigger proving-ground
+
+**What it is.** A deliberately minimal task — **not a real paradigm**. It flashes a screen-centered
+square black↔white at a fixed rate (`flip_rate_hz`) for `duration_seconds`, sends **one trigger code
+per flip**, and logs every flip timestamp + trigger. That's all it does.
+
+**What it's for.** Verifying the **rig and the pipeline** in isolation, before trusting a real
+paradigm: point a photodiode/oscilloscope/logic analyzer at the flashing square and the trigger
+line and confirm the screen flips land one frame apart with no drift and the trigger pulses match the
+logged timestamps (see [`docs/verification_protocol.md`](verification_protocol.md) and the turnkey
+[`docs/lab_test_tutorial.md`](lab_test_tutorial.md)). Use it first when a new machine or amplifier
+setup is suspect — it isolates timing/trigger problems from paradigm-specific ones. It exercises the
+same runtime engine, hardware trigger/clock, and event-logging path as the real tasks, so a clean
+dummy run means the plumbing is sound.
 
 ## 2. Installing and starting xpman
 
@@ -912,7 +987,7 @@ This requires writing Python, unlike everything else in this tutorial.
   per-trial **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions
   (size-as-oddball modulation, intra-category oddball, and dual-stream size variation, etc.) are
   listed in `TODO.md`.
-- The **auditory FPAS** task (§1a) is implemented — base/oddball sound tokens, RMS equalization,
+- The **auditory FPAS** task (§1b) is implemented — base/oddball sound tokens, RMS equalization,
   sequence fades, multi-exemplar pools, and the volume-decrement catch task — and launchable, but
   its onset timing is **not yet hardware-verified**: it needs a one-time per-machine audio
   calibration (loud but non-blocking warning until then), and audio-visual (simultaneous visual +
