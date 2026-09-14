@@ -33,6 +33,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.tasks.fpvs.fixation import FixationParams
+
 from xpman.tasks.auditory_fpvs.catch import CatchOverlay, VolumeDecrementCatchParams
 
 
@@ -267,6 +269,24 @@ class AuditoryFPVSConditionParams(BaseModel):
     equalization: AudioEqualizationParams = Field(
         default_factory=AudioEqualizationParams,
         description="RMS/energy equalization across the combined (base + oddball) token pool (see AudioEqualizationParams).",
+        json_schema_extra={"section": "General"},
+    )
+    background_gray: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Screen background level shown during the trial (0 = black, 1 = white; 0.5 = mid-gray). "
+            "A pure-auditory trial still shows a screen -- the participant fixates it while listening."
+        ),
+        json_schema_extra={"section": "General"},
+    )
+    fixation: FixationParams = Field(
+        default_factory=FixationParams,
+        description=(
+            "Fixation mark drawn on the background during the trial (a central cross by default; set "
+            "its shape to 'none' to show no fixation). The participant fixates it while listening."
+        ),
         json_schema_extra={"section": "General"},
     )
 

@@ -143,6 +143,12 @@ class AuditoryFPVSTask(TaskModule):
         # self-contained helper so it merges cleanly with other edits to this method.
         scored_overlays, onset_targets = self._build_overlays(ctx, params, planned)
 
+        # Show the fixation screen (background + optional fixation mark) for the participant to look at
+        # while listening. A pure-auditory trial otherwise leaves the window on whatever was last drawn
+        # (the trial-info screen); this paints the intended background and fixation once, which then
+        # persists for the whole trial (the audio wait loop does not flip).
+        self._show_fixation_screen(ctx, params)
+
         # Start the pre-rendered buffer slightly in the future and anchor every trigger to the
         # reported start time (dev plan §2) plus each token's known offset.
         when = ctx.clock.get_time() + _PLAYBACK_LEAD_SECONDS
@@ -468,6 +474,25 @@ class AuditoryFPVSTask(TaskModule):
             ),
         }
         ctx.event_sink.log("auditory_calibration_gate", self._gate_summary)
+
+    def _show_fixation_screen(self, ctx: TaskContext, params: AuditoryFPVSConditionParams) -> None:
+        """Paint the trial's background + optional fixation mark on the window and flip, so the
+        participant has something to fixate while listening. No-op when there is no window
+        (headless/tests). ``background_gray`` is 0..1 (0=black, 1=white); a psychopy Window's color is
+        rgb space (-1..1), so it maps as ``2*g - 1``. The fixation drawable is reused from the visual
+        task (``build_fixation_stimulus``); ``shape='none'`` yields no mark. Drawn once here -- the
+        image persists for the whole trial because the audio wait loop never flips again."""
+        window = ctx.window
+        if window is None:
+            return
+        from xpman.tasks.fpvs.fixation import build_fixation_stimulus
+
+        window.color = 2.0 * params.background_gray - 1.0
+        window.flip()  # apply the new background clear color
+        fixation = build_fixation_stimulus(window, params.fixation)
+        if fixation is not None:
+            fixation.draw()
+        window.flip()  # show background + fixation; persists for the trial
 
     def _decode(self, path) -> tuple:
         """Raw mono waveform at the file's native rate, decoded at most once per path (cached). This
