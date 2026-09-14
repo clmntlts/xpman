@@ -24,15 +24,23 @@ defaults to silent, so existing Instances and runs are unaffected.
   (`samples_per_cycle = round(sample_rate/freq)`) the way the visual task is timed by monitor frames.
   Whole-trial pre-render to one buffer (keeps the real-time callback off the GIL), triggers fired on
   the main thread at each token onset, multi-exemplar sound pools, and a period-not-sample-exact
-  advisory (the auditory analogue of the frame-exactness warning). Configurable and launchable now;
-  **onset timing is not yet hardware-verified**.
+  advisory (the auditory analogue of the frame-exactness warning). The GUI plays an auditory run
+  through a real audio device (PsychPortAudio); triggers are anchored to the **task clock** at
+  playback start (not the backend's own timebase). Configurable and launchable now; **onset timing is
+  not yet hardware-verified**.
 - **Paper-fidelity stimulus controls** (targets Barbero et al. 2021): **RMS/energy equalization**
   across the combined base+oddball pool (the auditory analogue of luminance/contrast equalization),
-  **whole-sequence fade in/out**, and per-token raised-cosine gating with a first-class ramp.
+  with a **peak guard** so scaling can never clip (broadband splatter); **whole-sequence fade
+  in/out**; per-token raised-cosine gating (over the token's actual content, so a short clip doesn't
+  click) with a first-class ramp; and **no immediate exemplar repetition**. Design-safety advisories
+  flag identical/overlapping base+oddball pools, an analysis window that isn't an integer number of
+  oddball cycles (off-bin leakage), and equalization left off with distinct pools.
 - **Pluggable auditory attention overlays** (`overlay_base.py`), mirroring the visual
   `BehaviouralOverlay` framework, with the first overlay: a **volume-decrement catch task**
-  (`catch.py` — attenuate N target tokens to 1/12.5, signal-detection scoring). Adding another
-  auditory attention task is a new module + one schema field + one line in `active_overlays()`.
+  (`catch.py` — attenuate N target tokens to 1/12.5, signal-detection scoring). A catch target that
+  lands on a coded base/oddball onset resolves to one **reserved coincidence code** (no clobbered
+  markers). Adding another auditory attention task is a new module + one schema field + one line in
+  `active_overlays()`.
 - **Per-machine audio-timing calibration + launch gate** (`xpman/audio/`): a machine **fingerprint**
   keys a measured **profile** (chosen `latency_class`/`buffer_size`, mean latency, jitter SD vs the
   §5 budget); the launch gate is **advisory with override** — it warns loudly on an uncalibrated or
