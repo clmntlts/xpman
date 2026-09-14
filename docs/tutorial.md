@@ -55,6 +55,10 @@ visual paradigm. What differs from the visual task:
   combined pool (loudness control), a **whole-sequence fade in/out**, and an orthogonal
   **volume-decrement catch task** (press a key when a token is quieter) as the attention check — the
   auditory sibling of the visual attention tasks.
+- **A fixation screen while listening.** Even though the stimulation is auditory, the trial shows a
+  screen: a **background** (`background_gray`, 0=black…1=white, mid-gray by default) with a central
+  **fixation cross** the participant fixates. Set the fixation `shape` to `none` to hide it, or
+  `bars` for the flanking-bars style — the same fixation shapes as the visual task.
 - **One extra step before recording — audio calibration.** Auditory onset timing is a property of
   the specific machine's audio hardware and is **not trusted until measured**. The task launches and
   is fully usable for setup/piloting, but until this computer has passed a loopback **audio
