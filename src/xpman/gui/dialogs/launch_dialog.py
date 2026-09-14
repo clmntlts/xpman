@@ -36,6 +36,13 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy.orm import Session
 
+from xpman.audio.launch_check import (
+    AUDITORY_TASK_NAME,
+    evaluate_launch_gate,
+    extract_audio_config,
+    format_launch_warning,
+)
+from xpman.audio.profile import default_profiles_dir
 from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import get_instance
@@ -309,6 +316,45 @@ class LaunchDialog(QDialog):
 
     # -- launching -----------------------------------------------------------------------------
 
+    def _confirm_auditory_calibration(self, instance, experiment_id) -> bool:
+        """Return True to proceed with the launch, False to cancel. For an auditory FPAS Instance,
+        evaluate the per-machine calibration gate and, when it needs confirmation (no matching
+        profile / under budget / audio device not identifiable), show a loud warning the researcher
+        must accept. A no-op (returns True) for the visual tasks or when there is nothing to judge."""
+        frozen_program = instance.frozen_json["program"]
+        if frozen_program.get("task_name") != AUDITORY_TASK_NAME:
+            return True
+
+        # Gather this machine's audio fingerprint the way the run will open the device (configured
+        # sample rate + output device), so the lookup finds the matching profile. Guarded: if the
+        # audio backend can't be queried, evaluate_launch_gate treats a None fingerprint as a reason
+        # to confirm rather than crashing the launch.
+        sample_rate, output_device = extract_audio_config(frozen_program, experiment_id=experiment_id)
+        fingerprint = None
+        try:
+            from xpman.audio.backend_ptb import gather_live_fingerprint
+
+            fingerprint = gather_live_fingerprint(
+                output_device_index=output_device, sample_rate_hz=sample_rate
+            )
+        except Exception:  # noqa: BLE001 - a missing/failed audio backend must not break the launch UI
+            fingerprint = None
+
+        result = evaluate_launch_gate(
+            frozen_program, fingerprint, default_profiles_dir(), experiment_id=experiment_id
+        )
+        if result is None or not result.requires_confirmation:
+            return True
+
+        reply = QMessageBox.warning(
+            self,
+            "Auditory onset timing not verified",
+            format_launch_warning(result),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _on_launch(self) -> None:
         subject_id = self._subject_combo.currentData()
         if subject_id is None:
@@ -325,6 +371,13 @@ class LaunchDialog(QDialog):
             # see runtime/engine.py's _build_trial_sequence). Surface it clearly instead of
             # letting the exception propagate out of this Qt slot.
             self._status_label.setText(f"Cannot launch: {exc}")
+            return
+
+        # Auditory-timing calibration gate (advisory + override): for an auditory FPAS run on an
+        # uncalibrated/under-budget machine, warn loudly and require explicit confirmation before
+        # recording. Never blocks -- a confirmed launch proceeds. No-op for the visual tasks.
+        if not self._confirm_auditory_calibration(instance, experiment_id):
+            self._status_label.setText("Launch cancelled (auditory calibration not confirmed).")
             return
 
         # Reset per-run state: this dialog stays open for "launch another subject", so a stale

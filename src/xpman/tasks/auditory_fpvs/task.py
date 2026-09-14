@@ -451,9 +451,9 @@ class AuditoryFPVSTask(TaskModule):
         from pathlib import Path
 
         from xpman.audio.gate import evaluate_gate
-        from xpman.audio.profile import ProfileStore
+        from xpman.audio.profile import ProfileStore, default_profiles_dir
 
-        profiles_dir = Path(ctx.instance_params.get("audio_profiles_dir") or "data/audio_profiles")
+        profiles_dir = Path(ctx.instance_params.get("audio_profiles_dir") or default_profiles_dir())
         profile = ProfileStore(profiles_dir).lookup(fingerprint)
         result = evaluate_gate(fingerprint, profile, tags)
         self._gate_summary = {

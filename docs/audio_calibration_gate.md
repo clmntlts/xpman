@@ -87,9 +87,21 @@ pure `build_fingerprint_from_devices`.
 > been executed against hardware. Confirm the `get_devices()` keys and `Stream` full-duplex calls on
 > the lab machine the first time it runs; keep the pure layers authoritative and adjust only that file.
 
+## Where the gate runs
+
+- **At launch (interactive):** the GUI **Launch** dialog evaluates the gate for an auditory FPAS
+  Instance before starting the run (`audio/launch_check.py` — pure decision + `LaunchDialog`'s thin
+  confirm dialog). A `NEEDS_CALIBRATION` / `BUDGET_NOT_MET` / `NO_LOW_LATENCY_PATH` result, or an
+  audio device that can't be identified, pops a loud warning the researcher must accept — advisory
+  with override, never a hard block.
+- **At run time (logged):** the task also evaluates the gate on the first trial and logs
+  `auditory_calibration_gate` into the Run, carrying the status + measured mean latency into run
+  metadata for provenance.
+- Profiles live in one shared place, `~/.xpman/audio_profiles` (`profile.default_profiles_dir()`), so
+  the calibration writer, the launch gate, and the run-time gate all agree on where to look.
+
 ## Still to build (later increments)
 
 - A guided calibration **wizard/CLI** that picks the sweep grid, calls `run_calibration`, and saves
   the profile via `ProfileStore` (thin orchestration over what exists).
-- Wiring the gate into the FPAS run-launch UI (the confirmation dialog) — lands with Phase 1f (GUI).
 - The frozen-build audio smoke test (P0.6) in the build pipeline.

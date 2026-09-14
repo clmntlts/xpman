@@ -43,6 +43,10 @@ defaults to silent, so existing Instances and runs are unaffected.
   [`docs/audio_calibration_rig_procedure.md`](docs/audio_calibration_rig_procedure.md).
 - **Up-front sound preload**: `on_before_run` decodes every pool file once into a cache, so no trial
   pays a file-decode cost on its hot path (the auditory analogue of the FPVS image preload).
+- **Launch-time calibration gate (advisory + override)**: the GUI Launch dialog checks an auditory
+  run against this machine's audio-timing profile and, when it isn't calibrated / doesn't clear the
+  design's onset-jitter budget, requires an explicit confirmation before recording (never blocks).
+  Profiles are shared at `~/.xpman/audio_profiles` across the calibration writer and both gates.
 - **Manual rig runner** for the task: `tests/manual_hardware/run_auditory_fpas_task_manual.py`
   (`--audio-backend {none,ptb}`), defaults reproducing the Barbero 2021 voice paradigm.
 
