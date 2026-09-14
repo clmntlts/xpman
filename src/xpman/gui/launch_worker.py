@@ -41,8 +41,10 @@ from pathlib import Path
 from typing import Callable
 
 from xpman.core.db import get_engine, get_sessionmaker
+from xpman.audio.launch_check import AUDITORY_TASK_NAME
 from xpman.core.instance import get_instance
 from xpman.core.models import Run, RunStatus
+from xpman.hardware.audio import NullAudioPlayer, PtbAudioPlayer
 from xpman.hardware.clock import Clock
 from xpman.hardware.display import make_window
 from xpman.hardware.trigger import ParallelPortTrigger
@@ -253,6 +255,15 @@ def run(
             break_text=args.break_text,
         )
 
+    # An auditory FPAS Instance needs a real audio output; visual tasks don't (the default silent
+    # NullAudioPlayer). Build a real PsychPortAudio player for auditory runs so the GUI actually plays
+    # sound -- the task opens/closes the device itself, so construction is cheap and can't fail here.
+    is_auditory = (
+        instance_for_count is not None
+        and instance_for_count.frozen_json["program"].get("task_name") == AUDITORY_TASK_NAME
+    )
+    audio_player = PtbAudioPlayer() if is_auditory else NullAudioPlayer()
+
     # Built inside the try (below) so a failed serial/parallel open is reported as a clean
     # SETUP_ERROR, not a bare traceback; held here so the finally can always close it (release
     # the port) on the way out, whether the run completed, aborted, or crashed.
@@ -273,6 +284,7 @@ def run(
                 on_run_created=_announce,
                 experiment_id=args.experiment_id,
                 on_before_trial=gate,
+                audio_player=audio_player,
             )
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any failure, setup-time
             # or in-run, must still exit cleanly with a reportable code, not crash this process
@@ -290,6 +302,10 @@ def run(
                 trigger.close()
             except Exception as exc:  # noqa: BLE001 - teardown best-effort, never fatal
                 print(f"WARNING: trigger.close() failed: {exc}", file=sys.stderr, flush=True)
+        try:
+            audio_player.close()  # release the audio device (no-op for the silent player)
+        except Exception as exc:  # noqa: BLE001 - teardown best-effort, never fatal
+            print(f"WARNING: audio_player.close() failed: {exc}", file=sys.stderr, flush=True)
         window.close()
 
     return _RUN_STATUS_TO_EXIT_CODE[run_row.status]

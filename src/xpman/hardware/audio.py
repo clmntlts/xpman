@@ -152,14 +152,27 @@ class PtbAudioPlayer(AudioPlayer):  # pragma: no cover - hardware
     def play(self, buffer: "np.ndarray", *, when: float) -> float:
         if self._stream is None:
             raise RuntimeError("play() called before open()")
+        import psychopy.core as core
+
         data = np.asarray(buffer, dtype=np.float32).reshape(-1, 1)
         self._stream.fill_buffer(data)
-        # when is a time on the task clock; PsychPortAudio wants an absolute system time. Passing 0
-        # starts as soon as possible; the returned reported start time is what the task anchors to.
+        # Start as soon as possible and BLOCK until playback has actually begun (wait_for_start=1).
         self._stream.start(repetitions=1, when=0, wait_for_start=1)
-        status = self._stream.status
-        reported = float(status.get("StartTime", when)) if isinstance(status, dict) else when
-        return reported
+        # Return the start time on the TASK's clock (psychopy core.getTime, the same clock
+        # TaskContext.clock uses), NOT PsychPortAudio's status['StartTime']. The latter is on the
+        # PsychToolbox GetSecs timebase (seconds since boot), a DIFFERENT epoch from the task clock
+        # (seconds since process start) -- anchoring triggers to it puts every onset target hundreds
+        # of thousands of seconds "in the future" on the task clock, hanging the trigger wait loop.
+        # Since start() blocked until playback began, core.getTime() now IS the start on that clock.
+        # The raw PTB StartTime is kept for provenance / the timing-realization work (issue #93).
+        self._last_ptb_start_time = None
+        try:
+            status = self._stream.status
+            if isinstance(status, dict) and "StartTime" in status:
+                self._last_ptb_start_time = float(status["StartTime"])
+        except Exception:  # noqa: BLE001 - provenance only; never let it break playback
+            pass
+        return core.getTime()
 
     def stop(self) -> None:
         if self._stream is not None:
