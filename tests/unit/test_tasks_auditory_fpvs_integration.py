@@ -421,3 +421,55 @@ def test_gate_ok_and_records_mean_latency_when_profile_passes(tmp_path):
     gate = sink.of_type("auditory_calibration_gate")[0][1]
     assert gate["status"] == "OK"
     assert gate["mean_latency_seconds"] == pytest.approx(0.031)
+
+
+# --- Fixation screen during the auditory trial ----------------------------------------------------
+
+
+class _FakeWindow:
+    def __init__(self):
+        self.color = None
+        self.flips = 0
+
+    def flip(self):
+        self.flips += 1
+        return 0.0
+
+
+def _fix_ctx(window):
+    return TaskContext(
+        window=window, trigger=NullTrigger(), clock=FakeClock(),
+        rng=np.random.default_rng(0), subject=SubjectInfo(id=1, first_name="T", last_name="E"),
+        instance_params={}, resource_dir=".", event_sink=FakeSink(),
+        abort_check=lambda: False, audio_player=NullAudioPlayer(),
+    )
+
+
+def test_fixation_screen_sets_background_and_draws(monkeypatch):
+    drawn = []
+
+    class _Fix:
+        def draw(self):
+            drawn.append(1)
+
+    monkeypatch.setattr("xpman.tasks.fpvs.fixation.build_fixation_stimulus", lambda w, p: _Fix())
+    win = _FakeWindow()
+    params = AuditoryFPVSConditionParams(background_gray=0.5, fixation={"shape": "cross"})
+    AuditoryFPVSTask()._show_fixation_screen(_fix_ctx(win), params)
+    assert win.color == 0.0  # 2*0.5 - 1 -> mid-gray in psychopy rgb space
+    assert win.flips == 2  # apply background, then show fixation
+    assert drawn == [1]
+
+
+def test_fixation_none_draws_no_mark(monkeypatch):
+    monkeypatch.setattr("xpman.tasks.fpvs.fixation.build_fixation_stimulus", lambda w, p: None)
+    win = _FakeWindow()
+    params = AuditoryFPVSConditionParams(background_gray=1.0, fixation={"shape": "none"})
+    AuditoryFPVSTask()._show_fixation_screen(_fix_ctx(win), params)
+    assert win.color == 1.0  # white
+    assert win.flips == 2  # still paints the background
+
+
+def test_fixation_screen_noop_without_window():
+    # Headless (window=None): must be a silent no-op, not a crash.
+    AuditoryFPVSTask()._show_fixation_screen(_fix_ctx(None), AuditoryFPVSConditionParams())

@@ -43,6 +43,10 @@ defaults to silent, so existing Instances and runs are unaffected.
   [`docs/audio_calibration_rig_procedure.md`](docs/audio_calibration_rig_procedure.md).
 - **Up-front sound preload**: `on_before_run` decodes every pool file once into a cache, so no trial
   pays a file-decode cost on its hot path (the auditory analogue of the FPVS image preload).
+- **Fixation screen during the auditory trial**: a per-Condition background level (`background_gray`)
+  and an optional fixation mark (`fixation`, a central cross by default; `shape='none'` to hide it),
+  reusing the visual task's fixation shapes, so the participant has something to fixate while
+  listening.
 - **Launch-time calibration gate (advisory + override)**: the GUI Launch dialog checks an auditory
   run against this machine's audio-timing profile and, when it isn't calibrated / doesn't clear the
   design's onset-jitter budget, requires an explicit confirmation before recording (never blocks).
