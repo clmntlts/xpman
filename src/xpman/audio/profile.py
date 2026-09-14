@@ -31,6 +31,14 @@ LoopbackSource = Literal["amp", "line_in"]
 PROFILE_SCHEMA_VERSION = 1
 
 
+def default_profiles_dir() -> Path:
+    """The per-user directory where audio-timing profiles live, keyed by machine fingerprint. A stable
+    location under the home directory (``~/.xpman/audio_profiles``) so the calibration writer, the
+    runtime gate, and the launch-time gate all agree on ONE place regardless of the working directory
+    or where the data folder happens to be. Callers may still override it explicitly."""
+    return Path.home() / ".xpman" / "audio_profiles"
+
+
 @dataclass(frozen=True)
 class AudioProfile:
     """One machine's measured audio-timing calibration."""

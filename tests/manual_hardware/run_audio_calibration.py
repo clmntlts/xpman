@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
                    help="Capture device. Full-duplex loopback uses ONE device, so leave unset (or "
                         "equal to --output-device-index); a different device is not yet supported.")
     p.add_argument("--out", type=Path, default=None, help="Results JSON path (default: data/audio_calibration/<fingerprint>.<timestamp>.json).")
-    p.add_argument("--profiles-dir", type=Path, default=REPO_ROOT / "data" / "audio_profiles", help="Where machine audio profiles live.")
+    p.add_argument("--profiles-dir", type=Path, default=None, help="Where machine audio profiles live (default: the shared ~/.xpman/audio_profiles the launch gate reads).")
     p.add_argument("--save-profile", action="store_true", help="Save the machine profile so the launch gate finds it.")
     return p.parse_args()
 
@@ -225,7 +225,9 @@ def main() -> None:
     print(f"Re-analyse any time: .venv\\Scripts\\python.exe tests\\manual_hardware\\analyze_audio_calibration.py --results \"{out_path}\"")
 
     if args.save_profile and outcome.profile is not None:
-        store = ProfileStore(args.profiles_dir)
+        from xpman.audio.profile import default_profiles_dir
+
+        store = ProfileStore(args.profiles_dir or default_profiles_dir())
         saved = store.save(outcome.profile)
         status = "PASS" if outcome.profile.passed else "FAIL (recorded as measured-and-failed)"
         print(f"\nSaved machine profile [{status}]: {saved}")
