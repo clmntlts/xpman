@@ -30,13 +30,28 @@ class SweepStep(BaseModel):
     /``base``... trigger codes are carried by the Condition's stream, not the step, so a per-step
     ``oddball_trigger_code`` here is ignored (all steps share the Condition's trigger codes)."""
 
-    base_freq_hz: float = Field(gt=0, description="Base stimulation frequency for this step, in Hz.")
+    base_freq_hz: float = Field(
+        gt=0,
+        description=(
+            "What: the base flicker rate held constant for this sweep step. What for: each step tags "
+            "a different base frequency within one trial. Recommended: space steps apart enough to "
+            "resolve separately in the FFT (given each step's duration)."
+        ),
+    )
     duration_seconds: float = Field(
-        gt=0, description="How long this step runs (its own plateau; fades apply only at trial ends)."
+        gt=0,
+        description=(
+            "What: how long this step runs at its constant rate (its own plateau; the trial's fades "
+            "apply only at the very start/end). What for: sets the per-step FFT resolution "
+            "(~1/duration Hz). Recommended: long enough to resolve the step's oddball peak."
+        ),
     )
     oddball: OddballParams = Field(
         default_factory=OddballParams,
-        description="Oddball placement for this step (frequency or B/O pattern), like a Condition's.",
+        description=(
+            "Oddball placement for this step (a frequency or a B/O pattern), just like a Condition's; "
+            "per-step trigger codes are ignored -- all steps use the stream's codes."
+        ),
     )
 
     @model_validator(mode="after")
@@ -57,10 +72,21 @@ class FrequencySweepParams(BaseModel):
     trial runs as a single constant-frequency segment exactly as before. When on, ``steps`` (in order)
     supersede the Condition's single ``base``/``oddball`` for the main sequence."""
 
-    enabled: bool = Field(default=False, description="Run the main stimulation as a stepped sweep.")
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "What: master switch to run the trial as a sequence of constant-frequency steps instead "
+            "of one fixed rate. What for: probe several base/oddball rates within a single trial. "
+            "Recommended: off for a standard fixed-rate FPVS trial; on only for sweep designs."
+        ),
+    )
     steps: list[SweepStep] = Field(
         default_factory=list,
-        description="Constant-frequency steps presented in order; at least 2 when enabled.",
+        description=(
+            "What: the ordered list of constant-frequency steps that make up the sweep. What for: "
+            "each entry sets a base rate, oddball, and duration; they play back-to-back. Recommended: "
+            "at least 2 steps (required when enabled)."
+        ),
         json_schema_extra={"min_items": 2},
     )
 

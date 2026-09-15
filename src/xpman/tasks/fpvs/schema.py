@@ -36,15 +36,20 @@ class StimulusSelector(BaseModel):
     subdirectory: str | None = Field(
         default=None,
         description=(
-            "Subdirectory (relative to the Program's resource directory) to draw images from; "
-            "empty = the whole set. Includes nested subfolders."
+            "What: subfolder of the Program's resource directory to draw this pool's images from "
+            "(nested subfolders included). What for: keep each category in its own folder (e.g. "
+            "'faces/', 'objects/') and point the base and oddball pools at different folders. "
+            "Recommended: one category folder per pool; leave empty only if the whole set is one "
+            "category."
         ),
     )
     filename_pattern: str | None = Field(
         default=None,
         description=(
-            "Optional glob pattern (e.g. '*happy*.png') matched against each image's bare "
-            "filename, combined with the subdirectory (AND)."
+            "What: glob matched against each image's bare filename (e.g. '*happy*.png'), ANDed with "
+            "the subdirectory. What for: narrow a pool further without moving files -- e.g. one "
+            "expression or one exemplar set out of a shared folder. Recommended: leave empty unless "
+            "the folder mixes images you must split by name; '*.png' to force a file type."
         ),
     )
 
@@ -58,27 +63,64 @@ class FamiliarizationParams(BaseModel):
     Condition ``base_selector`` pool + these settings. Disabled by default.
     """
 
-    enabled: bool = Field(default=False, description="Show a familiarization phase before the run.")
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "What: master switch for the one-off familiarization warm-up shown once at the start of "
+            "the Run. What for: lets the subject get used to the streaming stimuli (base-only, no "
+            "oddball) before recording begins. Recommended: off unless your protocol calls for a "
+            "warm-up; it does not contribute to the analysed data."
+        ),
+    )
     duration_seconds: float = Field(
-        default=20.0, gt=0, description="How long the familiarization stream runs."
+        default=20.0,
+        gt=0,
+        description=(
+            "What: how long the familiarization stream plays. What for: enough exposure to settle the "
+            "subject without fatiguing them. Recommended: 10-30 s (default 20 s)."
+        ),
     )
     frequency_hz: float = Field(
-        default=6.0, gt=0, description="Familiarization stimulation frequency, in Hz."
+        default=6.0,
+        gt=0,
+        description=(
+            "What: base flicker rate of the familiarization stream. What for: usually matches the "
+            "main stream's base rate so the warm-up looks like the real trial. Recommended: same as "
+            "your main stream base_freq_hz (default 6 Hz)."
+        ),
     )
     modulation: ModulationParams = Field(
         default_factory=ModulationParams,
-        description="Contrast modulation for the familiarization stream.",
+        description="Contrast modulation shape for the familiarization stream (see ModulationParams).",
     )
     start_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Trigger sent when familiarization starts."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) marking familiarization onset in the EEG. What for: lets "
+            "analysis find and exclude the warm-up segment. Recommended: set a distinct code if you "
+            "record during familiarization; otherwise leave off (None)."
+        ),
     )
     stop_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Trigger sent when familiarization ends."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) marking the end of familiarization. What for: closes the "
+            "excludable warm-up window in the recording. Recommended: pair with start_trigger_code; "
+            "leave off (None) if unused."
+        ),
     )
     post_blank_seconds: float = Field(
         default=2.0,
         ge=0,
-        description="Fixation-only blank between familiarization and the real sequence.",
+        description=(
+            "What: fixation-only blank between the familiarization stream and the first real trial. "
+            "What for: a clean pause so the warm-up doesn't bleed into the recorded sequence. "
+            "Recommended: ~2 s."
+        ),
     )
 
 
@@ -97,26 +139,60 @@ class BaselineParams(BaseModel):
     positions across Conditions confounds baseline with adaptation state.
     """
 
-    enabled: bool = Field(default=False, description="Add a base-only reference segment to each trial.")
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "What: master switch for the base-only (no-oddball) reference segment added to each trial. "
+            "What for: any energy at the oddball frequency here is pure noise, giving a within-trial "
+            "baseline the oddball response is compared against. Recommended: enable if your analysis "
+            "wants a per-trial noise floor; off for a plain oddball-only trial."
+        ),
+    )
     position: Literal["before", "after", "both"] = Field(
         default="before",
-        description="Where the baseline sits relative to the oddball stream (before / after / both).",
+        description=(
+            "What: where the baseline segment sits relative to the oddball stream. What for: a "
+            "'before' baseline measures an un-adapted visual system, 'after' a post-adaptation one -- "
+            "they are NOT interchangeable. Recommended: pick 'before' and keep it consistent across "
+            "Conditions; 'both' only if you specifically compare the two."
+        ),
     )
     duration_seconds: float = Field(
         default=10.0,
         gt=0,
-        description="How long each baseline segment runs (match the main sequence's "
-        "trial_duration_seconds for a comparable measurement -- see check_triggers for a "
-        "mismatch advisory).",
+        description=(
+            "What: how long each baseline segment runs. What for: sets the FFT resolution of the "
+            "noise-floor estimate. Recommended: match the main sequence's trial_duration_seconds so "
+            "the baseline and signal are directly comparable (a mismatch raises an advisory)."
+        ),
     )
     blank_seconds: float = Field(
-        default=1.0, ge=0, description="Fixation-only gap after each baseline segment."
+        default=1.0,
+        ge=0,
+        description=(
+            "What: fixation-only gap after each baseline segment. What for: separates the baseline "
+            "from the oddball stream so they don't smear together. Recommended: ~1 s."
+        ),
     )
     start_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Trigger sent when a baseline segment starts."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) marking a baseline segment's onset. What for: lets analysis "
+            "isolate/exclude the baseline. Recommended: set a distinct code if you record baselines; "
+            "off (None) otherwise."
+        ),
     )
     stop_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Trigger sent when a baseline segment ends."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) marking a baseline segment's end. What for: closes the "
+            "baseline window in the recording. Recommended: pair with start_trigger_code; off (None) "
+            "if unused."
+        ),
     )
 
 
@@ -142,30 +218,55 @@ class PositionJitterParams(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False, description="Randomize each image's position within the region below."
+        default=False,
+        description=(
+            "What: master switch for random per-image position jitter within the region below (only "
+            "the image moves; fixation and photodiode patch stay put). What for: a control that "
+            "varies retinal position so the response can't ride on a fixed low-level image location. "
+            "Recommended: off unless your design needs it; keep the region modest -- jitter changes "
+            "retinal eccentricity and adds amplitude variance."
+        ),
     )
     region: Literal["rectangle", "disk"] = Field(
         default="rectangle",
-        description="Shape of the allowed region: an axis-aligned rectangle or a disk.",
+        description=(
+            "What: shape of the area a jittered image can land in -- an axis-aligned rectangle or a "
+            "disk. What for: rectangle uses the x/y ranges below; disk uses the radius (area-uniform). "
+            "Recommended: 'rectangle' for independent horizontal/vertical extents, 'disk' for a "
+            "radially symmetric spread."
+        ),
     )
     x_range_pix: tuple[float, float] = Field(
         default=(0.0, 0.0),
-        description="Rectangle x offset range (min, max) in pixels from center. Rectangle region only.",
+        description=(
+            "What: horizontal offset range (min, max) in pixels from screen center (rectangle region "
+            "only). What for: sets how far left/right an image may jitter. Recommended: a modest, "
+            "symmetric span like (-50, 50); min must be <= max."
+        ),
     )
     y_range_pix: tuple[float, float] = Field(
         default=(0.0, 0.0),
-        description="Rectangle y offset range (min, max) in pixels from center. Rectangle region only.",
+        description=(
+            "What: vertical offset range (min, max) in pixels from screen center (rectangle region "
+            "only). What for: sets how far up/down an image may jitter. Recommended: a modest, "
+            "symmetric span like (-50, 50); min must be <= max."
+        ),
     )
     radius_pix: float = Field(
         default=0.0,
         ge=0,
-        description="Disk radius in pixels (area-uniform sampling). Disk region only.",
+        description=(
+            "What: maximum jitter distance from center, in pixels (disk region only; area-uniform "
+            "sampling). What for: sets the radial spread of positions. Recommended: keep it well "
+            "below your inter-stream separation and clear of the photodiode patch."
+        ),
     )
     per: Literal["stimulus", "trial"] = Field(
         default="stimulus",
         description=(
-            "'stimulus' draws a new position for every image onset; 'trial' draws one position "
-            "once and reuses it for the whole trial's stream."
+            "What: how often a new position is drawn. What for: 'stimulus' picks a fresh position "
+            "every image onset (maximal low-level variation); 'trial' picks one position and reuses "
+            "it all trial. Recommended: 'stimulus' for the standard control."
         ),
     )
 
@@ -211,17 +312,40 @@ class SizeVariationParams(BaseModel):
     yet reproducibly. Each onset logs the scale it was shown at."""
 
     enabled: bool = Field(
-        default=False, description="Randomize each image's size within the scale range below."
+        default=False,
+        description=(
+            "What: master switch for random per-image rescaling within the range below (image only; "
+            "fixation and photodiode patch untouched). What for: the canonical FPVS low-level "
+            "control -- varying size each cycle makes the oddball response reflect high-level "
+            "individuation, not pixel-wise adaptation to a fixed retinal image. Recommended: enable "
+            "for face-individuation designs (Rossion/Liu-Shuang)."
+        ),
     )
     min_scale: float = Field(
-        default=1.0, gt=0.0, description="Smallest size as a multiple of the image's native size (e.g. 0.74)."
+        default=1.0,
+        gt=0.0,
+        description=(
+            "What: smallest displayed size as a multiple of the image's native pixel size. What for: "
+            "the lower bound of the random scale range. Recommended: ~0.74 (the ~74-120% range used "
+            "in canonical face FPVS); leave 1.0 with max_scale 1.0 to disable variation."
+        ),
     )
     max_scale: float = Field(
-        default=1.0, gt=0.0, description="Largest size as a multiple of the image's native size (e.g. 1.2)."
+        default=1.0,
+        gt=0.0,
+        description=(
+            "What: largest displayed size as a multiple of the image's native pixel size. What for: "
+            "the upper bound of the random scale range. Recommended: ~1.2 (canonical ~74-120%); must "
+            "be >= min_scale."
+        ),
     )
     per: Literal["stimulus", "trial"] = Field(
         default="stimulus",
-        description="'stimulus' draws a new scale for every image onset; 'trial' draws one per trial.",
+        description=(
+            "What: how often a new scale is drawn. What for: 'stimulus' picks a fresh scale every "
+            "image onset (the standard, so low-level features vary cycle to cycle); 'trial' picks one "
+            "scale per trial. Recommended: 'stimulus'."
+        ),
     )
 
     @model_validator(mode="after")
@@ -257,19 +381,40 @@ class EqualizationParams(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False, description="Equalize luminance/contrast across every pool this Condition presents."
+        default=False,
+        description=(
+            "What: master switch to match luminance/contrast across the COMBINED pool (base + oddball "
+            "+ every active stream). What for: if base and oddball categories differ in mean "
+            "luminance/contrast, each oddball onset is also a low-level step at the oddball rate -- a "
+            "confound that mimics a category response. Recommended: turn ON whenever base and oddball "
+            "are different categories; off only if pools are already matched."
+        ),
     )
     equalize_luminance: bool = Field(
-        default=True, description="Scale each image's mean luminance toward the combined pool's mean."
+        default=True,
+        description=(
+            "What: push each image's mean luminance toward the combined pool's mean (BT.709). What "
+            "for: removes between-category brightness differences. Recommended: on (default) when "
+            "equalization is enabled."
+        ),
     )
     equalize_contrast: bool = Field(
-        default=True, description="Scale each image's RMS contrast toward the combined pool's mean."
+        default=True,
+        description=(
+            "What: push each image's RMS contrast toward the combined pool's mean. What for: removes "
+            "between-category contrast differences. Recommended: on (default) when equalization is "
+            "enabled."
+        ),
     )
     strength: float = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="0 = no equalization, 1 = full equalization (image mean/contrast becomes exactly the pool's).",
+        description=(
+            "What: how far each image is pushed toward the pool mean (0 = untouched, 1 = matched "
+            "exactly). What for: lets you soften equalization if full matching distorts stimuli you "
+            "care about. Recommended: 1.0 (full match) to fully remove the confound."
+        ),
     )
 
 
@@ -285,17 +430,30 @@ class FPVSProgramParams(BaseModel):
     screen_width_cm: float | None = Field(
         default=None,
         gt=0,
-        description="Physical width of the monitor's visible display area, in cm.",
+        description=(
+            "What: physical width of the monitor's visible display area, in cm. What for: with the "
+            "pixel width and viewing distance, lets 'Preview Stimuli...' show a degrees-of-visual-"
+            "angle readout for comparing against published studies. Recommended: measure your rig's "
+            "screen; leave unset to skip the angle readout (has no effect on the trial)."
+        ),
     )
     screen_width_px: int | None = Field(
         default=None,
         gt=0,
-        description="Horizontal resolution of the monitor, in pixels (e.g. 1920).",
+        description=(
+            "What: horizontal resolution of the monitor, in pixels (e.g. 1920). What for: the pixel "
+            "half of the pixels-per-cm calc for the visual-angle readout. Recommended: your display's "
+            "native horizontal resolution; leave unset to skip the readout."
+        ),
     )
     screen_distance_cm: float | None = Field(
         default=None,
         gt=0,
-        description="Distance from the subject's eyes to the screen, in cm.",
+        description=(
+            "What: distance from the subject's eyes to the screen, in cm. What for: converts on-screen "
+            "sizes to degrees of visual angle in the preview. Recommended: your rig's viewing "
+            "distance (often 57-100 cm); leave unset to skip the readout."
+        ),
     )
 
 
@@ -330,44 +488,75 @@ class StreamParams(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False, description="Present this stream (the main stream is always active)."
+        default=False,
+        description=(
+            "What: master switch presenting this stream simultaneously with the main one. What for: "
+            "adds a second (or further) spatial location for multi-stream designs. Recommended: on "
+            "only for genuine multi-stream paradigms; the main stream is always active regardless."
+        ),
     )
     oddball_enabled: bool = Field(
         default=True,
-        description="When off, this stream is base-only (no oddball) -- a 'similar' filler stream. "
-        "Its base flicker still contributes, but it produces no oddball-frequency response.",
+        description=(
+            "What: whether this stream carries an oddball. When off it is base-only -- a 'filler' "
+            "stream whose base flicker contributes but which produces no oddball-frequency response. "
+            "What for: lets a stream serve as a similar-category distractor. Recommended: on for a "
+            "measured stream; off for a filler."
+        ),
     )
     base_selector: StimulusSelector = Field(
-        default_factory=StimulusSelector, description="Which images make up this stream's base sequence."
+        default_factory=StimulusSelector,
+        description=(
+            "What: which images make up this stream's frequent (base) category. What for: the pool "
+            "the base flicker draws from. Recommended: a many-exemplar folder of one category."
+        ),
     )
     oddball_selector: StimulusSelector = Field(
-        default_factory=StimulusSelector, description="Which images are this stream's oddballs."
+        default_factory=StimulusSelector,
+        description=(
+            "What: which images are this stream's oddballs (the deviant category). What for: the pool "
+            "inserted at the oddball rate. Recommended: a many-exemplar folder of a DIFFERENT category "
+            "from the base pool."
+        ),
     )
     base: BaseSequenceParams = Field(
         # 7.0 Hz (not BaseSequenceParams' own bare 6.0 Hz default) -- preserves this field's
         # original default (a non-harmonic offset from the main stream's 6.0 Hz default) from
         # before StreamParams was unified onto the shared BaseSequenceParams shape.
         default_factory=lambda: BaseSequenceParams(base_freq_hz=7.0),
-        description="This stream's base frequency, trial duration (main stream only -- see class "
-        "docstring), and base-onset trigger code.",
+        description=(
+            "This stream's base (fast periodic) settings: flicker rate, trial duration (used only for "
+            "the main stream -- see class docstring), and optional base-onset trigger code."
+        ),
     )
     oddball: OddballParams = Field(
         default_factory=OddballParams,
-        description="This stream's oddball placement (frequency or B/O pattern) and oddball-onset "
-        "trigger code.",
+        description=(
+            "This stream's oddball settings: how often the deviant appears (a frequency or a B/O "
+            "pattern) and its optional oddball-onset trigger code."
+        ),
     )
     position_pix: tuple[float, float] = Field(
-        default=(200.0, 0.0), description="Screen position (px from center) for this stream's images."
+        default=(200.0, 0.0),
+        description=(
+            "What: screen position of this stream's images, in pixels from center (+x right, +y up). "
+            "What for: places each stream at its own location so multiple streams don't overlap. "
+            "Recommended: give each active stream a distinct position (e.g. (-200,0) and (200,0) for "
+            "left/right); active-stream positions must be pairwise-distinct."
+        ),
     )
     modulation: ModulationParams = Field(
-        default_factory=ModulationParams, description="Contrast modulation for this stream."
+        default_factory=ModulationParams,
+        description="Contrast modulation shape for this stream (see ModulationParams).",
     )
     sweep: FrequencySweepParams = Field(
         default_factory=FrequencySweepParams,
-        description="This stream's per-step frequencies for a sweep x dual-stream (v2, #4). Enabled "
-        "only together with the main stream's sweep, and on a SHARED timeline: same number of steps "
-        "and the same per-step durations (only the base/oddball frequencies differ per stream). "
-        "Disabled by default; when off this stream uses its single base/oddball frequency.",
+        description=(
+            "What: an optional stepped frequency sweep for this stream. What for: steps the base/"
+            "oddball rate through several values within a trial. Recommended: leave off for a fixed-"
+            "rate trial; when used on two streams both must sweep on a SHARED timeline (same step "
+            "count and durations, only the frequencies differ)."
+        ),
     )
 
     @model_validator(mode="after")
@@ -399,16 +588,45 @@ class CoincidenceCodes(BaseModel):
     """
 
     both_base: int | None = Field(
-        default=None, ge=1, le=255, description="Reserved code for (base, base) coincident onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: reserved 8-bit code for a frame where BOTH streams show a base image at once. What "
+            "for: two streams share one trigger port, so a coincident onset emits this single code "
+            "instead of two fighting pulses. Recommended: set (with the other three) only when both "
+            "streams carry trigger codes; must differ from every other code."
+        ),
     )
     a_base_b_oddball: int | None = Field(
-        default=None, ge=1, le=255, description="Reserved code for (base, oddball) coincident onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: reserved 8-bit code for a frame where stream A (main) shows a base and stream B "
+            "(second) an oddball. What for: encodes this coincident-onset case in one pulse. "
+            "Recommended: set with the full 2x2 set when both streams are triggered; must be distinct."
+        ),
     )
     a_oddball_b_base: int | None = Field(
-        default=None, ge=1, le=255, description="Reserved code for (oddball, base) coincident onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: reserved 8-bit code for a frame where stream A (main) shows an oddball and stream B "
+            "(second) a base. What for: encodes this coincident-onset case in one pulse. Recommended: "
+            "set with the full 2x2 set when both streams are triggered; must be distinct."
+        ),
     )
     both_oddball: int | None = Field(
-        default=None, ge=1, le=255, description="Reserved code for (oddball, oddball) coincident onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: reserved 8-bit code for a frame where BOTH streams show an oddball at once. What "
+            "for: encodes this coincident-onset case in one pulse. Recommended: set with the full 2x2 "
+            "set when both streams are triggered; must be distinct from every other code."
+        ),
     )
 
     def all_set(self) -> bool:
@@ -462,9 +680,10 @@ class FPVSConditionParams(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Background gray level (0=black, 1=white) the stimulation fades toward. Must be the "
-            "images' mean luminance for opacity modulation to be true *contrast* modulation -- "
-            "mid-gray (0.5) matches the legacy default. Set on the window in prepare()."
+            "What: uniform background level (0 = black, 0.5 = mid-gray, 1 = white) the stimulation "
+            "fades toward. What for: opacity modulation is true *contrast* modulation only when the "
+            "background equals the images' mean luminance; otherwise the flicker carries a luminance "
+            "component. Recommended: 0.5 (mid-gray), and match it to your equalized images' mean."
         ),
         json_schema_extra={"section": "General"},
     )

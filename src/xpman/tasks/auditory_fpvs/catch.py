@@ -54,16 +54,20 @@ class VolumeDecrementCatchParams(AudioOverlayParams):
         default=12.5,
         gt=1,
         description=(
-            "Target tokens are attenuated to 1/decrement_factor of normal RMS (their samples are "
-            "scaled by 1/decrement_factor). >1, so the token gets quieter; 12.5 ~= -22 dB."
+            "What: how much quieter a catch target is played -- its samples are scaled by "
+            "1/decrement_factor (12.5 ~= -22 dB). What for: sets task difficulty; the drop must be "
+            "noticeable but not jarring. Recommended: 12.5 (Barbero et al. 2021). Larger = quieter and "
+            "easier to spot; must be > 1."
         ),
     )
     target_count: int = Field(
         default=6,
         ge=0,
         description=(
-            "How many quiet tokens per sequence. Defaults to 6, following Barbero et al.'s auditory "
-            "attention control."
+            "What: how many tokens per trial are played quiet as catch targets. What for: the number of "
+            "behavioural events to score attention against; kept fixed so trials are comparable. "
+            "Recommended: 6 (Barbero et al. 2021). These positions are aperiodic, so they add no energy "
+            "at the tagged frequencies."
         ),
     )
     trigger_code: int | None = Field(

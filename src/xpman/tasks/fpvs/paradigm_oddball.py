@@ -108,19 +108,35 @@ class BaseSequenceParams(BaseModel):
     uniform per-stream shape but has no effect."""
 
     base_freq_hz: float = Field(
-        default=6.0, gt=0, description="Target base stimulation frequency, in Hz."
+        default=6.0,
+        gt=0,
+        description=(
+            "What: the fast periodic flicker rate -- how many images per second this stream shows, "
+            "the frequency the general visual response is tagged at. What for: the master rate; the "
+            "oddball rate is a sub-multiple of it. Recommended: 6 Hz (the canonical face-FPVS base "
+            "rate); realised rate is quantised to the monitor's refresh."
+        ),
     )
     trial_duration_seconds: float = Field(
         default=10.0,
         gt=0,
-        description="How long the base stream runs for this trial. Only meaningful on the main "
-        "stream (Stream 1) -- every active stream shares its trial timeline.",
+        description=(
+            "What: how long the stimulation plateau runs this trial. What for: longer trials give "
+            "finer FFT resolution (~1/duration Hz) and a cleaner oddball peak, at the cost of "
+            "fatigue. Recommended: ~40-60 s for a real recording (default 10 s suits quick tests). "
+            "Only the MAIN stream's value is used -- every active stream shares its timeline."
+        ),
     )
     base_trigger_code: int | None = Field(
         default=None,
         ge=1,
         le=255,
-        description="Trigger code sent on every base-image onset. None sends no trigger.",
+        description=(
+            "What: 8-bit TTL code (1-255) sent to the EEG on every base-image onset. What for: marks "
+            "individual base images for ERP checks or diagnostics -- frequency-tagging does not need "
+            "it. Recommended: leave off (None) for a standard trial; set it only if you mark base "
+            "onsets."
+        ),
     )
 
 
@@ -131,24 +147,31 @@ class OddballParams(BaseModel):
         default=1.2,
         gt=0,
         description=(
-            "Target oddball frequency, in Hz. Must be strictly less than the Condition's "
-            "base_freq_hz (enforced at the Condition level -- see FPVSConditionParams -- not "
-            "on this field alone, since that comparison needs the sibling BaseSequenceParams)."
+            "What: how often a deviant image replaces a base image -- the rate the category-"
+            "discrimination response is tagged at (the peak of scientific interest). What for: must "
+            "be well separated from the base rate. Recommended: base/5 (e.g. 6 Hz base -> 1.2 Hz, one "
+            "oddball every 5th image). Must be strictly < base_freq_hz."
         ),
     )
     oddball_trigger_code: int | None = Field(
         default=None,
         ge=1,
         le=255,
-        description="Trigger code sent on every oddball-image onset. None sends no trigger.",
+        description=(
+            "What: 8-bit TTL code (1-255) sent on every oddball-image onset. What for: marks each "
+            "category-change image for ERP checks or to confirm oddball timing -- not needed for the "
+            "frequency analysis. Recommended: leave off (None) normally; a distinct code from "
+            "base_trigger_code if you mark oddballs."
+        ),
     )
     pattern: str | None = Field(
         default=None,
         description=(
-            "Optional repeating base/oddball order as 'B'/'O' tokens (e.g. 'BBBBO', 'BOBO'). When "
-            "set it OVERRIDES oddball_freq_hz: the oddball is placed by the pattern (from position 1), "
-            "and the oddball frequency becomes base_freq * (#O / len). E.g. base 6 Hz + 'BBBO' -> "
-            "oddball every 4th image = 1.5 Hz. None keeps the frequency-derived period (every Kth)."
+            "What: an explicit repeating base/oddball order as 'B'/'O' tokens (e.g. 'BBBBO', 'BOBO'), "
+            "OVERRIDING oddball_freq_hz. What for: places the oddball by exact position instead of a "
+            "frequency ratio; the oddball rate becomes base_freq * (#O / length) -- e.g. 6 Hz + "
+            "'BBBBO' = every 5th image = 1.2 Hz. Recommended: leave None (use oddball_freq_hz) unless "
+            "you need a specific non-uniform order."
         ),
     )
 

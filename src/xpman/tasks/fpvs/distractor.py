@@ -58,23 +58,56 @@ class DistractorParams(BehaviouralOverlayParams):
     change_type: Literal["color", "dot", "size"] = Field(
         default="color",
         description=(
-            "What briefly changes at fixation: 'color' recolours the fixation marker (legacy "
-            "behaviour), 'dot' shows a small disc over fixation, 'size' briefly enlarges the marker."
+            "What: the kind of brief change at fixation the subject watches for -- 'color' recolours "
+            "the fixation marker, 'dot' flashes a small disc over it, 'size' briefly enlarges it. "
+            "What for: the detectable event that keeps attention on fixation. Recommended: 'color' "
+            "(the classic FPVS distractor); pick whichever is most salient on your display."
         ),
     )
-    color: str = Field(default="red", description="Changed fixation colour (change_type='color').")
-    dot_radius_pix: float = Field(default=10.0, gt=0, description="Disc radius (change_type='dot').")
-    dot_color: str = Field(default="red", description="Disc colour (change_type='dot').")
+    color: str = Field(
+        default="red",
+        description=(
+            "What: the colour the fixation marker changes to during a distractor event (PsychoPy "
+            "colour name or hex). What for: the target appearance for change_type='color'. "
+            "Recommended: a colour that stands out against the fixation colour, e.g. 'red'. Used only "
+            "when change_type='color'."
+        ),
+    )
+    dot_radius_pix: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "What: radius in pixels of the disc flashed over fixation. What for: the target size for "
+            "change_type='dot' -- big enough to notice, small enough not to mask the stimulus. "
+            "Recommended: ~10 px. Used only when change_type='dot'."
+        ),
+    )
+    dot_color: str = Field(
+        default="red",
+        description=(
+            "What: colour of the flashed disc (PsychoPy colour name or hex). What for: the target "
+            "appearance for change_type='dot'. Recommended: a salient colour, e.g. 'red'. Used only "
+            "when change_type='dot'."
+        ),
+    )
     size_scale: float = Field(
-        default=1.5, gt=1.0, description="Fixation enlargement factor (change_type='size')."
+        default=1.5,
+        gt=1.0,
+        description=(
+            "What: factor the fixation marker is briefly enlarged by during a distractor event. What "
+            "for: the target magnitude for change_type='size'. Recommended: ~1.5x (must be > 1). Used "
+            "only when change_type='size'."
+        ),
     )
     trigger_code: int | None = Field(
         default=None,
         ge=1,
         le=255,
         description=(
-            "Optional EEG trigger sent on each distractor onset. Scheduled off base-onset frames so "
-            "it never collides with the base/oddball trigger. None sends no distractor trigger."
+            "What: 8-bit TTL code (1-255) sent to the EEG on each distractor onset. What for: marks "
+            "distractor events so behaviour can be aligned to the recording; scheduled off base-onset "
+            "frames so it never collides with the base/oddball trigger. Recommended: set a code "
+            "distinct from every other trigger if you record distractor timing; off (None) otherwise."
         ),
     )
 
