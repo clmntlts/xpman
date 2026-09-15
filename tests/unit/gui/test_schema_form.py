@@ -742,7 +742,7 @@ def test_tooltip_includes_description_and_constraint_hint(qtbot):
 
     widget = form._field_widgets["base_freq_hz"]
     tooltip = widget.toolTip()
-    assert "Target base stimulation frequency" in tooltip
+    assert "the fast periodic flicker rate" in tooltip
     assert "greater than 0" in tooltip
 
 

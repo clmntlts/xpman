@@ -45,25 +45,39 @@ class ModulationParams(BaseModel):
     waveform: Waveform = Field(
         default=Waveform.SINUSOIDAL,
         description=(
-            "Contrast shape per cycle. 'sinusoidal' is the standard FPVS modulation (image "
-            "fades smoothly in and out each cycle); 'square' hard-switches on/off with a duty "
-            "cycle; 'none' shows every image at full opacity (the old hard on/off behavior)."
+            "What: how each image's contrast rises and falls within one cycle. What for: 'sinusoidal' "
+            "fades smoothly in/out (the standard FPVS modulation, concentrating energy at the tag "
+            "frequency); 'square' hard-switches on/off with a duty cycle; 'none' shows every image at "
+            "full opacity. Recommended: 'sinusoidal' for canonical frequency-tagging."
         ),
     )
     contrast_min: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="Opacity at the dimmest point of the cycle."
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "What: image opacity at the dimmest point of each cycle (0 = fully faded to background). "
+            "What for: sets modulation depth together with contrast_max. Recommended: 0.0 for full-"
+            "depth modulation."
+        ),
     )
     contrast_max: float = Field(
-        default=1.0, ge=0.0, le=1.0, description="Opacity at the brightest point of the cycle."
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "What: image opacity at the brightest point of each cycle (1 = fully opaque). What for: "
+            "the top of the modulation range. Recommended: 1.0; must be >= contrast_min."
+        ),
     )
     square_onset_fraction: float = Field(
         default=0.5,
         gt=0.0,
         le=1.0,
         description=(
-            "Square-wave duty cycle: the image is at contrast_max for this fraction of each "
-            "cycle (from the onset), then contrast_min for the rest. Ignored unless "
-            "waveform='square'."
+            "What: square-wave duty cycle -- the fraction of each cycle (from onset) the image is held "
+            "at contrast_max before dropping to contrast_min. What for: sets on/off timing for square "
+            "modulation. Recommended: 0.5 (equal on/off); ignored unless waveform='square'."
         ),
     )
 
@@ -90,17 +104,37 @@ class TimingParams(BaseModel):
 
     pre_interval_seconds: tuple[float, float] = Field(
         default=(0.0, 0.0),
-        description="(min, max) fixation-only interval before stimulation; random per trial.",
+        description=(
+            "What: (min, max) fixation-only pause before the stimulation, drawn randomly per trial. "
+            "What for: a settle period before flicker starts; a random range avoids anticipatory "
+            "timing. Recommended: e.g. (1.0, 2.0); set min == max for a fixed duration, (0, 0) for "
+            "none."
+        ),
     )
     fade_in_seconds: float = Field(
-        default=0.0, ge=0.0, description="Duration over which stimulation contrast ramps 0 -> 1."
+        default=0.0,
+        ge=0.0,
+        description=(
+            "What: time over which the whole stimulation's contrast ramps 0 -> 1 at the start. What "
+            "for: a soft onset avoids an abrupt full-contrast transient in the EEG. Recommended: "
+            "~1-2 s (standard FPVS); 0 for an instant start."
+        ),
     )
     fade_out_seconds: float = Field(
-        default=0.0, ge=0.0, description="Duration over which stimulation contrast ramps 1 -> 0."
+        default=0.0,
+        ge=0.0,
+        description=(
+            "What: time over which the whole stimulation's contrast ramps 1 -> 0 at the end. What "
+            "for: a soft offset, mirroring the fade-in. Recommended: match fade_in_seconds (~1-2 s)."
+        ),
     )
     post_interval_seconds: tuple[float, float] = Field(
         default=(0.0, 0.0),
-        description="(min, max) fixation-only interval after stimulation; random per trial.",
+        description=(
+            "What: (min, max) fixation-only pause after the stimulation, drawn randomly per trial. "
+            "What for: a gap before the next trial. Recommended: e.g. (1.0, 2.0); set min == max for "
+            "fixed, (0, 0) for none."
+        ),
     )
 
     @model_validator(mode="after")

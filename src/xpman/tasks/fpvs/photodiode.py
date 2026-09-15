@@ -44,34 +44,90 @@ class PhotodiodeParams(BaseModel):
     """All visual and behavioral properties of the photodiode patch."""
 
     enabled: bool = Field(
-        default=True, description="Draw a photodiode sync patch (used to validate timing on real hardware)."
+        default=True,
+        description=(
+            "What: draw a small high-contrast patch in a screen corner that flips with the stimulus. "
+            "What for: a light sensor over it records the TRUE onset time, letting you verify (and "
+            "correct) presentation timing against the EEG independently of software. Recommended: "
+            "keep on for any real recording; off only for previews/debugging."
+        ),
     )
     toggle_strategy: ToggleStrategy = Field(
         default=ToggleStrategy.EVERY_STIMULUS_ONSET,
-        description="When the patch flips state: on every stimulus onset, every N frames, or only on oddball onsets.",
+        description=(
+            "What: when the patch flips state -- on every stimulus onset, every N frames, or only on "
+            "oddball onsets. What for: choose what the light sensor timestamps. Recommended: every "
+            "stimulus onset (marks the base rate) for general timing checks; oddball-only to time the "
+            "deviant specifically."
+        ),
     )
     every_n_frames: int = Field(
-        default=1, ge=1, description="Used only when toggle_strategy == EVERY_N_FRAMES."
+        default=1,
+        ge=1,
+        description=(
+            "What: flip the patch once every N monitor frames. What for: a fixed clock reference "
+            "independent of stimulus content. Recommended: 1 (every frame) for a full refresh trace; "
+            "used only when toggle_strategy == EVERY_N_FRAMES."
+        ),
     )
     corner: Corner = Field(
         default=Corner.BOTTOM_LEFT,
-        description="Screen corner the patch sits in (unless position_pix overrides it).",
+        description=(
+            "What: which screen corner the patch sits in. What for: place it where your physical light "
+            "sensor is mounted and clear of the stimuli. Recommended: whichever corner your sensor "
+            "covers (default bottom-left); overridden by position_pix if set."
+        ),
     )
-    margin_pix: float = Field(default=0.0, ge=0, description="Gap between the patch and the screen edge.")
+    margin_pix: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "What: gap in pixels between the patch and the screen edge. What for: nudge the patch off "
+            "the very edge if a bezel or sensor housing needs it. Recommended: 0 unless the sensor "
+            "can't reach the corner."
+        ),
+    )
     position_pix: tuple[float, float] | None = Field(
-        default=None, description="Overrides corner/margin with an explicit position if set."
+        default=None,
+        description=(
+            "What: explicit patch position in pixels from center, overriding corner/margin. What for: "
+            "pin the patch exactly under an off-corner sensor. Recommended: leave None to use the "
+            "corner; set only when a corner won't do."
+        ),
     )
-    size_pix: float = Field(default=50.0, gt=0, description="Side length of the square patch, in pixels.")
-    color_on: str = Field(default="white", description="Patch color in its 'on' state.")
-    color_off: str = Field(default="black", description="Patch color in its 'off' state.")
+    size_pix: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "What: side length of the square patch, in pixels. What for: must be large enough for the "
+            "light sensor's aperture to read reliably. Recommended: ~50 px, or larger to comfortably "
+            "cover your sensor."
+        ),
+    )
+    color_on: str = Field(
+        default="white",
+        description=(
+            "What: patch colour in its 'on' state (PsychoPy colour name or hex). What for: the bright "
+            "level the sensor reads as a flip. Recommended: 'white' (maximise contrast against "
+            "color_off)."
+        ),
+    )
+    color_off: str = Field(
+        default="black",
+        description=(
+            "What: patch colour in its 'off' state. What for: the dark level between flips. "
+            "Recommended: 'black' for maximum on/off contrast."
+        ),
+    )
     tracked_stream_index: int = Field(
         default=0,
         ge=0,
         description=(
-            "Which active stream's onsets the patch validates timing against, as an index into the "
-            "active-stream list (0=main, 1=second_stream/first active additional stream, ...). Only "
-            "meaningful once 2+ streams are active -- a single-stream Condition always tracks the only "
-            "stream regardless of this value."
+            "What: which stream's onsets the patch tracks, as an index into the active-stream list "
+            "(0 = main, 1 = second stream / first active additional stream, ...). What for: the diode "
+            "can only verify one stream's timing; this picks it. Recommended: 0 (the main stream). "
+            "Only meaningful with 2+ active streams; a single-stream Condition always tracks the one "
+            "stream."
         ),
     )
 

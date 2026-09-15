@@ -23,10 +23,41 @@ class DummyConditionParams(BaseModel):
     """Per-trial parameters: alternate a square at a fixed rate for a fixed duration, sending
     one trigger code per flip."""
 
-    flip_rate_hz: float = Field(gt=0, description="Color flips per second.")
-    duration_seconds: float = Field(gt=0, description="How long this trial runs, in seconds.")
-    trigger_code: int = Field(ge=1, le=255, description="TTL code sent on every flip.")
-    square_size_pix: int = Field(default=400, gt=0, description="Square side length, in pixels.")
+    flip_rate_hz: float = Field(
+        gt=0,
+        description=(
+            "What: how many times per second the on-screen square changes colour, each flip firing a "
+            "trigger. What for: exercises the timing/trigger pipeline at a known rate you can verify "
+            "against the recording. Recommended: a modest rate the monitor can realise cleanly (e.g. "
+            "1-10 Hz); the realised rate is quantised to the refresh."
+        ),
+    )
+    duration_seconds: float = Field(
+        gt=0,
+        description=(
+            "What: how long the flipping runs this trial. What for: sets how many flips/triggers the "
+            "trial produces for the verification check. Recommended: long enough to collect a solid "
+            "sample of flips (e.g. 10-60 s)."
+        ),
+    )
+    trigger_code: int = Field(
+        ge=1,
+        le=255,
+        description=(
+            "What: the 8-bit TTL code (1-255) sent to the EEG on every colour flip. What for: the "
+            "marker the verification protocol matches flips against in the recording. Recommended: "
+            "any distinct code your acquisition system logs cleanly."
+        ),
+    )
+    square_size_pix: int = Field(
+        default=400,
+        gt=0,
+        description=(
+            "What: side length of the flipping square, in pixels. What for: large enough for a "
+            "photodiode to read reliably. Recommended: ~400 px, or big enough to cover your light "
+            "sensor."
+        ),
+    )
 
 
 class DummySchema:

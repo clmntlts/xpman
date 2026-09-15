@@ -38,31 +38,86 @@ class FixationParams(BaseModel):
 
     shape: FixationShape = Field(
         default=FixationShape.CROSS,
-        description="Fixation mark to draw: a crossing 'cross', flanking 'bars', or 'none'.",
+        description=(
+            "What: the fixation mark drawn at the gaze point -- a crossing 'cross', flanking 'bars', "
+            "or 'none' for a blank field. What for: gives the subject a fixed point so eye movements "
+            "don't add artefacts. Recommended: 'cross' (the standard); 'none' only for eyes-closed or "
+            "deliberately blank protocols."
+        ),
     )
     position_pix: tuple[float, float] = Field(
-        default=(0.0, 0.0), description="Fixation position (x, y) in pixels from screen center."
+        default=(0.0, 0.0),
+        description=(
+            "What: fixation position (x, y) in pixels from screen center (+x right, +y up). What for: "
+            "usually dead center, but can be offset (e.g. for a go/no-go marker). Recommended: "
+            "(0, 0) unless the design places fixation off-center."
+        ),
     )
-    size_pix: float = Field(default=20.0, gt=0, description="Cross arm length / bar length, in pixels.")
-    line_width_pix: float = Field(default=2.0, gt=0, description="Stroke width of the fixation lines, in pixels.")
-    color: str = Field(default="white", description="Fixation line color (PsychoPy color name or hex).")
+    size_pix: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "What: length of each cross arm / bar in pixels. What for: big enough to fixate, small "
+            "enough not to distract. Recommended: ~20 px."
+        ),
+    )
+    line_width_pix: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "What: stroke width of the fixation lines, in pixels. What for: line visibility. "
+            "Recommended: ~2 px."
+        ),
+    )
+    color: str = Field(
+        default="white",
+        description=(
+            "What: fixation line colour (PsychoPy colour name or hex). What for: should contrast with "
+            "the background. Recommended: 'white' on a mid-gray background; 'black' on a light one."
+        ),
+    )
     bar_gap_pix: float = Field(
-        default=10.0, ge=0, description="Bars only: gap between the two bars (e.g. above/below the stimulus)."
+        default=10.0,
+        ge=0,
+        description=(
+            "What: gap in pixels between the two bars (bars shape only) -- e.g. the space above/below "
+            "the stimulus they flank. What for: sizes the opening between flanking bars. Recommended: "
+            "~10 px. Ignored unless shape='bars'."
+        ),
     )
     bar_orientation: Literal["horizontal", "vertical"] = Field(
         default="horizontal",
-        description='Bars only: "horizontal" (two horizontal bars, one above/one below position_pix) '
-        'or "vertical" (two vertical bars, one left/one right of position_pix).',
+        description=(
+            "What: layout of the two bars (bars shape only) -- 'horizontal' places one above and one "
+            "below position_pix, 'vertical' one left and one right. What for: orient the flankers "
+            "around the gaze point. Recommended: match your stimulus layout. Ignored unless "
+            "shape='bars'."
+        ),
     )
     show_background_rect: bool = Field(
-        default=False, description="Draw a filled rectangle behind the fixation shape for contrast."
+        default=False,
+        description=(
+            "What: draw a filled rectangle behind the fixation mark. What for: guarantees contrast so "
+            "the mark stays visible over a busy or same-coloured stimulus. Recommended: off unless "
+            "the fixation would otherwise blend into the stimulus."
+        ),
     )
     background_rect_size_pix: tuple[float, float] = Field(
         default=(30.0, 30.0),
-        description="Size (width, height) in pixels of the optional background rectangle behind the fixation.",
+        description=(
+            "What: size (width, height) in pixels of the optional background rectangle. What for: "
+            "should be a little larger than the fixation mark. Recommended: ~1.5x size_pix. Used only "
+            "when show_background_rect is on."
+        ),
     )
     background_color: str = Field(
-        default="black", description="Fill color of the optional background rectangle."
+        default="black",
+        description=(
+            "What: fill colour of the optional background rectangle (PsychoPy colour name or hex). "
+            "What for: the contrast backdrop for the fixation mark. Recommended: a colour opposite "
+            "the fixation colour, e.g. 'black' behind a white cross. Used only when "
+            "show_background_rect is on."
+        ),
     )
 
 

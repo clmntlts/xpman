@@ -55,15 +55,20 @@ class SoundSelector(BaseModel):
     subdirectory: str | None = Field(
         default=None,
         description=(
-            "Subdirectory (relative to the Program's resource directory) to draw sounds from; "
-            "empty = the whole set. Includes nested subfolders."
+            "What: subfolder of the Program's resource directory to draw this pool's sounds from "
+            "(nested subfolders included). What for: keep each category in its own folder (e.g. "
+            "'voices/', 'tones/') and point the base and oddball pools at different folders. "
+            "Recommended: set one category folder per pool; leave empty only if the whole resource "
+            "set is a single category."
         ),
     )
     filename_pattern: str | None = Field(
         default=None,
         description=(
-            "Optional glob pattern (e.g. '*syllable*.wav') matched against each sound's bare "
-            "filename, combined with the subdirectory (AND)."
+            "What: glob matched against each sound's bare filename (e.g. '*syllable*.wav'), ANDed "
+            "with the subdirectory. What for: narrow a pool further without moving files -- e.g. one "
+            "speaker or one vowel out of a shared folder. Recommended: leave empty unless the folder "
+            "mixes stimuli you need to split by name; '*.wav' to force a file type."
         ),
     )
 
@@ -83,14 +88,22 @@ class TokenParams(BaseModel):
     duration_seconds: float = Field(
         default=0.15,
         gt=0,
-        description="Length of each gated token, in seconds. Must fit within one base cycle.",
+        description=(
+            "What: the length each sound token is trimmed/held to before its on/off ramps. What for: "
+            "sets how much of each stimulus is heard and, with the base rate, how much silent gap sits "
+            "between tokens (gap = 1/base_freq - duration). Recommended: 150-250 ms (Barbero et al. "
+            "2021 used 250 ms). Must fit inside one base cycle: duration <= 1/base_freq_hz (e.g. "
+            "<= 250 ms at 4 Hz)."
+        ),
     )
     ramp_seconds: float = Field(
         default=0.015,
         ge=0,
         description=(
-            "Raised-cosine on/off ramp on each edge of the token, in seconds (~10-20 ms). Prevents "
-            "the broadband click an abrupt edge would inject. Two ramps must fit within the token."
+            "What: raised-cosine fade applied to each edge of every token. What for: an abrupt "
+            "start/stop injects a broadband click that smears energy across the tagged frequencies "
+            "and corrupts the FFT; the ramp removes it. Recommended: 10-20 ms (default 15 ms). The "
+            "two ramps must fit within the token: 2*ramp <= duration_seconds."
         ),
     )
 
@@ -112,20 +125,33 @@ class AuditoryBaseParams(BaseModel):
         default=4.0,
         gt=0,
         description=(
-            "Base tokens per second (2-4 Hz typical for discrete auditory tokens). No hard cap -- the "
-            "token-fits-one-cycle check governs feasibility; rates above ~4 Hz raise an advisory."
+            "What: how many tokens play per second -- the fast periodic rate the general auditory "
+            "response tags in the FFT. What for: the master presentation rate; the oddball rate is a "
+            "sub-multiple of it. Recommended: 2-4 Hz for discrete tokens (Barbero et al. 2021 used "
+            "4 Hz). No hard cap, but a shorter cycle forces a shorter token; rates above ~4 Hz raise "
+            "an advisory rather than being rejected."
         ),
     )
     trial_duration_seconds: float = Field(
         default=60.0,
         gt=0,
-        description="How long the stimulation stream runs, in seconds.",
+        description=(
+            "What: how long the periodic stream runs in one trial. What for: longer trials give finer "
+            "FFT frequency resolution (~1/duration Hz) and a cleaner oddball peak, at the cost of "
+            "participant fatigue. Recommended: 60 s (Barbero-style); use several such trials per "
+            "condition rather than one very long one."
+        ),
     )
     base_trigger_code: int | None = Field(
         default=None,
         ge=1,
         le=255,
-        description="Optional 8-bit TTL code sent on every base-token onset (default off).",
+        description=(
+            "What: 8-bit TTL code (1-255) sent to the EEG on every base-token onset. What for: marks "
+            "each token in the recording for ERP-style checks or diagnostics -- frequency-tagging "
+            "itself does not need it. Recommended: leave off (None) for a standard FPAS trial; set it "
+            "only if your analysis marks individual tokens. Off by default."
+        ),
     )
 
 
@@ -143,15 +169,23 @@ class AuditoryOddballParams(BaseModel):
         default=0.8,
         gt=0,
         description=(
-            "Oddball tokens per second -- must be < base_freq_hz. The classic ratio is base/5 "
-            "(e.g. 4 Hz base -> 0.8 Hz oddball)."
+            "What: how often a token is drawn from the oddball pool instead of the base pool -- the "
+            "rate the category-discrimination response tags in the FFT. What for: this is the peak of "
+            "scientific interest; it must be well separated from the base rate and its harmonics. "
+            "Recommended: base/5 (e.g. 4 Hz base -> 0.8 Hz oddball, one oddball every 5th token). "
+            "Must be < base_freq_hz; a non-integer base/oddball ratio raises an advisory."
         ),
     )
     oddball_trigger_code: int | None = Field(
         default=None,
         ge=1,
         le=255,
-        description="Optional 8-bit TTL code sent on every oddball-token onset (default off).",
+        description=(
+            "What: 8-bit TTL code (1-255) sent to the EEG on every oddball-token onset. What for: "
+            "marks each category-change token for ERP checks or to confirm oddball timing -- not "
+            "needed for the frequency-domain analysis. Recommended: leave off (None) normally; set a "
+            "distinct code from base_trigger_code if you mark oddballs. Off by default."
+        ),
     )
 
 
@@ -171,18 +205,29 @@ class AudioOutputParams(BaseModel):
     sample_rate_hz: int = Field(
         default=48000,
         gt=0,
-        description="Output sample rate in Hz -- the master clock the token period is quantised to.",
+        description=(
+            "What: output sample rate; also the master clock the token period is quantised to "
+            "(samples_per_cycle = round(rate/base_freq)). What for: must match your sound files and "
+            "the device's native rate to avoid resampling. Recommended: 48000 Hz (most pro interfaces' "
+            "native rate); 44100 Hz for CD-rate stimuli. Set it to your WAV files' rate."
+        ),
     )
     backend: Literal["ptb"] = Field(
         default="ptb",
-        description="Audio backend. Only 'ptb' (PsychToolbox PsychPortAudio) is supported.",
+        description=(
+            "What: the audio engine used for playback. What for: 'ptb' is PsychToolbox PsychPortAudio, "
+            "the low-latency, sample-accurate path bundled in the frozen distribution. Recommended: "
+            "leave as 'ptb' -- it is the only supported backend."
+        ),
     )
     buffer_size: int | None = Field(
         default=None,
         gt=0,
         description=(
-            "Requested device buffer size in frames (None = let the backend choose). Smaller = lower "
-            "latency but higher underrun risk."
+            "What: requested device buffer size, in frames. What for: trades latency against safety -- "
+            "smaller buffers start sooner but risk dropouts (underruns) if the machine can't keep up. "
+            "Recommended: leave None (let the backend pick the device default); only tune it at the "
+            "rig if you measure a latency or dropout problem."
         ),
     )
     latency_class: int = Field(
@@ -190,17 +235,29 @@ class AudioOutputParams(BaseModel):
         ge=0,
         le=4,
         description=(
-            "PsychPortAudio latency/aggressiveness class (0=don't care .. 4=critical/most aggressive). "
-            "Higher gives lower, more reliable latency at the cost of exclusive device access."
+            "What: PsychPortAudio aggressiveness, 0 (don't care) to 4 (critical/most aggressive). "
+            "What for: higher classes take more exclusive control of the device for lower, more "
+            "reliable onset latency. Recommended: 3 (default) for experiments; 4 if Phase 0 shows you "
+            "need the tightest timing and the device tolerates exclusive mode."
         ),
     )
     wasapi_only: bool = Field(
         default=True,
-        description="On Windows, restrict device selection to WASAPI hosts (recommended for low latency).",
+        description=(
+            "What: on Windows, restrict device selection to WASAPI host-API devices. What for: WASAPI "
+            "is the low-latency, sample-accurate path; other host APIs (MME/DirectSound) add latency "
+            "and jitter. Recommended: keep on (True) on Windows; turn off only if your interface has "
+            "no usable WASAPI device."
+        ),
     )
     output_device: int | None = Field(
         default=None,
-        description="Explicit PsychPortAudio device index (None = system default output).",
+        description=(
+            "What: explicit PsychPortAudio device index to play through. What for: pins output to a "
+            "specific interface when the machine has several. Recommended: leave None to use the "
+            "system default output; set the measured index (from the rig setup step) only to force a "
+            "particular device."
+        ),
     )
 
 
@@ -226,13 +283,24 @@ class AudioEqualizationParams(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Equalize RMS/energy across the combined (base + oddball) token pool this Condition presents.",
+        description=(
+            "What: match the loudness (RMS) of every token across the COMBINED base+oddball pool. "
+            "What for: if base and oddball categories differ in natural loudness, each oddball onset is "
+            "also a loudness step recurring at the oddball rate -- a confound that mimics a category "
+            "response. Equalizing removes it. Recommended: turn ON whenever base and oddball pools are "
+            "different categories (as Barbero-style designs do); off only if pools are already matched."
+        ),
     )
     strength: float = Field(
         default=1.0,
         ge=0,
         le=1,
-        description="0 = no equalization, 1 = full equalization (each token's RMS becomes exactly the pool's mean).",
+        description=(
+            "What: how far each token is pushed toward the pool's mean RMS (0 = leave untouched, "
+            "1 = match the target exactly). What for: lets you soften equalization if full matching "
+            "distorts stimuli you care about. Recommended: 1.0 (full match) to fully remove the "
+            "loudness confound; lower only for a deliberate partial correction."
+        ),
     )
 
 
@@ -276,16 +344,20 @@ class AuditoryFPVSConditionParams(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Screen background level shown during the trial (0 = black, 1 = white; 0.5 = mid-gray). "
-            "A pure-auditory trial still shows a screen -- the participant fixates it while listening."
+            "What: uniform screen level shown throughout the auditory trial (0 = black, 0.5 = mid-gray, "
+            "1 = white). What for: a pure-auditory trial still needs a screen for the participant to "
+            "rest their eyes on while listening; a steady field avoids luminance transients in the EEG. "
+            "Recommended: 0.5 (mid-gray), matching the FPVS convention."
         ),
         json_schema_extra={"section": "General"},
     )
     fixation: FixationParams = Field(
         default_factory=FixationParams,
         description=(
-            "Fixation mark drawn on the background during the trial (a central cross by default; set "
-            "its shape to 'none' to show no fixation). The participant fixates it while listening."
+            "What: an optional fixation mark drawn on the background (central cross by default; set its "
+            "shape to 'none' for a blank screen). What for: gives the participant a fixed gaze point so "
+            "eye movements don't add artefacts while they listen. Recommended: keep a small central "
+            "cross; use 'none' only if the protocol calls for eyes closed or a blank field."
         ),
         json_schema_extra={"section": "General"},
     )
@@ -295,9 +367,11 @@ class AuditoryFPVSConditionParams(BaseModel):
         default=0.0,
         ge=0,
         description=(
-            "Raised-cosine fade-in applied to the whole rendered sequence (0 = none). Ramps the "
-            "sequence amplitude 0->1 over this many seconds at the start, so the stream begins "
-            "gently rather than at full level (Barbero et al. 2021 use ~2 s)."
+            "What: raised-cosine fade ramping the WHOLE sequence's amplitude 0->1 over this many "
+            "seconds at the start (0 = none). What for: a stream that begins at full level is a loud "
+            "onset transient that startles the participant and injects a broadband edge into the EEG; "
+            "fading in avoids it. Recommended: ~2 s (Barbero et al. 2021). Targets are never scheduled "
+            "inside the fade region."
         ),
         json_schema_extra={"section": "Trial phases"},
     )
@@ -305,8 +379,10 @@ class AuditoryFPVSConditionParams(BaseModel):
         default=0.0,
         ge=0,
         description=(
-            "Raised-cosine fade-out applied to the whole rendered sequence (0 = none). Ramps the "
-            "sequence amplitude 1->0 over this many seconds at the end."
+            "What: raised-cosine fade ramping the whole sequence's amplitude 1->0 over this many "
+            "seconds at the end (0 = none). What for: avoids an abrupt offset transient, mirroring the "
+            "fade-in. Recommended: match fade_in_seconds (~2 s). fade_in + fade_out must not exceed the "
+            "trial duration."
         ),
         json_schema_extra={"section": "Trial phases"},
     )
@@ -324,12 +400,22 @@ class AuditoryFPVSConditionParams(BaseModel):
     )
     base_selector: SoundSelector = Field(
         default_factory=SoundSelector,
-        description="Which sounds make up the base stream (multi-exemplar pool recommended).",
+        description=(
+            "What: which files make up the base (frequent) category pool. What for: the stream draws a "
+            "random base token each non-oddball cycle. Recommended: point at a folder of MANY exemplars "
+            "of one category, so the response reflects the category, not adaptation to one repeated "
+            "waveform."
+        ),
         json_schema_extra={"section": "Stream"},
     )
     oddball_selector: SoundSelector = Field(
         default_factory=SoundSelector,
-        description="Which sounds are the oddballs (multi-exemplar pool recommended).",
+        description=(
+            "What: which files make up the oddball (deviant) category pool. What for: one of these is "
+            "played every oddball cycle in place of a base token. Recommended: a multi-exemplar folder "
+            "of a DIFFERENT category from the base pool; with equalization on, loudness differences "
+            "between the two pools are removed automatically."
+        ),
         json_schema_extra={"section": "Stream"},
     )
 

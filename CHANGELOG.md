@@ -62,6 +62,14 @@ defaults to silent, so existing Instances and runs are unaffected.
 - **Manual rig runner** for the task: `tests/manual_hardware/run_auditory_fpas_task_manual.py`
   (`--audio-backend {none,ptb}`), defaults reproducing the Barbero 2021 voice paradigm.
 
+### Changed
+
+- **GUI parameter tooltips rewritten to a what / what-for / recommended-value format.** Every
+  hover description across all three task schemas (auditory FPAS, visual FPVS, dummy) and their
+  nested models now says what the parameter is, what it is for, and a recommended/typical value
+  (with paper references where they exist, e.g. Barbero et al. 2021 token duration ~250 ms, base/5
+  oddball ratio, ~2 s sequence fades). No behaviour or default changes — description text only.
+
 ## [0.6.0] — 2026-09-08
 
 Methodology, safety, and usability release. Adds the canonical size-variation control and an in-app

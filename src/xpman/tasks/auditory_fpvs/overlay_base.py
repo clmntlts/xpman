@@ -75,41 +75,58 @@ class AudioOverlayParams(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False, description="Run this attention task during the stimulation."
+        default=False,
+        description=(
+            "What: master switch for this attention task. What for: when off, the trial plays exactly "
+            "as rendered -- no targets, no scoring, no extra triggers. Recommended: turn ON to keep "
+            "the participant engaged and to have a behavioural measure that attention held; off for a "
+            "pure passive-listening trial."
+        ),
     )
     target_count: int = Field(
         default=6,
         ge=0,
         description=(
-            "How many token onsets are chosen as targets across the trial. Count-based (not a rate) "
-            "so the number of behavioural events per sequence is fixed and comparable across trials."
+            "What: how many token onsets across the trial are turned into targets. What for: a fixed "
+            "count (not a rate) keeps the number of behavioural events per trial constant and "
+            "comparable. Recommended: ~6 per 60 s trial (Barbero et al. 2021)."
         ),
     )
     guard_seconds: float = Field(
         default=1.0,
         ge=0,
         description=(
-            "No target within this many seconds of the trial start or end. Combined with the "
-            "buffer's fade-in/fade-out regions, which are also excluded, so a target never lands "
-            "where the trial is ramping in or out."
+            "What: exclusion window at the very start and end of the trial where no target is placed. "
+            "What for: avoids targets while the participant is still settling in or the trial is "
+            "wrapping up; the fade-in/out regions are also excluded automatically. Recommended: ~1 s."
         ),
     )
     min_separation_seconds: float = Field(
         default=1.0,
         ge=0,
-        description="Minimum gap (seconds) between the onsets of two consecutive targets.",
+        description=(
+            "What: minimum time between two consecutive target onsets. What for: stops two targets "
+            "crowding into an indistinguishable pair the participant can't score separately. "
+            "Recommended: ~1 s (>= the response window)."
+        ),
     )
     response_window_seconds: float = Field(
         default=1.0,
         gt=0,
         description=(
-            "A key press within this window after a target's onset counts as a response (hit); "
-            "later presses are false alarms."
+            "What: how long after a target's onset a key press still counts as a hit. What for: "
+            "presses inside the window are hits; presses outside any window are false alarms. "
+            "Recommended: ~1 s -- long enough for a genuine reaction, short enough to reject "
+            "unrelated presses."
         ),
     )
     keys: list[str] = Field(
         default_factory=lambda: ["space"],
-        description="Key name(s) counted as a response for this task.",
+        description=(
+            "What: which keyboard key(s) count as a response for this task. What for: the participant "
+            "presses one of these when they detect a target. Recommended: a single easy key such as "
+            "'space'."
+        ),
     )
 
 

@@ -58,21 +58,53 @@ class GoNoGoParams(BehaviouralOverlayParams):
 
     markers: list[FixationParams] = Field(
         default_factory=_default_markers,
-        description="Fixation-like markers at configurable positions. Each is a FixationParams; edit "
-        "each marker's position_pix (and appearance). At least 2 are required.",
+        description=(
+            "What: the set of fixation-like markers (each a FixationParams) placed around the screen; "
+            "on a GO event they all 'signal' at once, on a NO-GO only some do. What for: the spatial "
+            "conjunction the subject monitors. Recommended: 2+ markers at distinct positions (e.g. a "
+            "left/right pair); edit each marker's position_pix and appearance. At least 2 required."
+        ),
         # Rendered by SchemaForm's list-of-model editor (add/remove markers); min_items disables
         # Remove at 2 to match the >=2 validator. Defaults to a left/right pair.
         json_schema_extra={"min_items": 2},
     )
-    signal_color: str = Field(default="red", description="Colour a marker takes when it 'signals'.")
+    signal_color: str = Field(
+        default="red",
+        description=(
+            "What: the colour a marker takes when it 'signals' (PsychoPy colour name or hex). What "
+            "for: the visible cue that distinguishes a signalling marker. Recommended: a salient "
+            "colour against the marker's resting colour, e.g. 'red'."
+        ),
+    )
     go_probability: float = Field(
-        default=0.5, gt=0.0, lt=1.0, description="Fraction of events that are GO (all markers signal)."
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "What: fraction of events that are GO (all markers signal together, so the subject "
+            "responds). What for: sets how often a response is required vs withheld. Recommended: "
+            "~0.5 for a balanced task; higher makes GO more frequent (fewer withholds)."
+        ),
     )
     go_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Optional EEG trigger sent on each GO event onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) sent on each GO event onset. What for: marks GO events in "
+            "the EEG for behavioural alignment. Recommended: set a distinct code if you record go/"
+            "no-go timing; off (None) otherwise."
+        ),
     )
     nogo_trigger_code: int | None = Field(
-        default=None, ge=1, le=255, description="Optional EEG trigger sent on each NO-GO event onset."
+        default=None,
+        ge=1,
+        le=255,
+        description=(
+            "What: 8-bit TTL code (1-255) sent on each NO-GO event onset. What for: marks NO-GO "
+            "events (response withheld) in the EEG. Recommended: a code distinct from go_trigger_code "
+            "if used; off (None) otherwise."
+        ),
     )
 
     @model_validator(mode="after")

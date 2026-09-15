@@ -40,25 +40,65 @@ class BehaviouralOverlayParams(BaseModel):
     nothing to the trial (no schedule, no overlay drawing, no extra trigger)."""
 
     enabled: bool = Field(
-        default=False, description="Run this attention task during the stimulation."
+        default=False,
+        description=(
+            "What: master switch for this attention task. What for: when off the trial runs "
+            "unchanged (no events, no scoring, no extra trigger); when on it keeps the subject "
+            "engaged and gives a behavioural check that attention held. Recommended: on for real "
+            "recordings; off for passive-viewing trials. At most one attention task per Condition."
+        ),
     )
     event_duration_seconds: float = Field(
-        default=0.2, gt=0, description="How long each overlay event stays on screen."
+        default=0.2,
+        gt=0,
+        description=(
+            "What: how long each overlay event stays on screen. What for: long enough to be seen, "
+            "short enough not to blur into the flicker. Recommended: ~0.2 s."
+        ),
     )
     min_interval_seconds: float = Field(
-        default=1.0, gt=0, description="Minimum gap between consecutive events."
+        default=1.0,
+        gt=0,
+        description=(
+            "What: shortest gap between consecutive events (the actual gap is random between min and "
+            "max). What for: keeps events from bunching and makes their timing unpredictable. "
+            "Recommended: ~1 s; must be <= max_interval_seconds."
+        ),
     )
     max_interval_seconds: float = Field(
-        default=3.0, gt=0, description="Maximum gap between consecutive events."
+        default=3.0,
+        gt=0,
+        description=(
+            "What: longest gap between consecutive events. What for: with the minimum, sets the "
+            "random inter-event range and roughly how many events a trial gets. Recommended: ~3 s "
+            "(a 1-3 s range); must be >= min_interval_seconds."
+        ),
     )
     guard_seconds: float = Field(
-        default=1.0, ge=0, description="No event within this of the stimulation's start or end."
+        default=1.0,
+        ge=0,
+        description=(
+            "What: exclusion window at the start and end of the stimulation where no event is placed. "
+            "What for: avoids events while the subject is settling in or the trial is wrapping up. "
+            "Recommended: ~1 s."
+        ),
     )
     response_window_seconds: float = Field(
-        default=1.0, gt=0, description="A key press within this window after an event onset counts as a response."
+        default=1.0,
+        gt=0,
+        description=(
+            "What: how long after an event onset a key press still counts as a hit. What for: presses "
+            "inside the window are hits, presses outside any window are false alarms. Recommended: "
+            "~1 s -- long enough for a genuine reaction, short enough to reject unrelated presses."
+        ),
     )
     keys: list[str] = Field(
-        default_factory=lambda: ["space"], description="Key name(s) counted as a response for this task."
+        default_factory=lambda: ["space"],
+        description=(
+            "What: which keyboard key(s) count as a response for this task. What for: the subject "
+            "presses one of these when they detect an event. Recommended: a single easy key such as "
+            "'space'."
+        ),
     )
 
     @model_validator(mode="after")
