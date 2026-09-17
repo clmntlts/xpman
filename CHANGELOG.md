@@ -128,6 +128,15 @@ audio output that defaults to silent, so existing Instances and runs are unaffec
   threshold and what is logged change. The module constant `BIOSEMI_HARDWARE_PULSE_SECONDS` was
   renamed `MMBT_S_NOMINAL_PULSE_SECONDS` (old name kept as a backward-compatible alias).
 
+### Fixed
+
+- **Packaged build could not load the auditory FPAS task.** `scripts/build_windows_exe.ps1` listed
+  only `dummy.task` and `fpvs.task` as PyInstaller hidden imports; the newer `auditory_fpvs.task` was
+  omitted, so the frozen `xpman.exe` discovered the entry point but crashed on launch with
+  `ModuleNotFoundError: No module named 'xpman.tasks.auditory_fpvs.task'`. Added it (and documented
+  that every task's `task.py` must be listed). Invisible to a green build — caught only by the
+  release checklist's run-a-real-Run-through-the-frozen-exe step.
+
 ### Documentation
 
 - Corrected `hardware/trigger_serial.py` to document the lab's actual trigger box, the **NEUROSPEC

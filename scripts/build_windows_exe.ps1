@@ -130,15 +130,19 @@ $HiddenImports = @(
     # The task modules entry_points.txt points at (see the --copy-metadata comment below) --
     # PyInstaller's static analysis starts from src\xpman\gui\app.py and follows real `import`
     # statements, but nothing in that traced graph ever literally imports
-    # xpman.tasks.dummy.task/xpman.tasks.fpvs.task (only the *string* in entry_points.txt
-    # references them, resolved dynamically at runtime by importlib.metadata). Without this,
-    # the frozen exe correctly *discovers* the task entry points (once --copy-metadata is
-    # right) but then fails to actually import them: "ModuleNotFoundError: No module named
-    # 'xpman.tasks.dummy'". Only the two task.py modules need listing explicitly -- each one's
-    # own real `import` statements (paradigm_oddball, photodiode, image_set, schema, ...) are
-    # then followed normally by PyInstaller's analysis once it starts tracing from here.
+    # the task.py modules (only the *string* in entry_points.txt references them, resolved
+    # dynamically at runtime by importlib.metadata). Without this, the frozen exe correctly
+    # *discovers* the task entry points (once --copy-metadata is right) but then fails to actually
+    # import them: "ModuleNotFoundError: No module named 'xpman.tasks.<name>.task'". EVERY task's
+    # task.py must be listed here -- one per entry point in pyproject.toml's
+    # [project.entry-points."xpman.tasks"] -- because none of them is reached by a real `import`
+    # from app.py. (A missing one is invisible until the frozen exe actually launches that task, so
+    # it is caught only by the release-checklist run-a-real-Run step, not by the build succeeding.)
+    # Each listed module's own real `import` statements (paradigm_oddball, photodiode, schema, ...)
+    # are then followed normally by PyInstaller once it starts tracing from here.
     "xpman.tasks.dummy.task",
     "xpman.tasks.fpvs.task",
+    "xpman.tasks.auditory_fpvs.task",
     # Alembic runs migrations/env.py and every migrations/versions/*.py by loading them from disk
     # at runtime (importlib, not a real `import`), so PyInstaller's static analysis never sees THEIR
     # imports -- exactly like the psychopy.visual and entry-point cases above. env.py does
