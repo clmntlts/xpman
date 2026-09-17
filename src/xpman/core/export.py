@@ -44,6 +44,10 @@ _CONTEXT_COLUMNS = (
     "instance_name",
     "subject_id",
     "subject_name",
+    "subject_code",
+    "subject_sex",
+    "subject_handedness",
+    "subject_birth_date",
     "run_status",
     "run_started_at",
     "run_ended_at",
@@ -93,6 +97,14 @@ def _build_rows(session: Session, run_id: int) -> list[dict[str, Any]]:
             "instance_name": instance_name,
             "subject_id": run.subject_id,
             "subject_name": subject_name,
+            "subject_code": subject.subject_code if subject is not None else None,
+            "subject_sex": (subject.sex.value if subject and subject.sex is not None else None),
+            "subject_handedness": (
+                subject.handedness.value if subject and subject.handedness is not None else None
+            ),
+            "subject_birth_date": (
+                subject.birth_date.isoformat() if subject and subject.birth_date is not None else None
+            ),
             "run_status": str(run.status.value),
             "run_started_at": run.started_at.isoformat() if run.started_at is not None else None,
             "run_ended_at": run.ended_at.isoformat() if run.ended_at is not None else None,

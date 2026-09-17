@@ -27,9 +27,9 @@ reproducible/inspectable.
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -52,6 +52,27 @@ class RunStatus(enum.StrEnum):
     COMPLETED = "completed"
     ABORTED = "aborted"
     CRASHED = "crashed"
+
+
+class Sex(enum.StrEnum):
+    """A Subject's sex, as a structured (filterable/exportable) field.
+
+    A ``NULL`` column value -- not a member here -- means "unspecified"; there is deliberately no
+    ``UNSPECIFIED`` member so the two never diverge. Kept as a small closed set (the legacy app used a
+    typed field too) for consistent filtering/export; free-text nuance belongs in ``info_json`` notes.
+    """
+
+    MALE = "male"
+    FEMALE = "female"
+    OTHER = "other"
+
+
+class Handedness(enum.StrEnum):
+    """A Subject's handedness, as a structured field. ``NULL`` (not a member) means "unspecified"."""
+
+    LEFT = "left"
+    RIGHT = "right"
+    AMBIDEXTROUS = "ambidextrous"
 
 
 class Profile(Base):
@@ -88,6 +109,20 @@ class Subject(Base):
     last_name: Mapped[str] = mapped_column(String(200), nullable=False)
     info_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     visible_to_others: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Structured demographics (all nullable/additive -- NULL == "unspecified"). Stored as columns
+    # rather than inside info_json so they are filterable in SQL and land as their own columns in the
+    # tidy export (core/export.py); free-text nuance still lives in info_json["notes"]. sex/handedness
+    # use ``native_enum=False`` (stored as VARCHAR, no DB-level CHECK) so they can be added by a plain
+    # ADD COLUMN on SQLite while still being validated against the Python enum at the ORM layer.
+    sex: Mapped[Sex | None] = mapped_column(
+        Enum(Sex, native_enum=False, create_constraint=False, length=20), nullable=True
+    )
+    handedness: Mapped[Handedness | None] = mapped_column(
+        Enum(Handedness, native_enum=False, create_constraint=False, length=20), nullable=True
+    )
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: A lab-assigned participant code/identifier (e.g. "S07", "PILOT-03"), distinct from the DB id.
+    subject_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     profile: Mapped[Profile] = relationship(back_populates="subjects")
@@ -292,6 +327,11 @@ class Run(Base):
     pyserial_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     measured_refresh_hz: Mapped[float | None] = mapped_column(Float, nullable=True)
     refresh_measured_successfully: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # The refresh rate the operator declared as expected at launch (from the selected monitor mode),
+    # against which the engine cross-checks the *measured* rate (see runtime.engine). Nullable/additive:
+    # NULL means "no expected rate given / check skipped". A mismatch is logged as a
+    # refresh_rate_mismatch event (and aborts when the run was launched with strict-refresh).
+    expected_refresh_hz: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Which trigger backend drove this run and (where meaningful) the port/address it used --
     # captured from TriggerSender.describe() at Run creation. Nullable + additive: old Runs (and
     # any run whose backend records no port) leave these NULL. See runtime/session.launch_run.

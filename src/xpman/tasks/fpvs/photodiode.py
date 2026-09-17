@@ -94,6 +94,7 @@ class PhotodiodeParams(BaseModel):
             "pin the patch exactly under an off-corner sensor. Recommended: leave None to use the "
             "corner; set only when a corner won't do."
         ),
+        json_schema_extra={"unit": "px"},
     )
     size_pix: float = Field(
         default=50.0,
@@ -103,6 +104,7 @@ class PhotodiodeParams(BaseModel):
             "light sensor's aperture to read reliably. Recommended: ~50 px, or larger to comfortably "
             "cover your sensor."
         ),
+        json_schema_extra={"unit": "px"},
     )
     color_on: str = Field(
         default="white",

@@ -1,10 +1,23 @@
 """``SerialTrigger``: a USB (virtual-COM) ``TriggerSender`` for FTDI-based trigger boxes.
 
-Target hardware: the **BioSemi USB Trigger Interface (SKU NS7830)** -- an FTDI-based USB->parallel
-device that presents to the OS as an **FTDI Virtual COM Port** and drives the receiver's 8 trigger
-input lines. Crucially, the device itself times the pulse: it emits a **hardware-fixed 8 ms pulse**
-and returns the lines to 0 on its own. So this backend writes the code **byte once** and does **not**
-clear -- clearing is the device's job, not ours. That is what ``auto_pulse=True`` (the default) means.
+Target hardware: the lab's **NEUROSPEC MMBT-S** in **Pulse Mode** -- a USB device that presents to the
+OS as an **FTDI Virtual COM Port** (9600 baud) and drives the receiver's 8 trigger input lines.
+Crucially, the device itself times the pulse: it emits a **hardware-fixed pulse** and returns the
+lines to 0 on its own. So this backend writes the code **byte once** and does **not** clear --
+clearing is the device's job, not ours. That is what ``auto_pulse=True`` (the default) means.
+
+Pulse width: the width is a fixed HARDWARE property of the box, so it must be **measured per unit** (on
+a scope), not assumed from a datasheet -- the nominal ~8 ms placeholder
+(:data:`MMBT_S_NOMINAL_PULSE_SECONDS`) is only a fallback. The lab rig's box measured **~8.8 ms**
+(BioSemi photodiode + serial run, 2026-09-07; see ``docs/verification_protocol.md``). Pass the value
+you actually measured via the ``pulse_width_seconds`` constructor argument so the onset-cadence
+safeguard (``tasks/fpvs/task.py``) and the run provenance (``describe()``) reflect the real pulse, not
+the nominal one. The width does NOT affect the triggers the amplifier records (the box times them in
+hardware regardless) -- only the safeguard threshold and what is logged.
+
+(The class name and the ``BioSemi``/``MMBT-S`` history: earlier revisions targeted a BioSemi USB
+Trigger Interface, SKU NS7830; the lab's actual box is the MMBT-S. The wire protocol -- one code byte,
+hardware-timed pulse, auto-return to 0 -- is the same, so the same backend serves both.)
 
 The same class also supports latching serial devices (e.g. some Arduino/LabHackers-style boxes) via
 ``auto_pulse=False``: there ``clear_code()`` actively writes ``bytes([0])`` to return the lines to 0,
@@ -31,12 +44,20 @@ import time
 
 from xpman.hardware.trigger import DEFAULT_RESET_AFTER, TriggerSender
 
-#: The BioSemi USB Trigger Interface pulses each code in HARDWARE for a fixed ~8 ms and returns the
-#: lines to 0 on its own (that is what ``auto_pulse`` models). Exposed so the presentation layer can
-#: check that stimulus onsets are never spaced closer than this fixed pulse -- two onsets within one
-#: pulse would merge into a single event and a trigger would be missed. See
+#: NOMINAL fallback pulse width (seconds) for an ``auto_pulse`` box when the caller does not pass a
+#: measured value. The device pulses each code in HARDWARE for a fixed width and returns the lines to 0
+#: on its own (that is what ``auto_pulse`` models); the real width must be MEASURED per unit (the lab
+#: rig's MMBT-S measured ~8.8 ms) and passed to ``SerialTrigger(pulse_width_seconds=...)``. Exposed so
+#: the presentation layer can check that stimulus onsets are never spaced closer than this pulse -- two
+#: onsets within one pulse would merge into a single event and a trigger would be missed. See
 #: ``TriggerSender.pulse_width_seconds`` and ``tasks/fpvs/task.py``'s onset-cadence advisory.
-BIOSEMI_HARDWARE_PULSE_SECONDS = 0.008
+MMBT_S_NOMINAL_PULSE_SECONDS = 0.008
+
+#: Deprecated alias kept for backward compatibility (the constant was renamed when the module's target
+#: hardware was corrected from the BioSemi NS7830 to the lab's NEUROSPEC MMBT-S). Prefer
+#: :data:`MMBT_S_NOMINAL_PULSE_SECONDS`, and prefer passing a MEASURED width to the constructor over
+#: either constant.
+BIOSEMI_HARDWARE_PULSE_SECONDS = MMBT_S_NOMINAL_PULSE_SECONDS
 
 
 class SerialTrigger(TriggerSender):
@@ -55,6 +76,7 @@ class SerialTrigger(TriggerSender):
         reset_after: float = DEFAULT_RESET_AFTER,
         init_settle_seconds: float = 0.0,
         prime_on_open: bool = True,
+        pulse_width_seconds: float | None = None,
     ) -> None:
         """
         Args:
@@ -81,9 +103,16 @@ class SerialTrigger(TriggerSender):
                 write so the first REAL trigger is never the one lost. Set ``False`` to disable
                 (e.g. for a latching device where a 0 byte would actively reset already-idle lines,
                 which is harmless but redundant).
+            pulse_width_seconds: The device's fixed HARDWARE pulse width, in seconds, when
+                ``auto_pulse`` -- what :meth:`pulse_width_seconds` reports and what the FPVS
+                onset-cadence safeguard compares against. Pass the value **measured on this box's
+                scope** (the lab rig's MMBT-S measured ~8.8 ms, i.e. ``0.0088``); ``None`` (the
+                default) falls back to the nominal :data:`MMBT_S_NOMINAL_PULSE_SECONDS`. Ignored
+                under ``auto_pulse=False`` (a latching device is frame-driven, so there is no fixed
+                width to report). Must be ``> 0`` when given.
 
         Raises:
-            ValueError: ``init_settle_seconds`` is negative.
+            ValueError: ``init_settle_seconds`` is negative, or ``pulse_width_seconds`` is <= 0.
             RuntimeError: ``port`` is ``None``/blank, or the port could not be opened (wrong name,
                 device unplugged, already in use). The message names the port so the experimenter
                 knows exactly which one.
@@ -91,6 +120,16 @@ class SerialTrigger(TriggerSender):
         super().__init__(reset_after=reset_after)
         if init_settle_seconds < 0:
             raise ValueError(f"init_settle_seconds must be >= 0, got {init_settle_seconds!r}")
+        if pulse_width_seconds is not None and pulse_width_seconds <= 0:
+            raise ValueError(
+                f"pulse_width_seconds must be > 0 when given, got {pulse_width_seconds!r}"
+            )
+        # Fixed hardware pulse width reported under auto_pulse: the measured value if the caller
+        # passed one, else the nominal fallback. Stored regardless of auto_pulse; pulse_width_seconds()
+        # only surfaces it when auto_pulse (a latching device has no fixed width -- see that method).
+        self._pulse_width_seconds = (
+            pulse_width_seconds if pulse_width_seconds is not None else MMBT_S_NOMINAL_PULSE_SECONDS
+        )
         if port is None or (isinstance(port, str) and not port.strip()):
             # pyserial's Serial(None, ...) constructs a *closed* port that raises nothing here
             # and only fails at the first write mid-run (launch_worker defaults --serial-port to
@@ -184,14 +223,23 @@ class SerialTrigger(TriggerSender):
                 )
 
     def pulse_width_seconds(self) -> float | None:
-        """The device's fixed hardware pulse width when ``auto_pulse`` (the BioSemi ~8 ms), else
-        ``None``. Under ``auto_pulse=False`` the pulse is frame-driven (``set_code`` on the onset
-        flip, ``clear_code`` on the next), like the parallel path -- no fixed width to report."""
-        return BIOSEMI_HARDWARE_PULSE_SECONDS if self._auto_pulse else None
+        """The device's fixed hardware pulse width when ``auto_pulse`` -- the value measured for this
+        box and passed to the constructor, or the nominal :data:`MMBT_S_NOMINAL_PULSE_SECONDS`
+        fallback. ``None`` under ``auto_pulse=False``: there the pulse is frame-driven (``set_code``
+        on the onset flip, ``clear_code`` on the next), like the parallel path -- no fixed width to
+        report."""
+        return self._pulse_width_seconds if self._auto_pulse else None
 
     def describe(self) -> dict:
-        """Provenance summary: the serial backend, the port, and the baud it opened at."""
-        return {"backend": "serial", "port": self._port, "baud": self._baudrate}
+        """Provenance summary: the serial backend, the port, the baud it opened at, and (for an
+        ``auto_pulse`` box) the fixed hardware pulse width it reports -- so a Run records the pulse
+        actually assumed, not just the port. ``pulse_width_s`` is ``None`` for a latching device."""
+        return {
+            "backend": "serial",
+            "port": self._port,
+            "baud": self._baudrate,
+            "pulse_width_s": self.pulse_width_seconds(),
+        }
 
     def close(self) -> None:
         """Close the serial port. Idempotent: safe if the port was never opened or is already

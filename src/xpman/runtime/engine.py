@@ -139,6 +139,50 @@ def count_trials(frozen_program: dict, *, experiment_id: int | None = None) -> i
     )
 
 
+#: A measured refresh within this fractional tolerance of the expected rate is treated as a match
+#: (so ordinary 59.94-vs-60 rounding never trips the check). Beyond it, the engine logs a
+#: ``refresh_rate_mismatch`` event (and aborts when ``strict_refresh`` was requested at launch).
+REFRESH_MISMATCH_TOLERANCE_FRACTION = 0.05
+
+
+def _check_refresh_against_expected(
+    run: Run, expected_refresh_hz: float | None, strict_refresh: bool, event_sink: "EventSink"
+) -> None:
+    """Cross-check the run's measured refresh against the operator-declared expected rate.
+
+    A no-op when no expected rate was given, or when the refresh was not trustworthily measured (the
+    unmeasurable case is already handled fail-loud at prepare time -- there is nothing to compare a
+    fallback value against). On a mismatch beyond ``REFRESH_MISMATCH_TOLERANCE_FRACTION`` it logs a
+    ``refresh_rate_mismatch`` event; when ``strict_refresh`` it also raises, so the engine marks the
+    Run CRASHED rather than recording EEG whose frame-counted timing is against the wrong rate.
+    """
+    if expected_refresh_hz is None or expected_refresh_hz <= 0:
+        return
+    measured = run.measured_refresh_hz
+    if measured is None or not run.refresh_measured_successfully:
+        return
+    relative_error = abs(measured - expected_refresh_hz) / expected_refresh_hz
+    if relative_error <= REFRESH_MISMATCH_TOLERANCE_FRACTION:
+        return
+    event_sink.log(
+        "refresh_rate_mismatch",
+        {
+            "expected_hz": expected_refresh_hz,
+            "measured_hz": measured,
+            "relative_error": relative_error,
+            "tolerance": REFRESH_MISMATCH_TOLERANCE_FRACTION,
+        },
+    )
+    if strict_refresh:
+        raise RuntimeError(
+            f"measured monitor refresh {measured:.3f} Hz differs from the expected "
+            f"{expected_refresh_hz:g} Hz by {relative_error * 100:.1f}% "
+            f"(> {REFRESH_MISMATCH_TOLERANCE_FRACTION * 100:g}% tolerance) -- aborting this run "
+            "(strict refresh mode). Set the monitor to the expected display mode and relaunch, or "
+            "relaunch without strict refresh to record with an advisory instead."
+        )
+
+
 def execute_run(
     session: Session,
     *,
@@ -155,6 +199,8 @@ def execute_run(
     on_before_trial: Callable[[int], None] | None = None,
     data_dir: "Path | None" = None,
     audio_player: "AudioPlayer | None" = None,
+    expected_refresh_hz: float | None = None,
+    strict_refresh: bool = False,
 ) -> Run:
     """Drive ``run`` (already persisted, so ``run.id`` is set) through its full trial sequence.
 
@@ -243,6 +289,11 @@ def execute_run(
             run.measured_refresh_hz = metadata["measured_refresh_hz"]
         if "refresh_measured_successfully" in metadata:
             run.refresh_measured_successfully = metadata["refresh_measured_successfully"]
+        if expected_refresh_hz is not None:
+            run.expected_refresh_hz = expected_refresh_hz
+        # Cross-check the achieved refresh against what the operator expected (a wrong OS display
+        # mode is otherwise invisible until analysis). Advisory by default; aborts under strict.
+        _check_refresh_against_expected(run, expected_refresh_hz, strict_refresh, event_sink)
         session.commit()
         # One-off, task-agnostic session warm-up, run exactly once per Run: after prepare()
         # (resources exist) and before any trial. Tasks that need no warm-up inherit a no-op

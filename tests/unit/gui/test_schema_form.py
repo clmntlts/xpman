@@ -832,3 +832,72 @@ def test_schema_form_builds_with_a_type_invalid_stored_param(qtbot):
     qtbot.addWidget(form)
     # Background_gray fell back to a numeric default rather than crashing.
     assert isinstance(form._field_widgets["background_gray"].get_value(), float)
+
+
+# -- degree readouts on pixel-valued fields (2A) ----------------------------------------------
+
+from xpman.gui.forms.widgets import (  # noqa: E402
+    FloatFieldWidget,
+    FloatPairFieldWidget,
+    PixelDegreeFieldWidget,
+)
+
+
+def test_pixel_field_gets_degree_readout_when_geometry_present(qtbot):
+    """A px-tagged field (FixationParams.size_pix / position_pix) is wrapped in a
+    PixelDegreeFieldWidget when the form is given a pixels_per_degree, so the researcher sees the
+    degree equivalent live."""
+    form = SchemaForm(FixationParams, pixels_per_degree=36.0)
+    qtbot.addWidget(form)
+    assert isinstance(form._field_widgets["size_pix"], PixelDegreeFieldWidget)
+    assert isinstance(form._field_widgets["position_pix"], PixelDegreeFieldWidget)
+    # A non-spatial field (color) is untouched.
+    assert not isinstance(form._field_widgets["color"], PixelDegreeFieldWidget)
+
+
+def test_no_degree_readout_without_geometry(qtbot):
+    """With no pixels_per_degree, px fields stay plain numeric widgets (display unchanged)."""
+    form = SchemaForm(FixationParams)  # pixels_per_degree defaults to None
+    qtbot.addWidget(form)
+    assert isinstance(form._field_widgets["size_pix"], FloatFieldWidget)
+    assert not isinstance(form._field_widgets["size_pix"], PixelDegreeFieldWidget)
+
+
+def test_degree_readout_value_roundtrips_through_wrapper(qtbot):
+    """The wrapper is display-only: get/set still round-trip the raw pixel value, and the readout
+    reflects it (72 px at 36 px/deg = 2.00 deg)."""
+    form = SchemaForm(FixationParams, pixels_per_degree=36.0)
+    qtbot.addWidget(form)
+    widget = form._field_widgets["size_pix"]
+    widget.set_value(72.0)
+    assert widget.get_value() == 72.0
+    assert "2.00" in widget._hint.text()
+    # The saved params still carry the raw pixel value, not degrees.
+    assert form.get_values()["size_pix"] == 72.0
+
+
+def test_nested_and_list_subforms_inherit_pixels_per_degree(qtbot):
+    """The degree readout reaches px fields inside nested models (a stream's position_pix) --
+    proving pixels_per_degree is threaded down every sub-form."""
+    form = SchemaForm(FPVSConditionParams, pixels_per_degree=36.0)
+    qtbot.addWidget(form)
+    main_stream = form._nested_forms["main_stream"]
+    assert isinstance(main_stream._field_widgets["position_pix"], PixelDegreeFieldWidget)
+
+
+def test_pixel_degree_widget_forwards_the_field_protocol(qtbot):
+    """PixelDegreeFieldWidget forwards get/set/mark_invalid/clear_invalid to its inner widget and
+    updates the readout, both scalar and pair."""
+    scalar = PixelDegreeFieldWidget(FloatFieldWidget(), 36.0)
+    qtbot.addWidget(scalar)
+    scalar.set_value(180.0)
+    assert scalar.get_value() == 180.0
+    assert "5.00" in scalar._hint.text()  # 180 / 36 = 5.00 deg
+    scalar.mark_invalid("bad")
+    scalar.clear_invalid()  # must not raise
+
+    pair = PixelDegreeFieldWidget(FloatPairFieldWidget(), 36.0, is_pair=True)
+    qtbot.addWidget(pair)
+    pair.set_value((36.0, -72.0))
+    assert pair.get_value() == (36.0, -72.0)
+    assert "1.00" in pair._hint.text() and "-2.00" in pair._hint.text()

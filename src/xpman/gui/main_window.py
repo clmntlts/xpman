@@ -42,6 +42,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from xpman.core import clone
+from xpman.core import portability
 from xpman.core import repository as repo
 from xpman.core.export import (
     export_multi_run_results_to_csv,
@@ -267,7 +268,11 @@ class MainWindow(QMainWindow):
         }[node.kind](self._session, self._registry, node.id)
 
         current_values = self._current_parameters_json(node)
-        form = SchemaForm(model_cls, initial_values=current_values)
+        form = SchemaForm(
+            model_cls,
+            initial_values=current_values,
+            pixels_per_degree=self._pixels_per_degree_for_node(node),
+        )
         self._set_detail_widget(form)
         self._current_form = form
         self._detail_title.setText(f"{node.name} -- parameters")
@@ -305,7 +310,11 @@ class MainWindow(QMainWindow):
             heading = QLabel("Parameters")
             heading.setProperty("role", "subheading")
             container_layout.addWidget(heading)
-            form = SchemaForm(model_cls, initial_values=self._current_parameters_json(node))
+            form = SchemaForm(
+                model_cls,
+                initial_values=self._current_parameters_json(node),
+                pixels_per_degree=self._pixels_per_degree_for_node(node),
+            )
             container_layout.addWidget(form)
             self._set_detail_widget(container)
             self._current_form = form
@@ -330,6 +339,44 @@ class MainWindow(QMainWindow):
         ]
         row = getter(self._session, node.id)
         return row.parameters_json or {}
+
+    def _owning_program(self, node: TreeNode):
+        """The Program that owns ``node`` (itself for a program node, walking up for
+        experiment/condition), or None if it can't be resolved."""
+        if node.kind == "program":
+            return repo.get_program(self._session, node.id)
+        if node.kind == "experiment":
+            experiment = repo.get_experiment(self._session, node.id)
+            return repo.get_program(self._session, experiment.program_id) if experiment else None
+        if node.kind == "condition":
+            condition = repo.get_condition(self._session, node.id)
+            if condition is None:
+                return None
+            experiment = repo.get_experiment(self._session, condition.experiment_id)
+            return repo.get_program(self._session, experiment.program_id) if experiment else None
+        return None
+
+    def _pixels_per_degree_for_node(self, node: TreeNode) -> float | None:
+        """Pixels-per-degree for the owning Program's display geometry, or None when the geometry
+        fields aren't all set. Feeds the SchemaForm's degree readouts on pixel-valued fields.
+
+        The three geometry keys are read generically from the Program's ``parameters_json`` (only
+        FPVS declares them; other tasks simply return None -> no readout). The conversion mirrors
+        ``tasks/fpvs/visual_angle.pixels_per_degree`` (kept inline so this generic window doesn't
+        import a task module)."""
+        import math
+
+        program = self._owning_program(node)
+        if program is None:
+            return None
+        params = program.parameters_json or {}
+        width_cm = params.get("screen_width_cm")
+        width_px = params.get("screen_width_px")
+        distance_cm = params.get("screen_distance_cm")
+        if not (width_cm and width_px and distance_cm) or min(width_cm, width_px, distance_cm) <= 0:
+            return None
+        cm_per_degree = 2.0 * distance_cm * math.tan(math.radians(0.5))
+        return (width_px / width_cm) * cm_per_degree
 
     def _show_subject_info(self, subject_id: int) -> None:
         subject = repo.get_subject(self._session, subject_id)
@@ -711,10 +758,13 @@ class MainWindow(QMainWindow):
 
         if node.kind in ("profile", "subjects_group"):
             actions.append(NodeAction("New Subject...", "plus", self._create_subject, variant="primary"))
+            actions.append(NodeAction("Import Subject...", "download", self._import_subject))
         if node.kind in ("profile", "programs_group"):
             actions.append(NodeAction("New Program...", "plus", self._create_program, variant="primary"))
+            actions.append(NodeAction("Import Program...", "download", self._import_program))
         if node.kind == "subject":
             actions.append(NodeAction("Edit Subject...", "edit", lambda: self._edit_subject(node)))
+            actions.append(NodeAction("Export Subject...", "save", lambda: self._export_subject(node)))
             actions.append(
                 NodeAction(
                     "Delete Subject", "trash", lambda: self._delete_subject(node),
@@ -724,11 +774,13 @@ class MainWindow(QMainWindow):
 
         if node.kind == "program":
             actions.append(NodeAction("New Experiment...", "plus", lambda: self._create_experiment(node.id)))
+            actions.append(NodeAction("Import Experiment...", "download", lambda: self._import_experiment(node.id)))
             actions.append(NodeAction("Create Instance...", "box", lambda: self._create_instance(node.id)))
             actions.append(
                 NodeAction("Edit Program...", "edit", lambda: self._edit_program(node), separator_before=True)
             )
             actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_program(node)))
+            actions.append(NodeAction("Export Program...", "save", lambda: self._export_program(node)))
             actions.append(
                 NodeAction(
                     "Delete Program", "trash", lambda: self._delete_program(node),
@@ -740,6 +792,9 @@ class MainWindow(QMainWindow):
             if parent_id is not None:
                 actions.append(
                     NodeAction("New Experiment...", "plus", lambda: self._create_experiment(parent_id), variant="primary")
+                )
+                actions.append(
+                    NodeAction("Import Experiment...", "download", lambda: self._import_experiment(parent_id))
                 )
         elif node.kind == "instances_group":
             parent_id = self._parent_node_id(index)
@@ -768,6 +823,7 @@ class MainWindow(QMainWindow):
                 NodeAction("Edit Experiment...", "edit", lambda: self._edit_experiment(node), separator_before=True)
             )
             actions.append(NodeAction("Duplicate", "copy", lambda: self._duplicate_experiment(node)))
+            actions.append(NodeAction("Export Experiment...", "save", lambda: self._export_experiment(node)))
             actions.append(
                 NodeAction(
                     "Delete Experiment", "trash", lambda: self._delete_experiment(node),
@@ -944,6 +1000,105 @@ class MainWindow(QMainWindow):
             return
         self.refresh(select_node=("program", new.id))
         self.statusBar().showMessage(f'Duplicated as "{new.name}"', 3000)
+
+    # -- import / export actions ----------------------------------------------------------------
+    #
+    # Granular, cross-database transfer of design-time entities (Program/Experiment/Subject) as
+    # self-contained JSON files -- restoring the legacy app's per-entity import/export (see
+    # core/portability.py). Import always creates NEW rows (name-collision-renamed), never
+    # overwrites, so it can't clobber existing work.
+
+    _EXPORT_FILTER = "xpman export (*.json)"
+
+    def _export_document(self, doc: dict, default_name: str, what: str) -> None:
+        """Shared save-to-file half of the three export actions."""
+        path_str, _ = QFileDialog.getSaveFileName(self, f"Export {what}", default_name, self._EXPORT_FILTER)
+        if not path_str:
+            return
+        try:
+            portability.write_export(doc, Path(path_str))
+        except Exception as exc:  # noqa: BLE001 - surface any write failure, never crash the GUI
+            QMessageBox.warning(self, "Export failed", f"Could not export the {what.lower()}:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Exported {what.lower()} to {path_str}", 5000)
+
+    def _export_program(self, node: TreeNode) -> None:
+        program = repo.get_program(self._session, node.id)
+        doc = portability.export_program(self._session, node.id)
+        self._export_document(doc, f"{(program.name if program else 'program')}.json", "Program")
+
+    def _export_experiment(self, node: TreeNode) -> None:
+        experiment = repo.get_experiment(self._session, node.id)
+        doc = portability.export_experiment(self._session, node.id)
+        self._export_document(doc, f"{(experiment.name if experiment else 'experiment')}.json", "Experiment")
+
+    def _export_subject(self, node: TreeNode) -> None:
+        subject = repo.get_subject(self._session, node.id)
+        default = f"{(subject.last_name + '_' + subject.first_name) if subject else 'subject'}.json"
+        doc = portability.export_subject(self._session, node.id)
+        self._export_document(doc, default, "Subject")
+
+    def _read_import_document(self, what: str) -> dict | None:
+        """Shared open-and-validate half of the three import actions; None if cancelled/invalid."""
+        path_str, _ = QFileDialog.getOpenFileName(self, f"Import {what}", "", self._EXPORT_FILTER)
+        if not path_str:
+            return None
+        try:
+            return portability.read_export(Path(path_str))
+        except portability.PortabilityError as exc:
+            QMessageBox.warning(self, "Import failed", f"This file isn't a valid xpman export:\n{exc}")
+            return None
+
+    def _import_program(self) -> None:
+        doc = self._read_import_document("Program")
+        if doc is None:
+            return
+        try:
+            new = portability.import_program(self._session, doc, profile_id=self._profile_id)
+        except portability.PortabilityError as exc:
+            QMessageBox.warning(self, "Import failed", f"Could not import the program:\n{exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not import the program.\n\n{exc}")
+            return
+        if not safe_commit(self._session, self, action="import the program"):
+            return
+        self.refresh(select_node=("program", new.id))
+        self.statusBar().showMessage(f'Imported program as "{new.name}"', 5000)
+
+    def _import_experiment(self, program_id: int) -> None:
+        doc = self._read_import_document("Experiment")
+        if doc is None:
+            return
+        try:
+            new = portability.import_experiment(self._session, doc, program_id=program_id)
+        except portability.PortabilityError as exc:
+            QMessageBox.warning(self, "Import failed", f"Could not import the experiment:\n{exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not import the experiment.\n\n{exc}")
+            return
+        if not safe_commit(self._session, self, action="import the experiment"):
+            return
+        self.refresh(select_node=("experiment", new.id))
+        self.statusBar().showMessage(f'Imported experiment as "{new.name}"', 5000)
+
+    def _import_subject(self) -> None:
+        doc = self._read_import_document("Subject")
+        if doc is None:
+            return
+        try:
+            new = portability.import_subject(self._session, doc, profile_id=self._profile_id)
+        except portability.PortabilityError as exc:
+            QMessageBox.warning(self, "Import failed", f"Could not import the subject:\n{exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - surface any DB failure, never crash the GUI
+            QMessageBox.critical(self, "Database error", f"Could not import the subject.\n\n{exc}")
+            return
+        if not safe_commit(self._session, self, action="import the subject"):
+            return
+        self.refresh(select_node=("subject", new.id))
+        self.statusBar().showMessage(f'Imported subject "{new.first_name} {new.last_name}"', 5000)
 
     def _launch_instance(self, instance_id: int) -> None:
         if self._db_path is None or self._data_dir is None:

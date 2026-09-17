@@ -52,6 +52,7 @@ class FixationParams(BaseModel):
             "usually dead center, but can be offset (e.g. for a go/no-go marker). Recommended: "
             "(0, 0) unless the design places fixation off-center."
         ),
+        json_schema_extra={"unit": "px"},
     )
     size_pix: float = Field(
         default=20.0,
@@ -60,6 +61,7 @@ class FixationParams(BaseModel):
             "What: length of each cross arm / bar in pixels. What for: big enough to fixate, small "
             "enough not to distract. Recommended: ~20 px."
         ),
+        json_schema_extra={"unit": "px"},
     )
     line_width_pix: float = Field(
         default=2.0,
@@ -84,6 +86,7 @@ class FixationParams(BaseModel):
             "the stimulus they flank. What for: sizes the opening between flanking bars. Recommended: "
             "~10 px. Ignored unless shape='bars'."
         ),
+        json_schema_extra={"unit": "px"},
     )
     bar_orientation: Literal["horizontal", "vertical"] = Field(
         default="horizontal",

@@ -57,6 +57,7 @@ from xpman.gui.forms.widgets import (
     FrequencyFieldWidget,
     IntFieldWidget,
     OptionalFieldWidget,
+    PixelDegreeFieldWidget,
     StringFieldWidget,
     StringListFieldWidget,
     _ErrorLabelMixin,
@@ -241,9 +242,15 @@ class SchemaForm(QWidget):
         model_cls: type[BaseModel],
         initial_values: dict | None = None,
         parent: QWidget | None = None,
+        *,
+        pixels_per_degree: float | None = None,
     ) -> None:
         super().__init__(parent)
         self.model_cls = model_cls
+        #: When set (the owning Program declared display geometry), numeric fields tagged
+        #: ``json_schema_extra={"unit": "px"}`` get a live "≈ N.N°" readout (see
+        #: PixelDegreeFieldWidget). Threaded unchanged into every nested/list sub-form.
+        self._pixels_per_degree = pixels_per_degree
         self._field_widgets: dict[str, Any] = {}
         self._nested_forms: dict[str, SchemaForm] = {}
         #: Fields marked ``Field(json_schema_extra={"hidden": True})`` are not rendered (a shape the
@@ -352,7 +359,11 @@ class SchemaForm(QWidget):
             item_label = extra.get("item_label", default_item_label) if isinstance(extra, dict) else default_item_label
             start_index = int(extra.get("item_start_index", 1)) if isinstance(extra, dict) else 1
             widget = _ModelListWidget(
-                item_model, min_items=min_items, item_label=item_label, start_index=start_index
+                item_model,
+                min_items=min_items,
+                item_label=item_label,
+                start_index=start_index,
+                pixels_per_degree=self._pixels_per_degree,
             )
             widget.valueEdited.connect(self.valuesChanged.emit)
             self._field_widgets[name] = widget
@@ -372,6 +383,15 @@ class SchemaForm(QWidget):
             return ("group", group)
 
         widget = self._build_leaf_widget(inner_annotation, field_info, name)
+        # A pixel-valued numeric field gets a live degree readout when the Program declared display
+        # geometry (see PixelDegreeFieldWidget). Applied to the numeric leaf BEFORE any Optional wrap
+        # so an Optional px field (e.g. photodiode position_pix) still shows/hides it with the "Set"
+        # toggle. Display-only -- get/set still round-trip the raw pixel value.
+        unit = extra.get("unit") if isinstance(extra, dict) else None
+        if unit == "px" and self._pixels_per_degree:
+            is_pair = _is_float_pair(inner_annotation)
+            if is_pair or inner_annotation is float or inner_annotation is int:
+                widget = PixelDegreeFieldWidget(widget, self._pixels_per_degree, is_pair=is_pair)
         if is_optional:
             widget = OptionalFieldWidget(widget)
         widget.valueEdited.connect(self.valuesChanged.emit)
@@ -440,7 +460,9 @@ class SchemaForm(QWidget):
         group = CollapsibleGroupBox(title, collapsed=self._default_collapsed(nested_model_cls))
         if description:
             group.setToolTip(description)
-        nested_form = SchemaForm(nested_model_cls, parent=group)
+        nested_form = SchemaForm(
+            nested_model_cls, parent=group, pixels_per_degree=self._pixels_per_degree
+        )
         nested_form.valuesChanged.connect(self.valuesChanged.emit)
         group.content_layout.addWidget(nested_form)
         self._nested_forms[field_name] = nested_form
@@ -593,12 +615,14 @@ class _ModelListWidget(_ErrorLabelMixin):
         min_items: int = 0,
         item_label: str = "Item",
         start_index: int = 1,
+        pixels_per_degree: float | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._item_model_cls = item_model_cls
         self._min_items = min_items
         self._item_label = item_label
+        self._pixels_per_degree = pixels_per_degree
         #: First item's display number -- lets a field continue an external numbering scheme (e.g.
         #: FPVS's additional_streams picks up at "Stream 3", after the main/second stream cards).
         self._start_index = start_index
@@ -618,7 +642,12 @@ class _ModelListWidget(_ErrorLabelMixin):
     def _append(self, initial: dict | None) -> None:
         box = QGroupBox()
         layout = QVBoxLayout(box)
-        form = SchemaForm(self._item_model_cls, initial_values=initial, parent=box)
+        form = SchemaForm(
+            self._item_model_cls,
+            initial_values=initial,
+            parent=box,
+            pixels_per_degree=self._pixels_per_degree,
+        )
         form.valuesChanged.connect(self.valueEdited.emit)
         layout.addWidget(form)
         remove = QPushButton("Remove")

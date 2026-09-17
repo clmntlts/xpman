@@ -128,3 +128,58 @@ def test_clearing_information_stores_empty_dict(qtbot, session, subject):
 
     reloaded = repo.get_subject(session, subject.id)
     assert reloaded.info_json == {}
+
+
+def test_demographics_prefilled_and_editable(qtbot, session, profile):
+    from datetime import date
+
+    from xpman.core.models import Handedness, Sex
+    from xpman.gui.dialogs.subject_create_dialog import selected_enum
+
+    s = repo.create_subject(
+        session,
+        profile_id=profile.id,
+        first_name="Ada",
+        last_name="Lovelace",
+        sex=Sex.FEMALE,
+        handedness=Handedness.LEFT,
+        birth_date=date(1815, 12, 10),
+        subject_code="S07",
+    )
+    session.commit()
+
+    dialog = SubjectEditDialog(session, s.id)
+    qtbot.addWidget(dialog)
+    # Pre-filled from the row (selected_enum reconstructs the member from the stored value string).
+    assert selected_enum(dialog._sex_combo) is Sex.FEMALE
+    assert selected_enum(dialog._handedness_combo) is Handedness.LEFT
+    assert dialog._birth_date_edit.text() == "1815-12-10"
+    assert dialog._subject_code_edit.text() == "S07"
+
+    # Edit: change sex, clear handedness (back to unspecified), change code + date.
+    dialog._sex_combo.setCurrentIndex(dialog._sex_combo.findData(Sex.OTHER.value))
+    dialog._handedness_combo.setCurrentIndex(dialog._handedness_combo.findData(None))
+    dialog._birth_date_edit.setText("")
+    dialog._subject_code_edit.setText("S99")
+    dialog._on_save()
+
+    reloaded = repo.get_subject(session, s.id)
+    assert reloaded.sex is Sex.OTHER
+    assert reloaded.handedness is None
+    assert reloaded.birth_date is None
+    assert reloaded.subject_code == "S99"
+
+
+def test_edit_rejects_malformed_birth_date(qtbot, session, subject, monkeypatch):
+    warnings: list = []
+    monkeypatch.setattr(
+        "xpman.gui.dialogs.subject_edit_dialog.QMessageBox.warning",
+        lambda *a, **k: warnings.append(a),
+    )
+    dialog = SubjectEditDialog(session, subject.id)
+    qtbot.addWidget(dialog)
+    dialog._birth_date_edit.setText("not-a-date")
+    dialog._on_save()
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert warnings

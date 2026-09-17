@@ -14,17 +14,26 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from datetime import date
+
 from xpman.core.models import (
     Block,
     Condition,
     Experiment,
+    Handedness,
     Instance,
     Profile,
     Program,
     Run,
+    Sex,
     Subject,
     Trial,
 )
+
+#: Sentinel distinguishing "leave this field unchanged" (the default) from "set it to NULL" in
+#: ``update_subject`` for the nullable demographic fields -- the same pattern ``update_trial`` uses
+#: for ``condition_id``. Passing ``None`` explicitly clears the field; omitting it leaves it as-is.
+_UNSET = object()
 
 # ---------------------------------------------------------------------------
 # Profile
@@ -77,6 +86,10 @@ def create_subject(
     last_name: str,
     info_json: dict | None = None,
     visible_to_others: bool = False,
+    sex: Sex | None = None,
+    handedness: Handedness | None = None,
+    birth_date: date | None = None,
+    subject_code: str | None = None,
 ) -> Subject:
     subject = Subject(
         profile_id=profile_id,
@@ -84,6 +97,10 @@ def create_subject(
         last_name=last_name,
         info_json=info_json or {},
         visible_to_others=visible_to_others,
+        sex=sex,
+        handedness=handedness,
+        birth_date=birth_date,
+        subject_code=subject_code,
     )
     session.add(subject)
     session.flush()
@@ -109,7 +126,14 @@ def update_subject(
     last_name: str | None = None,
     info_json: dict | None = None,
     visible_to_others: bool | None = None,
+    sex=_UNSET,
+    handedness=_UNSET,
+    birth_date=_UNSET,
+    subject_code=_UNSET,
 ) -> Subject:
+    """Update a Subject. The demographic fields (``sex``/``handedness``/``birth_date``/
+    ``subject_code``) use an ``_UNSET`` sentinel so a caller can explicitly clear one to ``None``
+    (distinct from "leave unchanged"), the same way ``update_trial`` handles ``condition_id``."""
     subject = _require(session, Subject, subject_id)
     if first_name is not None:
         subject.first_name = first_name
@@ -119,6 +143,14 @@ def update_subject(
         subject.info_json = info_json
     if visible_to_others is not None:
         subject.visible_to_others = visible_to_others
+    if sex is not _UNSET:
+        subject.sex = sex
+    if handedness is not _UNSET:
+        subject.handedness = handedness
+    if birth_date is not _UNSET:
+        subject.birth_date = birth_date
+    if subject_code is not _UNSET:
+        subject.subject_code = subject_code
     session.flush()
     return subject
 

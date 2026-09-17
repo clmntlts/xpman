@@ -481,6 +481,71 @@ class OptionalFieldWidget(_ErrorLabelMixin):
         self._inner.clear_invalid()
 
 
+class PixelDegreeFieldWidget(_ErrorLabelMixin):
+    """Wraps a numeric field widget whose value is in **pixels**, adding a live "≈ N.N°" readout
+    beneath it computed from the owning Program's display geometry (pixels-per-degree).
+
+    Display-only: the stored/validated value stays in pixels exactly as before -- the degree text
+    is a comparability aid so a researcher can relate a px choice to a published study's stated
+    degrees (the conversion is the same linear px/deg the "Preview Stimuli" dialog uses; exact only
+    near fixation). Used only when the Program has all three geometry fields set; otherwise the plain
+    numeric widget is shown with no readout. Forwards the full FieldWidget protocol to the inner
+    widget, mirroring :class:`OptionalFieldWidget`.
+    """
+
+    def __init__(
+        self,
+        inner: "FieldWidgetBase",
+        pixels_per_degree: float,
+        *,
+        is_pair: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._inner = inner
+        self._pixels_per_degree = pixels_per_degree
+        self._is_pair = is_pair
+        self._content_layout.addWidget(inner)
+        self._hint = QLabel("")
+        self._hint.setStyleSheet(f"color: {PALETTE['text_muted']}; font-size: 10px;")
+        self._content_layout.addWidget(self._hint)
+        inner.valueEdited.connect(self._on_inner_edited)
+        self._update_hint()
+
+    def _on_inner_edited(self) -> None:
+        self._update_hint()
+        self.valueEdited.emit()
+
+    def _deg_text(self, px: float) -> str:
+        # Same linear conversion as tasks.fpvs.visual_angle.px_to_deg; inlined so this generic widget
+        # doesn't import a task module. pixels_per_degree is validated > 0 by the caller.
+        return f"{px / self._pixels_per_degree:.2f}°"
+
+    def _update_hint(self) -> None:
+        value = self._inner.get_value()
+        try:
+            if self._is_pair:
+                x, y = value
+                self._hint.setText(f"≈ ({self._deg_text(float(x))}, {self._deg_text(float(y))})")
+            else:
+                self._hint.setText(f"≈ {self._deg_text(float(value))}")
+        except (TypeError, ValueError):
+            self._hint.clear()
+
+    def get_value(self) -> Any:
+        return self._inner.get_value()
+
+    def set_value(self, value: Any) -> None:
+        self._inner.set_value(value)
+        self._update_hint()
+
+    def mark_invalid(self, message: str) -> None:
+        self._inner.mark_invalid(message)
+
+    def clear_invalid(self) -> None:
+        self._inner.clear_invalid()
+
+
 # Type alias used for annotations above; avoids a circular/forward-reference issue since
 # OptionalFieldWidget can wrap any of the concrete widget classes defined in this module.
 FieldWidgetBase = QWidget

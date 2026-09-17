@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from xpman.core.instance import get_instance, verify_instance_integrity
 from xpman.core.models import Run, RunStatus
 from xpman.core.repository import get_subject
+from xpman.hardware.priority import realtime_priority
 from xpman.runtime import engine
 from xpman.runtime.logging_sink import EventSink
 
@@ -76,6 +77,9 @@ def launch_run(
     experiment_id: int | None = None,
     on_before_trial: Callable[[int], None] | None = None,
     audio_player: "AudioPlayer | None" = None,
+    elevate_priority: bool = True,
+    expected_refresh_hz: float | None = None,
+    strict_refresh: bool = False,
 ) -> Run:
     """Resolve ``instance_id``/``subject_id``, create a Run, and execute it end to end.
 
@@ -96,6 +100,17 @@ def launch_run(
         on_before_trial: Optional hook called before each trial (the between-trials gate --
             manual keypress / auto delay; see ``runtime/trial_gate.py``). ``None`` runs trials
             back-to-back with no pause.
+        elevate_priority: When ``True`` (default), raise this process's scheduling priority for the
+            duration of the run via ``psychopy.core.rush`` (see ``hardware/priority.py``) so the OS
+            is less likely to preempt the frame-locked loop and jitter a flip/trigger. Best-effort
+            and always dropped again afterwards (even on crash); a no-op when PsychoPy is
+            unavailable or ``XPMAN_DISABLE_RUSH`` is set. Pass ``False`` to opt out (e.g. tests, or a
+            machine where a boosted loop would starve the OS).
+        expected_refresh_hz: The monitor refresh the operator declared as expected (from the
+            selected display mode). Recorded on the Run and cross-checked against the measured rate
+            by the engine (see ``engine._check_refresh_against_expected``). ``None`` skips the check.
+        strict_refresh: When ``True``, a measured-vs-expected refresh mismatch beyond tolerance
+            aborts the run (CRASHED) instead of only logging an advisory event.
 
     Raises:
         LookupError: ``instance_id`` or ``subject_id`` doesn't exist.
@@ -134,6 +149,7 @@ def launch_run(
         pyserial_version=versions["pyserial_version"],
         trigger_backend=trigger_info.get("backend"),
         trigger_port=trigger_info.get("port") or trigger_info.get("address"),
+        expected_refresh_hz=expected_refresh_hz,
         status=RunStatus.ABORTED,  # placeholder until execute_run finalizes it either way
     )
     session.add(run)
@@ -153,19 +169,27 @@ def launch_run(
         time_fn=clock.get_time,
     )
 
-    return engine.execute_run(
-        session,
-        run=run,
-        instance=instance,
-        subject=subject,
-        task=task,
-        window=window,
-        trigger=trigger,
-        clock=clock,
-        event_sink=event_sink,
-        abort_check=abort_check,
-        experiment_id=experiment_id,
-        on_before_trial=on_before_trial,
-        data_dir=data_dir,
-        audio_player=audio_player,
-    )
+    # Raise process priority for the whole run (best-effort; always dropped again on exit, including
+    # crash -- realtime_priority is a context manager with a finally). Wrapping the execute_run call
+    # here rather than inside the engine keeps the boost off the many tests that drive execute_run
+    # directly, while still covering both real entry points (the GUI launch worker and the manual
+    # hardware scripts both go through launch_run).
+    with realtime_priority(enabled=elevate_priority):
+        return engine.execute_run(
+            session,
+            run=run,
+            instance=instance,
+            subject=subject,
+            task=task,
+            window=window,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+            abort_check=abort_check,
+            experiment_id=experiment_id,
+            on_before_trial=on_before_trial,
+            data_dir=data_dir,
+            audio_player=audio_player,
+            expected_refresh_hz=expected_refresh_hz,
+            strict_refresh=strict_refresh,
+        )
