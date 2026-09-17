@@ -153,6 +153,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(e.g. to a few seconds) if your USB trigger box drops early triggers -- opening the port "
         "toggles FTDI DTR/RTS, which can reset the device. Default 0.0.",
     )
+    parser.add_argument(
+        "--expected-refresh-hz",
+        type=float,
+        default=None,
+        help="Refresh rate expected on the stimulus monitor (from the selected display mode). The "
+        "engine cross-checks the measured rate against it and logs a refresh_rate_mismatch event "
+        "beyond a 5%% tolerance. Omit to skip the check.",
+    )
+    parser.add_argument(
+        "--strict-refresh",
+        action="store_true",
+        help="Abort the run (CRASHED) on a measured-vs-expected refresh mismatch instead of only "
+        "logging an advisory. Ignored unless --expected-refresh-hz is given.",
+    )
     return parser.parse_args(argv)
 
 
@@ -285,6 +299,8 @@ def run(
                 experiment_id=args.experiment_id,
                 on_before_trial=gate,
                 audio_player=audio_player,
+                expected_refresh_hz=args.expected_refresh_hz,
+                strict_refresh=args.strict_refresh,
             )
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any failure, setup-time
             # or in-run, must still exit cleanly with a reportable code, not crash this process

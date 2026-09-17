@@ -47,6 +47,7 @@ from xpman.core import repository as repo
 from xpman.core.db import get_engine, get_sessionmaker
 from xpman.core.instance import get_instance
 from xpman.core.models import Result
+from xpman.hardware.display import current_refresh_hz
 from xpman.gui.dialogs.trigger_test_dialog import TriggerTestDialog
 from xpman.gui.trigger_test import build_test_trigger
 from xpman.gui.launch_worker import (
@@ -181,7 +182,33 @@ class LaunchDialog(QDialog):
             "Which monitor to present on, 0-based (0 = primary). Set this to the screen the "
             "subject and photodiode are watching in a multi-monitor rig."
         )
+        self._screen_spin.valueChanged.connect(self._prefill_expected_refresh)
         layout.addWidget(self._screen_spin)
+
+        # Expected monitor refresh: the engine cross-checks the MEASURED rate against this (a wrong OS
+        # display mode -- 60 Hz when 120 was intended, a mirrored display halving the rate -- is
+        # otherwise invisible until analysis). Pre-filled from the selected screen's current mode;
+        # 0 = don't check.
+        layout.addWidget(QLabel("Expected refresh (Hz, 0 = don't check):"))
+        self._expected_refresh_spin = QDoubleSpinBox()
+        self._expected_refresh_spin.setRange(0.0, 1000.0)
+        self._expected_refresh_spin.setDecimals(2)
+        self._expected_refresh_spin.setSuffix(" Hz")
+        self._expected_refresh_spin.setToolTip(
+            "The refresh rate you expect on the stimulus monitor. xpman measures the real rate at "
+            "launch and warns (logs a refresh_rate_mismatch event) if it differs by more than 5%. "
+            "Set 0 to skip the check. Auto-filled from the selected monitor when detectable."
+        )
+        self._expected_refresh_spin.valueChanged.connect(self._on_expected_refresh_changed)
+        layout.addWidget(self._expected_refresh_spin)
+
+        self._strict_refresh_check = QCheckBox("Abort run if refresh doesn't match (strict)")
+        self._strict_refresh_check.setToolTip(
+            "When checked, a refresh mismatch beyond 5% aborts the run instead of only logging a "
+            "warning. Only applies when an expected refresh is set."
+        )
+        layout.addWidget(self._strict_refresh_check)
+        self._prefill_expected_refresh()
 
         # Trigger backend: None (dry run) / Parallel port / Serial (USB). The choice reveals the
         # config relevant to it (parallel address, or serial port + baud) and is persisted across
@@ -410,6 +437,10 @@ class LaunchDialog(QDialog):
         if self._fullscreen_check.isChecked():
             args.append("--fullscreen")
         args += ["--screen", str(self._screen_spin.value())]
+        if self._expected_refresh_spin.value() > 0:
+            args += ["--expected-refresh-hz", str(self._expected_refresh_spin.value())]
+            if self._strict_refresh_check.isChecked():
+                args.append("--strict-refresh")
         args += ["--trial-advance", self._trial_advance_combo.currentData()]
         args += ["--trial-advance-seconds", str(self._trial_advance_seconds.value())]
         if self._show_trial_info_check.isChecked():
@@ -438,6 +469,18 @@ class LaunchDialog(QDialog):
         self._abort_button.show()
         self._status_label.setText("")
 
+    def _prefill_expected_refresh(self) -> None:
+        """Set the expected-refresh field from the currently selected monitor's mode, when
+        detectable. Runs on init and whenever the screen index changes."""
+        detected = current_refresh_hz(self._screen_spin.value())
+        if detected:
+            self._expected_refresh_spin.setValue(round(detected, 2))
+        self._on_expected_refresh_changed()
+
+    def _on_expected_refresh_changed(self) -> None:
+        # Strict only makes sense when an expected rate is actually set.
+        self._strict_refresh_check.setEnabled(self._expected_refresh_spin.value() > 0)
+
     def _on_trial_advance_changed(self) -> None:
         self._trial_advance_seconds.setEnabled(self._trial_advance_combo.currentData() == "auto")
 
@@ -458,6 +501,8 @@ class LaunchDialog(QDialog):
         self._break_every_n_spin.setEnabled(enabled and self._break_enabled_check.isChecked())
         self._break_text_edit.setEnabled(enabled and self._break_enabled_check.isChecked())
         self._screen_spin.setEnabled(enabled)
+        self._expected_refresh_spin.setEnabled(enabled)
+        self._strict_refresh_check.setEnabled(enabled and self._expected_refresh_spin.value() > 0)
         self._fullscreen_check.setEnabled(enabled)
         self._trigger_backend_combo.setEnabled(enabled)
         backend = self._trigger_backend_combo.currentData()

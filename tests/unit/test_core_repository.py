@@ -63,6 +63,78 @@ def test_subject_crud_scoped_to_profile(session):
     assert repo.get_subject(session, s1.id) is None
 
 
+def test_create_subject_stores_structured_demographics(session):
+    from datetime import date
+
+    from xpman.core.models import Handedness, Sex
+
+    profile = repo.create_profile(session, name="P")
+    subject = repo.create_subject(
+        session,
+        profile_id=profile.id,
+        first_name="Ada",
+        last_name="Lovelace",
+        sex=Sex.FEMALE,
+        handedness=Handedness.LEFT,
+        birth_date=date(1815, 12, 10),
+        subject_code="S07",
+    )
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.sex is Sex.FEMALE
+    assert reloaded.handedness is Handedness.LEFT
+    assert reloaded.birth_date == date(1815, 12, 10)
+    assert reloaded.subject_code == "S07"
+
+
+def test_create_subject_demographics_default_to_none(session):
+    profile = repo.create_profile(session, name="P")
+    subject = repo.create_subject(session, profile_id=profile.id, first_name="A", last_name="B")
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.sex is None
+    assert reloaded.handedness is None
+    assert reloaded.birth_date is None
+    assert reloaded.subject_code is None
+
+
+def test_update_subject_demographics_unset_sentinel_vs_explicit_none(session):
+    """A demographic field omitted from update_subject is left unchanged; passing it explicitly as
+    None clears it -- the _UNSET-sentinel contract mirroring update_trial's condition_id."""
+    from datetime import date
+
+    from xpman.core.models import Handedness, Sex
+
+    profile = repo.create_profile(session, name="P")
+    subject = repo.create_subject(
+        session,
+        profile_id=profile.id,
+        first_name="A",
+        last_name="B",
+        sex=Sex.MALE,
+        handedness=Handedness.RIGHT,
+        birth_date=date(1990, 1, 1),
+        subject_code="S01",
+    )
+
+    # Update an unrelated field -> demographics untouched (omitted == leave unchanged).
+    repo.update_subject(session, subject.id, first_name="Aldo")
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.first_name == "Aldo"
+    assert reloaded.sex is Sex.MALE
+    assert reloaded.handedness is Handedness.RIGHT
+    assert reloaded.birth_date == date(1990, 1, 1)
+    assert reloaded.subject_code == "S01"
+
+    # Change some, explicitly clear others (None == clear).
+    repo.update_subject(
+        session, subject.id, sex=Sex.OTHER, handedness=None, birth_date=None, subject_code="S99"
+    )
+    reloaded = repo.get_subject(session, subject.id)
+    assert reloaded.sex is Sex.OTHER
+    assert reloaded.handedness is None
+    assert reloaded.birth_date is None
+    assert reloaded.subject_code == "S99"
+
+
 def test_program_experiment_condition_block_trial_crud(session):
     profile = repo.create_profile(session, name="P")
     program = repo.create_program(

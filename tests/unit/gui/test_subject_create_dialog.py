@@ -104,3 +104,61 @@ def test_create_with_blank_information_stores_empty_dict(qtbot, session, profile
 
     subject = repo.get_subject(session, dialog.created_subject_id)
     assert subject.info_json == {}
+
+
+def test_create_stores_structured_demographics(qtbot, session, profile):
+    from datetime import date
+
+    from xpman.core.models import Handedness, Sex
+    from xpman.gui.dialogs.subject_create_dialog import selected_enum
+
+    dialog = SubjectCreateDialog(session, profile.id)
+    qtbot.addWidget(dialog)
+    dialog._first_name_edit.setText("Ada")
+    dialog._subject_code_edit.setText("S07")
+    dialog._sex_combo.setCurrentIndex(dialog._sex_combo.findData(Sex.FEMALE.value))
+    dialog._handedness_combo.setCurrentIndex(dialog._handedness_combo.findData(Handedness.LEFT.value))
+    dialog._birth_date_edit.setText("1815-12-10")
+    dialog._on_create()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    subject = repo.get_subject(session, dialog.created_subject_id)
+    assert subject.sex is Sex.FEMALE
+    assert subject.handedness is Handedness.LEFT
+    assert subject.birth_date == date(1815, 12, 10)
+    assert subject.subject_code == "S07"
+    # sanity: the helper reads back the same enum the combo holds
+    assert selected_enum(dialog._sex_combo) is Sex.FEMALE
+
+
+def test_create_leaves_demographics_none_when_unset(qtbot, session, profile):
+    dialog = SubjectCreateDialog(session, profile.id)
+    qtbot.addWidget(dialog)
+    dialog._first_name_edit.setText("Ada")
+    dialog._on_create()
+
+    subject = repo.get_subject(session, dialog.created_subject_id)
+    assert subject.sex is None
+    assert subject.handedness is None
+    assert subject.birth_date is None
+    assert subject.subject_code is None
+
+
+def test_create_rejects_a_malformed_birth_date(qtbot, session, profile, monkeypatch):
+    """A non-empty, unparseable birth date must block the save (with a warning) rather than silently
+    storing None -- so a mistyped date is caught, not discarded."""
+    warnings: list = []
+    monkeypatch.setattr(
+        "xpman.gui.dialogs.subject_create_dialog.QMessageBox.warning",
+        lambda *a, **k: warnings.append(a),
+    )
+    dialog = SubjectCreateDialog(session, profile.id)
+    qtbot.addWidget(dialog)
+    dialog._first_name_edit.setText("Ada")
+    dialog._birth_date_edit.setText("10/12/1815")  # not ISO -> rejected
+    dialog._on_create()
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.created_subject_id is None
+    assert warnings  # the warning was shown
+    assert repo.list_subjects(session, profile_id=profile.id) == []

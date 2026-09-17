@@ -125,6 +125,57 @@ def test_export_to_parquet_basic(session, tmp_path):
     assert row1["flips_completed"] == 9
 
 
+def test_export_includes_structured_subject_demographics(session, tmp_path):
+    """The tidy export denormalizes the Subject's structured demographics onto every row as their
+    own columns (subject_code/sex/handedness/birth_date), so a downstream analysis can group by them
+    without a separate join."""
+    from datetime import date
+
+    from xpman.core.models import Handedness, Sex
+
+    fixture = _build_fixture(session)
+    repo.update_subject(
+        session,
+        fixture["subject"].id,
+        sex=Sex.FEMALE,
+        handedness=Handedness.LEFT,
+        birth_date=date(1815, 12, 10),
+        subject_code="S07",
+    )
+    session.commit()
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    session.add(
+        Result(
+            run_id=run.id,
+            trial_index=0,
+            condition_id=fixture["condition"].id,
+            outcome_summary_json={"flips_completed": 10},
+            events_file_path="C:/runs/1/events.parquet",
+        )
+    )
+    session.commit()
+
+    rows = get_run_results_rows(session, run.id)
+    assert rows[0]["subject_code"] == "S07"
+    assert rows[0]["subject_sex"] == "female"
+    assert rows[0]["subject_handedness"] == "left"
+    assert rows[0]["subject_birth_date"] == "1815-12-10"
+
+
+def test_export_demographics_are_none_when_unspecified(session, tmp_path):
+    fixture = _build_fixture(session)  # subject built with no demographics
+    run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)
+    session.add(
+        Result(run_id=run.id, trial_index=0, condition_id=fixture["condition"].id, outcome_summary_json={})
+    )
+    session.commit()
+    rows = get_run_results_rows(session, run.id)
+    assert rows[0]["subject_code"] is None
+    assert rows[0]["subject_sex"] is None
+    assert rows[0]["subject_handedness"] is None
+    assert rows[0]["subject_birth_date"] is None
+
+
 def test_export_to_csv_matches_parquet_data(session, tmp_path):
     fixture = _build_fixture(session)
     run = _insert_run(session, fixture["instance"].id, fixture["subject"].id)

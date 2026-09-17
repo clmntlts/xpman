@@ -253,13 +253,13 @@ def test_min_onset_interval_multi_stream_is_one_refresh_interval():
 
 def test_min_onset_interval_crosses_the_biosemi_pulse_only_at_high_refresh():
     """The whole point of the check: at 60 Hz even the tightest (multi-stream) spacing (~16.7 ms)
-    clears the fixed 8 ms BioSemi pulse, but at 240 Hz it (~4.2 ms) does NOT -- so onsets would
+    clears the fixed ~8 ms hardware pulse, but at 240 Hz it (~4.2 ms) does NOT -- so onsets would
     merge and a trigger would be lost only on a high-refresh monitor."""
     from xpman.hardware.trigger import min_distinct_onset_interval_seconds
-    from xpman.hardware.trigger_serial import BIOSEMI_HARDWARE_PULSE_SECONDS
+    from xpman.hardware.trigger_serial import MMBT_S_NOMINAL_PULSE_SECONDS
 
-    assert min_distinct_onset_interval_seconds(60.0, 2, 6.0) > BIOSEMI_HARDWARE_PULSE_SECONDS
-    assert min_distinct_onset_interval_seconds(240.0, 2, 6.0) < BIOSEMI_HARDWARE_PULSE_SECONDS
+    assert min_distinct_onset_interval_seconds(60.0, 2, 6.0) > MMBT_S_NOMINAL_PULSE_SECONDS
+    assert min_distinct_onset_interval_seconds(240.0, 2, 6.0) < MMBT_S_NOMINAL_PULSE_SECONDS
 
 
 def test_min_onset_interval_rejects_bad_inputs():

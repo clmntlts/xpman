@@ -216,3 +216,69 @@ def test_experiment_id_filter_skips_other_experiments_null_condition():
         ]
     )
     assert count_trials(program, experiment_id=1) == 1
+
+
+# ---------------------------------------------------------------------------
+# _check_refresh_against_expected (1A: verify measured vs expected refresh)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from xpman.runtime.engine import (  # noqa: E402
+    REFRESH_MISMATCH_TOLERANCE_FRACTION,
+    _check_refresh_against_expected,
+)
+
+
+class _FakeSink:
+    def __init__(self):
+        self.events = []
+
+    def log(self, event_type, payload=None):
+        self.events.append((event_type, payload or {}))
+
+
+def _run(measured, ok=True):
+    return SimpleNamespace(measured_refresh_hz=measured, refresh_measured_successfully=ok)
+
+
+def test_refresh_check_noop_when_no_expected():
+    sink = _FakeSink()
+    _check_refresh_against_expected(_run(59.94), None, False, sink)
+    assert sink.events == []
+
+
+def test_refresh_check_noop_when_within_tolerance():
+    """59.94 vs 60 is well within tolerance -- no mismatch event."""
+    sink = _FakeSink()
+    _check_refresh_against_expected(_run(59.94), 60.0, False, sink)
+    assert sink.events == []
+
+
+def test_refresh_check_logs_mismatch_beyond_tolerance():
+    sink = _FakeSink()
+    _check_refresh_against_expected(_run(60.0), 120.0, strict_refresh=False, event_sink=sink)
+    assert len(sink.events) == 1
+    event_type, payload = sink.events[0]
+    assert event_type == "refresh_rate_mismatch"
+    assert payload["expected_hz"] == 120.0
+    assert payload["measured_hz"] == 60.0
+    assert payload["relative_error"] > REFRESH_MISMATCH_TOLERANCE_FRACTION
+
+
+def test_refresh_check_strict_raises_on_mismatch():
+    sink = _FakeSink()
+    with pytest.raises(RuntimeError, match="strict refresh"):
+        _check_refresh_against_expected(_run(60.0), 120.0, strict_refresh=True, event_sink=sink)
+    # The advisory event is still logged before raising.
+    assert sink.events[0][0] == "refresh_rate_mismatch"
+
+
+def test_refresh_check_skipped_when_not_measured():
+    """A fallback/unmeasured refresh has nothing trustworthy to compare -- no event, no raise even
+    under strict (the unmeasurable case is handled fail-loud at prepare time instead)."""
+    sink = _FakeSink()
+    _check_refresh_against_expected(_run(60.0, ok=False), 120.0, strict_refresh=True, event_sink=sink)
+    assert sink.events == []
+    _check_refresh_against_expected(_run(None, ok=True), 120.0, strict_refresh=True, event_sink=sink)
+    assert sink.events == []

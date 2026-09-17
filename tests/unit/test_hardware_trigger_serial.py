@@ -170,9 +170,26 @@ def test_close_is_idempotent_and_guards_double_close():
         ctx.mock_serial_instance.close.assert_called_once_with()
 
 
-def test_describe_reports_serial_backend_port_and_baud():
+def test_describe_reports_serial_backend_port_baud_and_pulse_width():
     with _MockedSerial(port="COM4", baudrate=9600) as ctx:
-        assert ctx.trigger.describe() == {"backend": "serial", "port": "COM4", "baud": 9600}
+        assert ctx.trigger.describe() == {
+            "backend": "serial",
+            "port": "COM4",
+            "baud": 9600,
+            "pulse_width_s": 0.008,  # nominal fallback under auto_pulse, no measured value passed
+        }
+
+
+def test_describe_reports_the_measured_pulse_width_when_given():
+    """The provenance summary must record the pulse width actually assumed -- the measured value the
+    lab passed, not just the nominal fallback -- so a Run's trigger provenance is accurate."""
+    with _MockedSerial(port="COM4", pulse_width_seconds=0.0088) as ctx:
+        assert ctx.trigger.describe()["pulse_width_s"] == 0.0088
+
+
+def test_describe_pulse_width_is_none_for_a_latching_device():
+    with _MockedSerial(port="COM4", auto_pulse=False, pulse_width_seconds=0.0088) as ctx:
+        assert ctx.trigger.describe()["pulse_width_s"] is None
 
 
 def test_failed_open_raises_with_port_name_in_message():
@@ -240,19 +257,45 @@ def test_init_settle_seconds_negative_raises():
             SerialTrigger(port="COM4", init_settle_seconds=-1.0)
 
 
-def test_pulse_width_seconds_is_the_fixed_8ms_when_auto_pulse():
-    from xpman.hardware.trigger_serial import BIOSEMI_HARDWARE_PULSE_SECONDS
+def test_pulse_width_seconds_falls_back_to_nominal_when_auto_pulse():
+    from xpman.hardware.trigger_serial import MMBT_S_NOMINAL_PULSE_SECONDS
 
     with _MockedSerial(port="COM4", auto_pulse=True) as ctx:
-        assert ctx.trigger.pulse_width_seconds() == BIOSEMI_HARDWARE_PULSE_SECONDS
-        assert BIOSEMI_HARDWARE_PULSE_SECONDS == 0.008
+        assert ctx.trigger.pulse_width_seconds() == MMBT_S_NOMINAL_PULSE_SECONDS
+        assert MMBT_S_NOMINAL_PULSE_SECONDS == 0.008
+
+
+def test_pulse_width_seconds_uses_the_measured_value_when_given():
+    """The real fix: the fixed hardware width is a per-box MEASURED property (the lab rig's MMBT-S
+    measured ~8.8 ms), so a caller can pass it and have the onset-cadence safeguard + provenance
+    reflect the real pulse rather than the nominal 8 ms placeholder."""
+    with _MockedSerial(port="COM4", auto_pulse=True, pulse_width_seconds=0.0088) as ctx:
+        assert ctx.trigger.pulse_width_seconds() == 0.0088
 
 
 def test_pulse_width_seconds_is_none_when_not_auto_pulse():
     """A latching device is frame-driven (set on the onset flip, clear on the next), like the
-    parallel path -- no fixed hardware pulse width, so nothing to report."""
-    with _MockedSerial(port="COM4", auto_pulse=False) as ctx:
+    parallel path -- no fixed hardware pulse width, so nothing to report (even if a width was passed)."""
+    with _MockedSerial(port="COM4", auto_pulse=False, pulse_width_seconds=0.0088) as ctx:
         assert ctx.trigger.pulse_width_seconds() is None
+
+
+@pytest.mark.parametrize("bad_width", [0.0, -0.001])
+def test_pulse_width_seconds_non_positive_raises(bad_width):
+    with patch("serial.Serial", MagicMock()):
+        with pytest.raises(ValueError, match="pulse_width_seconds"):
+            SerialTrigger(port="COM4", pulse_width_seconds=bad_width)
+
+
+def test_biosemi_constant_alias_still_importable_and_equal():
+    """Backward compatibility: the constant was renamed (BioSemi NS7830 -> MMBT-S), but the old name
+    stays importable as an alias so any external reference keeps working."""
+    from xpman.hardware.trigger_serial import (
+        BIOSEMI_HARDWARE_PULSE_SECONDS,
+        MMBT_S_NOMINAL_PULSE_SECONDS,
+    )
+
+    assert BIOSEMI_HARDWARE_PULSE_SECONDS == MMBT_S_NOMINAL_PULSE_SECONDS
 
 
 def test_all_255_codes_write_the_exact_single_byte():

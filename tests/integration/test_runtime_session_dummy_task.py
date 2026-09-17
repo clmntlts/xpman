@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -722,3 +722,119 @@ def test_on_before_run_default_is_noop_for_tasks_that_dont_override(
             data_dir=tmp_path,
         )
     assert run.status == RunStatus.COMPLETED
+
+
+def test_launch_run_elevates_process_priority_by_default(session, registry, mock_window, tmp_path):
+    """launch_run raises (and then drops) process priority around the run via psychopy.core.rush,
+    so the OS is less likely to preempt the frame-locked loop. rush is patched so no real priority
+    is touched; the run must still complete and the priority must be dropped again afterwards."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+
+    with patch("psychopy.core.rush", return_value=True) as mock_rush, patch(
+        "psychopy.visual.Rect", return_value=MagicMock(name="Rect")
+    ):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+        )
+
+    assert run.status == RunStatus.COMPLETED
+    # Boosted on the way in, dropped on the way out.
+    assert mock_rush.call_args_list == [call(True), call(False)]
+
+
+def test_launch_run_does_not_elevate_when_opted_out(session, registry, mock_window, tmp_path):
+    """elevate_priority=False keeps the run at normal priority -- rush is never called."""
+    instance_id, subject_id = _build_dummy_program_instance(session)
+
+    with patch("psychopy.core.rush") as mock_rush, patch(
+        "psychopy.visual.Rect", return_value=MagicMock(name="Rect")
+    ):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+            elevate_priority=False,
+        )
+
+    assert run.status == RunStatus.COMPLETED
+    mock_rush.assert_not_called()
+
+
+def test_expected_refresh_recorded_and_mismatch_logged(session, registry, mock_window, tmp_path):
+    """launch_run records the operator's expected refresh on the Run and, when the measured rate
+    differs beyond tolerance, logs a refresh_rate_mismatch event (advisory: the run still completes)."""
+    import csv as _csv
+    import json as _json
+
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    dummy = registry.get("dummy")
+
+    with patch.object(
+        dummy,
+        "run_metadata",
+        return_value={"measured_refresh_hz": 60.0, "refresh_measured_successfully": True},
+    ), patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        run = launch_run(
+            session,
+            instance_id=instance_id,
+            subject_id=subject_id,
+            registry=registry,
+            window=mock_window,
+            trigger=NullTrigger(reset_after=0.0),
+            clock=Clock(),
+            data_dir=tmp_path,
+            expected_refresh_hz=120.0,  # deliberately mismatched vs the 60 Hz "measured"
+        )
+
+    assert run.status == RunStatus.COMPLETED  # advisory, not blocking
+    assert run.expected_refresh_hz == 120.0
+    assert run.measured_refresh_hz == pytest.approx(60.0)
+
+    run_dir = tmp_path / str(instance_id) / str(subject_id) / str(run.id)
+    with (run_dir / "events.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    mismatch = [r for r in rows if r["event_type"] == "refresh_rate_mismatch"]
+    assert len(mismatch) == 1
+    payload = _json.loads(mismatch[0]["payload_json"])
+    assert payload["expected_hz"] == 120.0
+    assert payload["measured_hz"] == 60.0
+
+
+def test_strict_refresh_aborts_the_run_on_mismatch(session, registry, mock_window, tmp_path):
+    instance_id, subject_id = _build_dummy_program_instance(session)
+    dummy = registry.get("dummy")
+
+    with patch.object(
+        dummy,
+        "run_metadata",
+        return_value={"measured_refresh_hz": 60.0, "refresh_measured_successfully": True},
+    ), patch("psychopy.visual.Rect", return_value=MagicMock(name="Rect")):
+        with pytest.raises(RuntimeError, match="strict refresh"):
+            launch_run(
+                session,
+                instance_id=instance_id,
+                subject_id=subject_id,
+                registry=registry,
+                window=mock_window,
+                trigger=NullTrigger(reset_after=0.0),
+                clock=Clock(),
+                data_dir=tmp_path,
+                expected_refresh_hz=120.0,
+                strict_refresh=True,
+            )
+
+    run = session.query(Run).filter(Run.instance_id == instance_id).one()
+    assert run.status == RunStatus.CRASHED
+    assert run.expected_refresh_hz == 120.0

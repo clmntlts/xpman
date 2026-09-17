@@ -243,6 +243,7 @@ class PositionJitterParams(BaseModel):
             "only). What for: sets how far left/right an image may jitter. Recommended: a modest, "
             "symmetric span like (-50, 50); min must be <= max."
         ),
+        json_schema_extra={"unit": "px"},
     )
     y_range_pix: tuple[float, float] = Field(
         default=(0.0, 0.0),
@@ -251,6 +252,7 @@ class PositionJitterParams(BaseModel):
             "only). What for: sets how far up/down an image may jitter. Recommended: a modest, "
             "symmetric span like (-50, 50); min must be <= max."
         ),
+        json_schema_extra={"unit": "px"},
     )
     radius_pix: float = Field(
         default=0.0,
@@ -260,6 +262,7 @@ class PositionJitterParams(BaseModel):
             "sampling). What for: sets the radial spread of positions. Recommended: keep it well "
             "below your inter-stream separation and clear of the photodiode patch."
         ),
+        json_schema_extra={"unit": "px"},
     )
     per: Literal["stimulus", "trial"] = Field(
         default="stimulus",
@@ -544,6 +547,7 @@ class StreamParams(BaseModel):
             "Recommended: give each active stream a distinct position (e.g. (-200,0) and (200,0) for "
             "left/right); active-stream positions must be pairwise-distinct."
         ),
+        json_schema_extra={"unit": "px"},
     )
     modulation: ModulationParams = Field(
         default_factory=ModulationParams,

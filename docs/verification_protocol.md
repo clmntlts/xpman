@@ -74,6 +74,22 @@ and the same analyzer simultaneously taps the parallel-port trigger lines. Use t
 AUX light sensor is available, or to cross-check method A. Everything in "What to measure" applies;
 here the two traces come from the analyzer rather than from two channels of one BDF.
 
+## Before every session — two operational watch-outs
+
+1. **Set the monitor's display mode in the OS first.** xpman **measures** the refresh rate and
+   aborts loudly if it can't (it never fabricates 60 Hz), and the Launch dialog's **Expected
+   refresh (Hz)** field cross-checks the measured rate (logging a `refresh_rate_mismatch` event, or
+   aborting under the strict toggle) — but xpman does **not force** the resolution/refresh. Put the
+   stimulus monitor in the intended mode (resolution + refresh, fullscreen, no mirrored/duplicated
+   display) in Windows display settings before launching, and set the Expected refresh field so a
+   wrong mode is caught rather than silently recorded.
+2. **Spatial parameters are in pixels.** Fixation/stream/photodiode positions, fixation size, and
+   jitter ranges are authored and stored in **pixels**. If a Program sets its display geometry
+   (`screen_width_cm`/`screen_width_px`/`screen_distance_cm`), the parameter form shows a live
+   "≈ N.N°" readout next to each px field for comparability against a published study — but the
+   stored value is still pixels. To match a study's stated degrees on a different monitor, convert
+   manually (the readout, and the Preview Stimuli dialog, give the factor).
+
 ## How to launch the test
 
 Don't build this through the GUI — use the two purpose-built scripts in

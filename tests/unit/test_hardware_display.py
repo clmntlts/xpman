@@ -113,3 +113,20 @@ def test_make_window_returns_constructed_window():
     with patch("psychopy.visual.Window", mock_window_cls):
         result = make_window()
     assert result is sentinel
+
+
+def test_current_refresh_hz_out_of_range_returns_none():
+    """An out-of-range screen index must return None (used to pre-fill the launch dialog's expected
+    refresh; a missing screen just leaves the field for the operator)."""
+    from xpman.hardware.display import current_refresh_hz
+
+    assert current_refresh_hz(9999) is None
+
+
+def test_current_refresh_hz_primary_is_none_or_positive_float():
+    """For the primary screen it returns either None (headless/undetectable) or a positive float --
+    never raises."""
+    from xpman.hardware.display import current_refresh_hz
+
+    value = current_refresh_hz(0)
+    assert value is None or (isinstance(value, float) and value > 0)

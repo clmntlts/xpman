@@ -81,6 +81,23 @@ def list_monitors() -> list[MonitorInfo]:
     return monitors
 
 
+def current_refresh_hz(screen: int = 0) -> float | None:
+    """Best-effort current refresh rate (Hz) of the given screen index, via ``pyglet``.
+
+    Used to pre-fill the launch dialog's "expected refresh" field from the monitor the operator
+    picked. Returns ``None`` when it can't be determined (some platforms/drivers report no rate, or
+    the index is out of range) -- the caller then just leaves the field for the operator to set."""
+    try:
+        screens = pyglet.canvas.get_display().get_screens()
+        if not 0 <= screen < len(screens):
+            return None
+        mode = screens[screen].get_mode()
+        rate = getattr(mode, "rate", None) if mode is not None else None
+        return float(rate) if rate else None
+    except Exception:  # noqa: BLE001 - purely a convenience pre-fill; never fail the dialog over it
+        return None
+
+
 def make_window(
     *,
     size: tuple[int, int] = (1024, 768),

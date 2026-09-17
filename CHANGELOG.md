@@ -61,6 +61,36 @@ defaults to silent, so existing Instances and runs are unaffected.
   Profiles are shared at `~/.xpman/audio_profiles` across the calibration writer and both gates.
 - **Manual rig runner** for the task: `tests/manual_hardware/run_auditory_fpas_task_manual.py`
   (`--audio-backend {none,ptb}`), defaults reproducing the Barbero 2021 voice paradigm.
+- **Structured subject demographics** (Java-XPMan parity). Subjects now carry optional, typed
+  `sex`, `handedness`, `birth_date`, and `subject_code` columns alongside the existing free-text
+  notes — filterable in SQL and emitted as their own columns in the tidy results export
+  (`subject_code`/`subject_sex`/`subject_handedness`/`subject_birth_date`), instead of only living
+  as free text inside `info_json`. All nullable/additive (NULL == "unspecified"); the create/edit
+  Subject dialogs gained the corresponding fields (a malformed birth date is rejected, not silently
+  dropped). Alembic migration `e5f6a7b8c9d0`.
+- **Import / export of design-time entities** (Java-XPMan parity). A Program, an Experiment, or a
+  Subject can be exported to a self-contained JSON file and imported on another machine — restoring
+  the legacy per-entity sharing that xpman previously only offered as *Duplicate within one database*
+  (the sole prior way to move anything was copying the whole `xpman.db`). New `core/portability.py`
+  (`export_*`/`import_*`, versioned envelope, Trial→Condition reference remapping like `clone.py`);
+  import always creates new rows, name-collision-renamed, so it can never overwrite existing work.
+  Wired into the tree's context menu: **Export** on Program/Experiment/Subject nodes, **Import** on
+  the Profile / Programs / Experiments / Subjects targets. Scope (v1): the editable design tree only
+  — Instances, Runs, and Results (frozen artifacts + on-disk event files) are not included.
+- **Refresh-rate cross-check at launch.** The Launch dialog gained an **"Expected refresh (Hz)"**
+  field (auto-filled from the selected monitor's current mode; 0 = skip) plus a **strict** toggle.
+  The engine compares the *measured* rate against it and logs a `refresh_rate_mismatch` event beyond
+  a 5% tolerance — advisory by default, aborting the run when strict — so a wrong OS display mode
+  (60 Hz when 120 was intended, a mirrored display halving the rate) is caught instead of silently
+  corrupting the frame-counted timing. The expected rate is recorded on the `Run` (new nullable
+  `expected_refresh_hz` column, Alembic `f6a7b8c9d0e1`). Note: xpman still **measures** the mode
+  rather than **forcing** it — set the monitor's resolution/refresh in the OS beforehand.
+- **Degrees-of-visual-angle readouts in the parameter form.** When a Program declares display
+  geometry (`screen_width_cm`/`screen_width_px`/`screen_distance_cm`), every pixel-valued spatial
+  field (stream/fixation/photodiode positions, fixation size, jitter ranges) shows a live "≈ N.N°"
+  readout beside its spinbox, so a px choice can be related to a published study's stated degrees.
+  **Display-only** — values are still authored and stored in pixels (degrees are a comparability aid,
+  not an input unit); no geometry set means no readout, exactly as before.
 
 ### Changed
 
@@ -69,6 +99,28 @@ defaults to silent, so existing Instances and runs are unaffected.
   nested models now says what the parameter is, what it is for, and a recommended/typical value
   (with paper references where they exist, e.g. Barbero et al. 2021 token duration ~250 ms, base/5
   oddball ratio, ~2 s sequence fades). No behaviour or default changes — description text only.
+- **Real-time process priority around a run** (parity with the legacy app's realtime mode, but the
+  softer/safer form). `launch_run` now raises this process's scheduling priority for the duration of
+  a run via `psychopy.core.rush` (new `hardware/priority.py`, `realtime_priority` context manager) so
+  the OS is less likely to preempt the frame-locked loop and jitter a flip/trigger, and always drops
+  it again afterwards (including on crash). Best-effort: a no-op when PsychoPy is unavailable or the
+  OS refuses it, and disableable per launch (`elevate_priority=False`) or globally via the
+  `XPMAN_DISABLE_RUSH` environment variable. Unlike the legacy `REALTIME_PRIORITY_CLASS` mode it does
+  not touch other processes. Whether it measurably reduces jitter on a given rig is a lab measurement
+  (`docs/verification_protocol.md`); the code is correct either way.
+- **Serial trigger pulse width is now measurable/configurable.** `SerialTrigger` gained a
+  `pulse_width_seconds` constructor argument so the lab can pass the value **measured on its own box's
+  scope** (the rig's MMBT-S measured ~8.8 ms) instead of the nominal 8 ms placeholder — the value
+  feeds the FPVS onset-cadence safeguard and is now recorded in run provenance (`describe()` gained a
+  `pulse_width_s` key). The pulse itself is hardware-timed and unaffected; only the safeguard
+  threshold and what is logged change. The module constant `BIOSEMI_HARDWARE_PULSE_SECONDS` was
+  renamed `MMBT_S_NOMINAL_PULSE_SECONDS` (old name kept as a backward-compatible alias).
+
+### Documentation
+
+- Corrected `hardware/trigger_serial.py` to document the lab's actual trigger box, the **NEUROSPEC
+  MMBT-S** (9600 baud, Pulse Mode), rather than the earlier BioSemi NS7830 target the port was first
+  written against; the wire protocol is identical, so the same backend serves both.
 
 ## [0.6.0] — 2026-09-08
 

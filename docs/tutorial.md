@@ -262,24 +262,33 @@ Right-click any node for the actions valid there:
 
 | Node | Right-click actions |
 |---|---|
-| Profile (root) | New Subject..., New Program... |
-| Subject | Edit Subject..., Delete Subject |
-| Program | New Experiment..., Create Instance..., Edit Program..., Duplicate, Delete Program |
-| Experiment | New Condition..., New Block..., Edit Experiment..., Duplicate, Delete Experiment |
+| Profile (root) | New Subject..., Import Subject..., New Program..., Import Program... |
+| Subject | Edit Subject..., Export Subject..., Delete Subject |
+| Program | New Experiment..., Import Experiment..., Create Instance..., Edit Program..., Duplicate, Export Program..., Delete Program |
+| Experiment | New Condition..., New Block..., Edit Experiment..., Duplicate, Export Experiment..., Delete Experiment |
 | Condition | Edit Condition..., Check Triggers..., Preview Stimuli..., Duplicate, Delete Condition |
 | Block | Manage Trials..., Edit Block..., Duplicate, Move Up/Down, Delete Block |
 | Trial | Move Up/Down, Delete Trial |
 | Instance | Launch..., Delete Instance |
 | Run | *(no actions — view only)* |
 
-Group headers ("Subjects (3)", "Programs (2)", etc.) offer the matching "New ..." action too,
-so you don't have to right-click the parent node itself.
+Group headers ("Subjects (3)", "Programs (2)", etc.) offer the matching "New ..." and
+"Import ..." actions too, so you don't have to right-click the parent node itself.
 
 **Duplicate** copies the entity — including all its parameters — as `"<name> (copy)"`, and
 selects the copy. Duplicating an Experiment or Program is a *deep* copy: all Conditions,
 Blocks, and Trials come along (Trials pointing at the copied Conditions, not the originals).
 This is the fast way to build a variant that differs by one parameter: Duplicate, rename, tweak.
 Instances and Runs are never copied — they're the original's frozen launch history.
+
+**Export / Import** move a Subject, Program, or Experiment *between machines* (Duplicate only
+copies within the current database). **Export...** writes a self-contained `.json` file; on
+another install, **Import...** on the matching target (Profile for a Subject or Program, a
+Program for an Experiment) recreates it. Import always adds a new entity — never overwrites — and
+renames it `"<name> (copy)"` if the name already exists, so importing is always safe. Only the
+editable design tree travels; Instances, Runs, and collected Results stay behind (use the results
+exports in §4.7 for data). A Program or Experiment brings its full Condition/Block/Trial tree,
+with Trial→Condition links preserved.
 
 The tree keeps its expansion and selection across every action — creating, editing,
 duplicating, or deleting something never collapses the tree, and newly created entities are
@@ -327,9 +336,18 @@ Single-click (not right-click) a node to see its details on the right:
 Right-click **Profile** (or "Subjects") → **New Subject...**
 
 - **First name**, **Last name** — text fields. At least one of the two is required.
-- **Information** — an optional free-text notes field (handedness, session notes, etc.), shown
-  read-only on the Subject's detail panel afterward.
+- **Subject code** — an optional lab participant identifier (e.g. `S07`), distinct from the
+  internal database id.
+- **Sex**, **Handedness** — optional drop-downs (leave on "— (unspecified)" to record nothing).
+- **Birth date** — optional, `YYYY-MM-DD`. A malformed date is rejected rather than silently
+  ignored.
+- **Information** — an optional free-text notes field (session notes, etc.), shown read-only on
+  the Subject's detail panel afterward.
 - **Ok** is disabled until you've entered at least one name.
+
+The structured fields (subject code, sex, handedness, birth date) are stored as their own
+columns, so they come out as dedicated columns in the results export (§4.7) — handy for grouping
+or matching participants by demographics — rather than being buried in the free-text notes.
 
 ### 4.6 Creating a Program
 
