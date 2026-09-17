@@ -12,10 +12,22 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
-Adds a second stimulation modality: **auditory FPAS** (Fast Periodic Auditory Stimulation), the
-sample-clock analogue of the visual FPVS task, plus the per-machine audio-timing calibration that
-gates it. No change to the visual tasks; the shared runtime gained an optional audio output that
-defaults to silent, so existing Instances and runs are unaffected.
+## [1.0.0] — 2026-09-17
+
+**First stable, usable release.** xpman now covers the full experimenter workflow end-to-end —
+build → freeze an Instance → launch → analyse — for both the visual **FPVS** and auditory **FPAS**
+paradigms, with the legacy Java XPMan's core capabilities reproduced (and the core FPVS timing
+hardware-verified on a real BioSemi rig, 2026-09-07). This release also closes the remaining
+Java-parity gaps below (structured subject demographics, per-entity import/export) and adds
+display/timing safeguards (configurable serial pulse width, run-time process priority, an
+expected-refresh cross-check, and degrees-of-visual-angle readouts). The advanced FPVS scenarios
+(parallel backend, dual streams, sweep, position/size variation) are built and unit-tested but not
+yet individually hardware-measured — see the banner above and `docs/verification_protocol.md`.
+
+This release also adds a second stimulation modality: **auditory FPAS** (Fast Periodic Auditory
+Stimulation), the sample-clock analogue of the visual FPVS task, plus the per-machine audio-timing
+calibration that gates it. No change to the visual tasks; the shared runtime gained an optional
+audio output that defaults to silent, so existing Instances and runs are unaffected.
 
 ### Added
 
