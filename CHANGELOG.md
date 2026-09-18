@@ -12,6 +12,14 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/install_parallel_port_driver.ps1` no longer appears to "do nothing". It now **self-elevates**
+  (UAC prompt) instead of silently refusing when not started as Administrator, **keeps the window open**
+  at the end so the result or error is readable after a double-click (previously it flashed shut),
+  **creates the `scripts/vendor/` folder**, and prints step-by-step guidance when `inpoutx64.dll` is
+  missing — the common cause of a parallel port that never receives triggers on a fresh Windows 11 box.
+
 ## [1.0.0] — 2026-09-17
 
 **First stable, usable release.** xpman now covers the full experimenter workflow end-to-end —
