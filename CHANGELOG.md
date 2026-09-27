@@ -12,6 +12,10 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-09-27
+
+Packaging/setup fixes for the parallel-port trigger path. No behavioural change to experiments.
+
 ### Fixed
 
 - `scripts/install_parallel_port_driver.ps1` no longer appears to "do nothing". It now **self-elevates**
@@ -19,6 +23,15 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
   at the end so the result or error is readable after a double-click (previously it flashed shut),
   **creates the `scripts/vendor/` folder**, and prints step-by-step guidance when `inpoutx64.dll` is
   missing — the common cause of a parallel port that never receives triggers on a fresh Windows 11 box.
+
+### Changed
+
+- **Bundle the InpOut parallel-port driver** (`inpoutx64.dll` + `inpout32.dll`) in `scripts/vendor/`,
+  so the parallel-port trigger path works clone-and-run instead of requiring a manual download from
+  highrez.co.uk. The bundled binaries are byte-for-byte identical to the official release and to the
+  copy shipped with the legacy Java "XP Manager" (SHA-256 recorded in `scripts/vendor/README.md`);
+  MIT-licensed, with the license included. Not using a parallel port? The Serial (USB) backend needs
+  none of this.
 
 ## [1.0.0] — 2026-09-17
 
