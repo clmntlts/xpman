@@ -44,7 +44,3 @@ src/xpman/verification/assets/plotly.min.js
 
 # Agent worktrees (transient, isolated copies)
 .claude/worktrees/
-
-# Third-party driver binaries placed in scripts/vendor/ (see scripts/vendor/README.md) --
-# downloaded per-machine, never distributed with xpman.
-scripts/vendor/*.dll
