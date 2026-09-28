@@ -19,6 +19,10 @@ packaged build that passes every automated check yet crashes for every real user
    (parallel backend, dual streams, sweep, position/size variation) are not — update the banner's
    scope when a new scenario is measured (`docs/verification_protocol.md`), rather than dropping it.
    Follow the existing entries' `### Added` / `### Changed` / `### Fixed` / `### Documentation` structure.
+   **If any user-facing behaviour changed** (a screen, button, field, label, workflow, status,
+   error message, or parameter), update the user docs in the *same* change — `docs/tutorial.md` and
+   `docs/GUIDE_UTILISATEUR.md` — and regenerate the guide's screenshots:
+   `.venv\Scripts\python.exe scripts\make_guide_screenshots.py` (headless; writes `docs\images\`).
 3. **Full test suite + lint**, from a clean venv (see gotcha #1 below if you're on a machine you
    haven't released from before):
    ```powershell
