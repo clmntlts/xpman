@@ -41,8 +41,11 @@ with a **single human-in-the-loop measurement step** at the rig.
 On every FPAS launch, `evaluate_gate(fingerprint, profile, trial_tag_freqs)`:
 
 - **`NEEDS_CALIBRATION`** — no profile matches this machine's fingerprint. *A new or changed computer
-  keys to a different fingerprint, so this is exactly the "changed computer" signal.* Adds a
-  second warning if the machine exposes no low-latency host API at all (P0.1).
+  keys to a different fingerprint, so this is exactly the "changed computer" signal.*
+- **`NO_LOW_LATENCY_PATH`** — the machine exposes no low-latency audio host API at all (e.g. WASAPI /
+  ASIO), so onset timing can't be trusted regardless of calibration. This is a **distinct status**
+  returned in place of `NEEDS_CALIBRATION` (`gate.py`), and — like the others — is advisory (it sets
+  `requires_confirmation`), never a hard block.
 - **`BUDGET_NOT_MET`** — a profile exists but its measured jitter SD does not clear the budget **this
   trial** needs. The budget is recomputed from the trial's own tag frequencies, so a calibration
   measured for a looser design (e.g. a 6 Hz freq-domain-only run) is correctly flagged when reused for
@@ -57,8 +60,9 @@ acknowledge the warning.
 
 `audio/profile.py` stores one JSON record per `(fingerprint, source)` under a profiles directory,
 keyed by a short stable hash of `hostname + host_api + output_device + sample_rate`. It carries the
-chosen `latency_class`/`buffer_size`, the measured `mean_latency` (used to **correct trigger timing** —
-a fixed offset is compensable; the residual jitter is what the budget bounds), the jitter SD, the
+chosen `latency_class`/`buffer_size`, the measured `mean_latency` (**recorded for offline correction**
+— a fixed offset you subtract in analysis; it is **not auto-applied** to trigger timing at run time
+yet — while the residual jitter is what the budget bounds), the jitter SD, the
 loopback `source` (`amp` beats `line_in`), the timestamp, and the xpman version. Amp and line-in
 profiles are separate files so a quick line-in self-measure never clobbers an authoritative amp
 calibration.

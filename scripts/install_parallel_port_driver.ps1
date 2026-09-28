@@ -16,10 +16,12 @@
     DLL to already be discoverable on the system (System32/SysWOW64 or PATH), not shipped
     inside the psychopy wheel. The two site-packages candidate paths below are therefore a
     dead end on every psychopy install, not just this machine; they're kept only as a cheap
-    first check in case a future psychopy version changes this. In practice this script
-    always needs scripts/vendor/inpoutx64.dll populated by hand: download it from the
-    official source (https://www.highrez.co.uk/downloads/inpout32/) and place it there, then
-    re-run this script (it will create the scripts/vendor folder for you if it is missing).
+    first check in case a future psychopy version changes this. The driver is therefore
+    **bundled in this repo** at scripts/vendor/inpoutx64.dll (MIT-licensed; see
+    scripts/vendor/README.md for its provenance and SHA-256), so this script normally finds it
+    there with no download needed. You only need to fetch it by hand -- from the official source
+    (https://www.highrez.co.uk/downloads/inpout32/) into scripts/vendor/ -- if that bundled file
+    is ever missing (the script prints those instructions and creates the folder if so).
 #>
 
 [CmdletBinding()]

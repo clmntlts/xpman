@@ -294,7 +294,8 @@ exportés. (Pour l'auditif, voir §6.2 ; c'est le même enchaînement.)
 3. **Resource main directory** : cliquez **Browse** et choisissez le **dossier racine de vos images**
    (celui qui contient vos sous-dossiers de catégories). Facultatif à la création, mais **requis
    avant de lancer** une session FPVS.
-4. **Task type** : choisissez **FPVS**.
+4. **Task type** : choisissez **Fast Periodic Visual Stimulation** (c'est le libellé exact de FPVS
+   dans le menu).
 
 **Résultat attendu.** Le Program apparaît au format `nom (fpvs)`.
 
@@ -577,7 +578,7 @@ de la tâche :
 |---|---|---|
 | **Name** | Oui | — |
 | **Resource main directory** | À la création : non ; pour lancer FPVS/FPAS : **oui** | Dossier racine des stimuli (sous-dossiers par catégorie). |
-| **Task type** | Oui | **FPVS** / **Auditory FPAS** / **Dummy**. **Non modifiable** après création. |
+| **Task type** | Oui | Le menu propose : **Fast Periodic Visual Stimulation** (FPVS), **Auditory FPAS (periodic oddball)**, **Dummy timing/trigger proving-ground**. **Non modifiable** après création. |
 
 ### 7.4 Organisation des dossiers de stimuli
 
@@ -613,7 +614,7 @@ fichier**, pas par une convention « faces vs objects » imposée. Rangez vos fi
 
 | Champ | Type | Défaut | Contrainte | Sens |
 |---|---|---|---|---|
-| `oddball_freq_hz` | nombre | 1.2 | > 0, ≤ `base_freq_hz` | Fréquence oddball. Ignorée si `pattern` est défini. |
+| `oddball_freq_hz` | nombre | 1.2 | > 0, **strictement < `base_freq_hz`** | Fréquence oddball. Ignorée si `pattern` est défini. |
 | `oddball_trigger_code` | entier, opt. | non défini | 1–255 | Trigger à chaque oddball ; non défini = aucun. |
 | `pattern` | texte, opt. | non défini | tokens `B`/`O`, ≥1 chacun, longueur ≥ 2 | Ordre base/oddball explicite (p. ex. `BBBBO`). **Remplace** `oddball_freq_hz` : fréquence = `base × (#O/len)`. |
 
@@ -624,7 +625,7 @@ sinusoïdal FPVS canonique).
 |---|---|---|---|
 | `waveform` | liste | `sinusoidal` | `sinusoidal` (FPVS standard) / `square` (on-off) / `none` (pleine opacité). |
 | `contrast_min` / `contrast_max` | nombre 0–1 | 0.0 / 1.0 | Opacité aux points les plus sombre / clair du cycle. |
-| `square_onset_fraction` | nombre 0–1 | 0.5 | *`square` uniquement :* fraction du cycle « on ». |
+| `square_onset_fraction` | nombre, > 0 et ≤ 1 | 0.5 | *`square` uniquement :* fraction du cycle « on ». |
 
 **Chronologie de l'essai (`timing`)** — un essai déroule : pré-intervalle (fixation) → fondu d'entrée
 → plateau → fondu de sortie → post-intervalle. Plateau = `base.trial_duration_seconds`. Tout à 0 par
@@ -931,7 +932,8 @@ Basées sur le fonctionnement réel de xpman :
 **Construire et lancer (FPVS) :**
 1. **Select Profile** → **Open selected**.
 2. Clic droit Profile → **New Subject...** → nom → **Ok**.
-3. Clic droit Profile → **New Program...** → nom, **Browse** dossier images, **Task type = FPVS**.
+3. Clic droit Profile → **New Program...** → nom, **Browse** dossier images, **Task type = Fast
+   Periodic Visual Stimulation**.
 4. Clic droit Program → **New Experiment...** → nom.
 5. Clic droit Experiment → **New Condition...** → nom ; clic gauche dessus → régler base/oddball +
    sous-dossiers → **Save** ; **Preview Stimuli** pour vérifier.

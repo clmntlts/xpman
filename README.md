@@ -65,7 +65,8 @@ hierarchy, the screens, building/launching, and results — is identical across 
 **Highlights** (all per-Condition, nothing hardcoded):
 
 - Base/oddball **frequency tagging** on the monitor frame clock (FPVS) or the sound-card sample clock
-  (FPAS), with achieved-rate reporting and frame-exactness advisories.
+  (FPAS), with achieved-rate reporting and frame-/sample-exactness advisories (frame for FPVS, sample
+  for FPAS).
 - **Convention-agnostic stimulus pools** by folder + filename pattern — any image/sound set works.
 - Sinusoidal **contrast modulation**, oddball **patterns** (`BBBO…`), **frequency sweeps**, per-trial
   **baseline** segments, and a one-off **familiarization** warm-up.

@@ -108,8 +108,9 @@ With the line-out→line-in loopback wired and the room quiet:
   it. Omit it for an exploratory run.
 
 The script plays the clicks, prints the report (see §4), writes a results JSON under
-`data/audio_calibration/`, and — with `--save-profile` — the profile under `data/audio_profiles/`
-(both git-ignored, machine-specific).
+`data/audio_calibration/`, and — with `--save-profile` — the profile under `~/.xpman/audio_profiles`
+(the shared location the FPAS launch gate actually reads at run time, `default_profiles_dir()`;
+machine-specific).
 
 ---
 

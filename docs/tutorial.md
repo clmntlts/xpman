@@ -39,7 +39,7 @@ screens (§4), building/launching, and results — is identical across task type
 
 | Task type (in the GUI) | Modality | Use it for |
 |---|---|---|
-| **FPVS (periodic oddball)** | Visual | Real visual frequency-tagging studies (faces, objects, words, …) — [§1a](#1a-the-visual-fpvs-task) |
+| **Fast Periodic Visual Stimulation** | Visual | Real visual frequency-tagging studies (faces, objects, words, …) — [§1a](#1a-the-visual-fpvs-task) |
 | **Auditory FPAS (periodic oddball)** | Auditory | Real auditory frequency-tagging studies (voices, sounds, …) — [§1b](#1b-the-auditory-fpas-task) |
 | **Dummy timing/trigger proving-ground** | Visual | Checking the rig (screen timing + triggers), **not** a real paradigm — [§1c](#1c-the-dummy-timingtrigger-proving-ground) |
 
@@ -108,7 +108,8 @@ differs from the visual task:
   category change, not one repeated waveform. (The task warns if the base and oddball selectors
   resolve to the same or overlapping files.)
 - **Timing is on the sound card's sample clock**, not the monitor (`samples_per_cycle =
-  round(sample_rate/freq)`). Tokens are cosine-gated (a first-class ramp, ~10 ms, avoids clicks) and
+  round(sample_rate/freq)`). Tokens are cosine-gated (a first-class ramp, ~10–20 ms, 15 ms default,
+  avoids clicks) and
   must fit within one base cycle, so the base rate is lower than the visual 6 Hz (2–4 Hz is typical).
   The whole trial is pre-rendered to one audio buffer; triggers fire on the main thread at each token
   onset.
@@ -205,7 +206,8 @@ Profile                         (you, the experimenter)
 ```
 
 **Program vs. Experiment vs. Condition vs. Block vs. Trial** — a **Program** is the top-level
-container: you pick a task type here (currently "Dummy" or "FPVS") and, for FPVS, where the
+container: you pick a task type here (currently "Fast Periodic Visual Stimulation", "Auditory FPAS
+(periodic oddball)", or "Dummy timing/trigger proving-ground") and, for FPVS, where the
 stimulus images live. Under a Program you build one or more **Experiments**, each with its own
 **Conditions** (parameter sets — e.g. "faces, 6 Hz, no photodiode" vs. "objects, 4.29 Hz") and
 **Blocks** (which stimulus order to actually run, and how many times to repeat it). Each
@@ -357,8 +359,9 @@ Right-click **Profile** (or "Programs") → **New Program...**
 - **Resource main directory** — a Browse button opens a folder picker. This is where FPVS
   looks for stimulus images. Optional at creation time, but you'll need it set before you can
   run an FPVS session.
-- **Task type** — dropdown of registered task types ("Dummy", "FPVS"). **Choose carefully: you
-  cannot change a Program's task type after creating it.** If the dropdown is empty/hidden,
+- **Task type** — dropdown of registered task types, shown by their full names: **"Fast Periodic
+  Visual Stimulation"**, **"Auditory FPAS (periodic oddball)"**, and **"Dummy timing/trigger
+  proving-ground"**. **Choose carefully: you cannot change a Program's task type after creating it.** If the dropdown is empty/hidden,
   something is wrong with your install — see [7.4](#74-no-task-types-are-registered).
 
 ### 4.7 Creating an Experiment / Condition / Block / Trial
@@ -503,7 +506,7 @@ exported results.
 6. **Configure the Condition's parameters.** Click the Condition node to open its form. At
    minimum, set:
    - `main_stream.base.base_freq_hz` — e.g. `6.0`.
-   - `main_stream.oddball.oddball_freq_hz` — e.g. `1.2` (must not exceed the base frequency).
+   - `main_stream.oddball.oddball_freq_hz` — e.g. `1.2` (must be strictly less than the base frequency).
    - `main_stream.base_selector.subdirectory` — e.g. `objects` (base stream draws from the `objects/` folder).
    - `main_stream.oddball_selector.subdirectory` — e.g. `faces` (oddball stream draws from the `faces/` folder).
    - Leave everything else at its default to start (fixation cross, photodiode on every
@@ -572,7 +575,7 @@ sections, shown as boxes in the form:
 
 | Field | Type | Default | Constraints | Meaning |
 |---|---|---|---|---|
-| `oddball_freq_hz` | number | 1.2 | > 0, must not exceed `base_freq_hz` | Target oddball frequency. Ignored when `pattern` is set. |
+| `oddball_freq_hz` | number | 1.2 | > 0, strictly **less than** `base_freq_hz` | Target oddball frequency. Ignored when `pattern` is set. |
 | `oddball_trigger_code` | integer, optional | not set | 1–255 if set | Trigger sent on every oddball-image onset; unset sends none. |
 | `pattern` | text, optional | not set | `B`/`O` tokens, ≥1 each, len ≥ 2 | Explicit repeating base/oddball order (e.g. `BBBBO`, `BOBO`), applied from position 1. **Overrides `oddball_freq_hz`**: the oddball frequency becomes `base_freq × (#O / len)` — e.g. base 6 Hz + `BBBO` → oddball every 4th image = **1.5 Hz**. "Check Triggers…" shows the resulting frequency and warns if the O's are unevenly spaced (which smears the response). Leave unset to use `oddball_freq_hz`. |
 
@@ -586,7 +589,7 @@ hard-cut on and off.
 | `waveform` | dropdown | `sinusoidal` | `sinusoidal` / `square` / `none` | `sinusoidal` = standard FPVS contrast modulation; `square` = hard on/off with a duty cycle; `none` = every image at full opacity (the old hard-swap behavior). |
 | `contrast_min` | number | 0.0 | 0–1 | Opacity at the dimmest point of the cycle. |
 | `contrast_max` | number | 1.0 | 0–1 | Opacity at the brightest point of the cycle. |
-| `square_onset_fraction` | number | 0.5 | 0–1 | *Square only:* fraction of the cycle the image is "on". |
+| `square_onset_fraction` | number | 0.5 | > 0, ≤ 1 | *Square only:* fraction of the cycle the image is "on". |
 
 **Trial timeline** (`timing`) — the fixation-only intervals and contrast fades around the
 stimulation. A trial runs: pre-interval (fixation only) → fade-in → plateau → fade-out →
@@ -1002,9 +1005,9 @@ This requires writing Python, unlike everything else in this tutorial.
   familiarization, position jitter, **size variation** (random per-image rescaling, the low-level
   adaptation control), luminance/contrast **equalization**, the fixation distractor task, the spatial
   go/no-go task, flexible base/oddball ordering patterns (BBBO…), the stepped **frequency sweep**, the
-  per-trial **baseline** segment, and **dual bilateral streams**. Remaining paradigm extensions
-  (size-as-oddball modulation, intra-category oddball, and dual-stream size variation, etc.) are
-  listed in `TODO.md`.
+  per-trial **baseline** segment, **dual bilateral streams**, and per-stream **size variation** in
+  multi-stream designs. Remaining paradigm extensions (size-as-oddball modulation, intra-category
+  oddball, etc.) are listed in `TODO.md`.
 - The **auditory FPAS** task (§1b) is implemented — base/oddball sound tokens, RMS equalization,
   sequence fades, multi-exemplar pools, and the volume-decrement catch task — and launchable, but
   its onset timing is **not yet hardware-verified**: it needs a one-time per-machine audio
