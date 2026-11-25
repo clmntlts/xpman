@@ -652,6 +652,21 @@ matériel : `enabled` (on par défaut), `toggle_strategy` (`every_stimulus_onset
 /`oddball_onset_only`), `corner`, `margin_pix`, `size_pix`, `color_on`/`color_off`, `position_pix`
 (override).
 
+**Récupération de timing (`timing_recovery`)** — que faire si le moniteur **saute une image** en cours
+de séquence :
+- `frame_count` (**défaut, recommandé**) — chaque stimulus est montré pour son nombre exact d'images,
+  donc une image sautée décale toute la fin de la séquence d'une image. La **régularité des onsets** et
+  l'**ordre des oddballs** sont préservés ; le décalage net est un simple offset constant, inoffensif
+  pour l'analyse en fréquence.
+- `realtime_catchup` — raccourcit (ou saute) le stimulus suivant pour rester calé sur le **temps réel**
+  (la stratégie de l'ancien programme Java) : la cadence reste verrouillée au temps absolu, au prix
+  d'un stimulus corrompu ou sauté à l'endroit du pépin (ce qui peut perturber la cadence oddball). Un
+  stimulus sauté est journalisé (`stimulus_skipped_catchup`).
+
+> *Flux unique seulement* : `realtime_catchup` est refusé au save/figeage si un `second_stream` ou un
+> `additional_streams` est actif (pas de saut « en phase » bien défini entre flux simultanés). Laissez
+> sur `frame_count` sauf besoin spécifique de verrouiller la cadence au temps réel.
+
 **Contrôles anti-adaptation bas niveau :**
 - **`position_jitter`** — position aléatoire de chaque image dans une région (`rectangle`/`disk`),
   `per` = `stimulus`/`trial`. Seule l'image bouge (fixation et photodiode restent fixes).
@@ -754,7 +769,10 @@ l'essentiel de la construction sans passer par l'arbre.*
   vide.
 - **Journal d'événements** (`Trigger / Event Log...` depuis un Run) : onglets **Summary** et
   **Timeline** — chaque événement horodaté (flips, `trigger_sent`, onsets stimulus/oddball, marqueurs
-  de segment/overlay, événements des tâches attentionnelles).
+  de segment/overlay, événements des tâches attentionnelles). En haut, un **verdict « images
+  perdues »** signale d'un coup d'œil si le timing a été propre, ou combien d'images ont été perdues et
+  dans combien de séquences ; l'onglet **Summary** détaille la ou les **séquences** concernées (une
+  image perdue = une frame affichée en retard).
 - **Où sont mes données ?** Dans le dossier `data\` **à côté de l'application** : `data\xpman.db`
   (base SQLite : Profiles/Subjects/Programs/…/Results) et `data\runs\` (un journal Parquet + CSV par
   Run). Ce dossier est ancré au dossier de l'app, pas au dossier courant du shell.

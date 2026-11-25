@@ -64,6 +64,11 @@ measured yet (see [`docs/verification_protocol.md`](verification_protocol.md)).
 - **Base/oddball frequency tagging** on the **monitor frame clock**: rates are quantised to whole
   frames (`frames_per_cycle = round(refresh/freq)`) and the *achieved* rate is reported; a
   **frame-exactness advisory** warns when a requested rate can't sit exactly on the FFT bin.
+- **Dropped-frame handling** (`timing_recovery`, single-stream) — on a dropped frame, either
+  `frame_count` (default: keep each stimulus its exact frame count, let the sequence slide one frame
+  late, preserving onset regularity and oddball order) or `realtime_catchup` (shorten/skip upcoming
+  stimuli to stay pinned to real time, the legacy app's strategy). Dropped frames are surfaced per
+  sequence in the run's Trigger / Event Log viewer.
 - **Stimulus pools** by subdirectory + filename glob (`base_selector`/`oddball_selector`) — any image
   set laid out in folders; no baked-in "faces vs objects" convention.
 - **Contrast (opacity) modulation** — sinusoidal fade of each image against the background so onsets
