@@ -2393,3 +2393,105 @@ def test_quad_stream_one_oddball_three_base_only_fillers_distinct_positions(tmp_
         assert result.per_stream[idx].n_oddballs_shown == 0
         assert result.per_stream[idx].achieved_oddball_freq_hz == 0.0
     assert [result.per_stream[i].n_stimuli_shown for i in range(4)] == [6, 12, 10, 15]
+
+
+# ---------------------------------------------------------------------------
+# realtime_catchup timing-recovery mode
+# ---------------------------------------------------------------------------
+
+
+class _DropWindow:
+    """Fake window for catch-up tests: fires callOnFlip callbacks on flip() like the real one, hands
+    out monotonic timestamps, and lets a test inject dropped frames at a chosen flip number by
+    bumping ``nDroppedFrames`` (the integer counter ``_CatchupBudget`` reads)."""
+
+    def __init__(self, drops_at: "dict[int, int] | None" = None) -> None:
+        self._pending: list = []
+        self._flip_no = 0
+        self._drops_at = dict(drops_at or {})
+        self.nDroppedFrames = 0
+        self.size = (800, 600)
+
+    def callOnFlip(self, fn, *a, **k) -> None:
+        self._pending.append((fn, a, k))
+
+    def flip(self):
+        while self._pending:
+            fn, a, k = self._pending.pop(0)
+            fn(*a, **k)
+        self._flip_no += 1
+        self.nDroppedFrames += self._drops_at.get(self._flip_no, 0)
+        return self._flip_no / 60.0
+
+
+def _run_catchup(window, event_sink, trigger, clock, *, timing_recovery):
+    # 60 Hz / 6 Hz base -> 10 frames/stimulus; 2.0 s -> 120 frames -> 12 stimuli. No fade/modulation
+    # so the per-stimulus frame count is exactly 10 and easy to reason about.
+    return run_base_oddball_sequence(
+        window=window,
+        base_stimuli=[MagicMock(name="base")],
+        oddball_stimuli=[MagicMock(name="odd")],
+        base_params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=2.0),
+        oddball_params=OddballParams(oddball_freq_hz=1.2),
+        refresh_rate_hz=60.0,
+        trigger=trigger,
+        clock=clock,
+        event_sink=event_sink,
+        timing_recovery=timing_recovery,
+    )
+
+
+def _skip_events(path):
+    import csv
+
+    with open(path, newline="") as fh:
+        return [row for row in csv.DictReader(fh) if row["event_type"] == "stimulus_skipped_catchup"]
+
+
+def test_frame_count_mode_ignores_dropped_frames(event_sink, trigger, clock):
+    """Default (frame_count): dropped frames are irrelevant to the loop -- every stimulus still shows
+    for its full 10 frames, so the total is exactly 12 x 10 regardless of nDroppedFrames."""
+    window = _DropWindow(drops_at={5: 3})  # 3 drops during stimulus 0 -- must be ignored
+    result = _run_catchup(window, event_sink, trigger, clock, timing_recovery="frame_count")
+
+    assert result.frames_per_stimulus == 10
+    assert result.n_stimuli_shown == 12
+    assert result.n_frames_presented == 120
+
+
+def test_realtime_catchup_shortens_the_next_stimulus_after_a_drop(event_sink, trigger, clock, tmp_path):
+    """One frame dropped during stimulus 0 -> the next stimulus is shown for one fewer frame to repay
+    the debt, so all 12 stimuli still appear but the total is 120 - 1 = 119 frames. No skip."""
+    window = _DropWindow(drops_at={5: 1})  # 1 drop during stimulus 0 (flips 1..10)
+    sink = EventSink(tmp_path / "cu" / "events.csv", tmp_path / "cu" / "events.parquet")
+    result = _run_catchup(window, sink, trigger, clock, timing_recovery="realtime_catchup")
+    sink.close()
+
+    assert result.n_stimuli_shown == 12  # every stimulus still shown (one just shorter)
+    assert result.n_frames_presented == 119
+    assert _skip_events(tmp_path / "cu" / "events.csv") == []
+
+
+def test_realtime_catchup_skips_a_stimulus_when_a_whole_period_is_lost(event_sink, trigger, clock, tmp_path):
+    """A whole stimulus-worth (10) of frames dropped during stimulus 0 -> the next stimulus is skipped
+    outright (its real-time slot already elapsed), logged as stimulus_skipped_catchup. 11 shown, and
+    the skipped one leaves a logged gap."""
+    window = _DropWindow(drops_at={5: 10})  # 10 drops during stimulus 0 == one full period
+    sink = EventSink(tmp_path / "skip" / "events.csv", tmp_path / "skip" / "events.parquet")
+    result = _run_catchup(window, sink, trigger, clock, timing_recovery="realtime_catchup")
+    sink.close()
+
+    assert result.n_stimuli_shown == 11  # exactly one stimulus skipped
+    assert result.n_frames_presented == 110
+    skips = _skip_events(tmp_path / "skip" / "events.csv")
+    assert len(skips) == 1
+    assert json.loads(skips[0]["payload_json"])["stim_index"] == 1  # 2nd stimulus (0-indexed) skipped
+
+
+def test_realtime_catchup_clean_run_matches_frame_count(event_sink, trigger, clock):
+    """No dropped frames -> catch-up is inert: identical counts to frame_count."""
+    window = _DropWindow()
+    result = _run_catchup(window, event_sink, trigger, clock, timing_recovery="realtime_catchup")
+
+    assert result.n_stimuli_shown == 12
+    assert result.n_frames_presented == 120

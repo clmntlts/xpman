@@ -716,6 +716,21 @@ class FPVSConditionParams(BaseModel):
         description="Photodiode sync patch for validating presentation timing against real hardware.",
         json_schema_extra={"section": "General"},
     )
+    timing_recovery: Literal["frame_count", "realtime_catchup"] = Field(
+        default="frame_count",
+        description=(
+            "What to do when the monitor drops a frame mid-sequence. 'frame_count' (default) shows "
+            "every stimulus for its exact number of monitor frames, so a dropped frame makes the "
+            "whole sequence slide one frame late: onset regularity and the oddball image order are "
+            "preserved, and the net lag is a harmless constant offset. 'realtime_catchup' instead "
+            "counts each dropped frame as a consumed cycle and shortens (or skips) stimulus content "
+            "to stay locked to real wall-clock time -- the same strategy the legacy Java app offered: "
+            "the stimulation rate stays pinned to real time, at the cost of a corrupted or skipped "
+            "stimulus at the glitch (which can disturb the oddball cadence). Leave on 'frame_count' "
+            "unless you specifically need the rate pinned to real time."
+        ),
+        json_schema_extra={"section": "General"},
+    )
 
     # -- Trial phases: once-per-trial/run segments around the main stimulation --------------
     baseline: BaselineParams = Field(
@@ -995,6 +1010,22 @@ class FPVSConditionParams(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_timing_recovery_single_stream(self) -> "FPVSConditionParams":
+        # realtime_catchup shortens/skips stimuli to keep the rate locked to real time. Across more
+        # than one simultaneous stream there is no single well-defined way to skip in lockstep (the
+        # streams would desynchronise), so catch-up is single-stream only. Reject the combination
+        # rather than silently applying it to one stream. frame_count (the default) is unrestricted.
+        if self.timing_recovery == "realtime_catchup":
+            extra_active = self.second_stream.enabled or any(s.enabled for s in self.additional_streams)
+            if extra_active:
+                raise ValueError(
+                    "timing_recovery='realtime_catchup' is only supported for a single stream; it "
+                    "has no well-defined meaning across multiple simultaneous streams. Use "
+                    "'frame_count' when a second_stream or additional_streams entry is enabled."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _check_coincidence_codes(self) -> "FPVSConditionParams":
         # Reserved coincidence codes only matter for dual bilateral streams (v2 per-stream triggers).
         # Field constraints already guarantee every code is a valid 8-bit int (1..255); this validator
@@ -1148,8 +1179,10 @@ class FPVSSchema:
     #: field of the same ``StreamParams`` shape every other stream already uses (re-freeze such
     #: dev-only Instances, same as v4). v10 adds ``size_variation`` (per-stimulus random image
     #: rescaling, the low-level-adaptation control -- additive, default off, single-stream only).
+    #: v11 adds ``timing_recovery`` (frame_count vs realtime_catchup -- additive, default
+    #: "frame_count" = the existing behavior, so old Instances are byte-for-byte unchanged).
     #: Every other bump is additive. See ``migrate``.
-    SCHEMA_VERSION = "10"
+    SCHEMA_VERSION = "11"
 
     def program_params_model(self) -> type:
         return FPVSProgramParams
@@ -1178,11 +1211,12 @@ class FPVSSchema:
         # breaking (non-additive) change would require before this could be wired in.
         if old_version == self.SCHEMA_VERSION:
             return old_version, data
-        if old_version not in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+        if old_version not in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
             raise ValueError(f"FPVSSchema cannot migrate from unknown version {old_version!r}")
-        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8, v9->v10 are additive (position_jitter,
-        # distractor, oddball pattern + go_nogo, sweep, additional_streams + per-stream
-        # oddball_enabled, equalization, size_variation: disabled/None/[]/False defaults fill in).
+        # v1->v2, v2->v3, v4->v5, v5->v6, v6->v7, v7->v8, v9->v10, v10->v11 are additive
+        # (position_jitter, distractor, oddball pattern + go_nogo, sweep, additional_streams +
+        # per-stream oddball_enabled, equalization, size_variation, timing_recovery: the
+        # disabled/None/[]/False/"frame_count" defaults fill in).
         # v3->v4 drops the SepStim selector filters:
         # strip them from base/oddball selectors so the migrated dict carries only
         # subdirectory/filename_pattern.

@@ -1339,6 +1339,7 @@ class FPVSTask(TaskModule):
                 position_provider=position_provider,
                 size_provider=size_provider,
                 overlays=overlay_controllers,
+                timing_recovery=params.timing_recovery,
             )
         else:
             sequence_result = run_base_oddball_sequence(
@@ -1361,6 +1362,7 @@ class FPVSTask(TaskModule):
                 position_provider=position_provider,
                 size_provider=size_provider,
                 overlays=overlay_controllers,
+                timing_recovery=params.timing_recovery,
             )
 
         # Per-trial baseline (base-only reference), 'after' phase: after the oddball stream and before

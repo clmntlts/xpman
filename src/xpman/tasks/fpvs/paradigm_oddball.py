@@ -1006,6 +1006,57 @@ class _SegmentRun:
     end_frame_index: int
 
 
+class _CatchupBudget:
+    """Real-time catch-up accounting for the ``realtime_catchup`` timing-recovery mode.
+
+    When the monitor drops a frame, a ``window.flip()`` blocks for an extra refresh, so the
+    stimulus that was on screen ran *long* by that many refreshes and the whole schedule has
+    slipped late. This repays the accumulated debt by presenting the next stimulus (or stimuli)
+    for *fewer* frames, so the stimulation rate stays pinned to real wall-clock time -- the same
+    strategy the legacy Java app's missed-frame handling used (count each missed frame as a
+    consumed cycle, advance the content). The cost is a shortened or skipped stimulus at the
+    glitch, which can disturb the oddball cadence; that is the documented trade-off of this mode.
+
+    In ``frame_count`` mode this object is never constructed -- the loop presents the full
+    ``n_frames`` every stimulus -- so that (default) path is byte-for-byte unchanged.
+
+    Dropped frames are read from PsychoPy's own ``window.nDroppedFrames`` counter (xpman enables
+    ``recordFrameIntervals`` for the run). A window without an integer counter (a test/mocked
+    window) yields 0, so catch-up is inert unless a test deliberately drives the counter.
+    """
+
+    def __init__(self, window: "psychopy.visual.Window") -> None:
+        self._window = window
+        self._debt = 0
+        self._last = self._read()
+
+    def _read(self) -> int:
+        n = getattr(self._window, "nDroppedFrames", None)
+        return n if isinstance(n, int) else 0
+
+    def budget_for(self, n_frames: int) -> int:
+        """Frames to actually draw the next stimulus for, repaying debt. Returns ``0`` to mean
+        *skip this stimulus entirely* -- a whole stimulus-worth of frames was already lost, so its
+        real-time slot has elapsed. Never returns more than ``n_frames``."""
+        if self._debt >= n_frames:
+            self._debt -= n_frames
+            return 0
+        draws = n_frames - self._debt
+        self._debt = 0
+        return draws
+
+    def record_drops(self) -> int:
+        """Fold the frames dropped since the last call into the debt and return how many. Called
+        once after each presented stimulus; the returned count is also the number of *extra* real
+        refreshes that stimulus occupied, so the caller can keep its global frame index on the
+        real-time grid."""
+        now = self._read()
+        dropped = max(0, now - self._last)
+        self._last = now
+        self._debt += dropped
+        return dropped
+
+
 def _present_oddball_segment(
     *,
     window: "psychopy.visual.Window",
@@ -1024,6 +1075,7 @@ def _present_oddball_segment(
     overlays: "list[OverlayController]",
     onsets: list[OnsetRecord],
     flip_log: "list[tuple[str, dict, float]]",
+    timing_recovery: str = "frame_count",
 ) -> _SegmentRun:
     """Present one planned oddball segment of a single ``stream``, appending onset records to
     ``onsets`` and per-frame flip records to ``flip_log`` (both owned by the caller so a multi-segment
@@ -1037,6 +1089,10 @@ def _present_oddball_segment(
     base_pool = _PoolSequencer(len(stream.base_stimuli), rng)
     oddball_pool = _PoolSequencer(len(stream.oddball_stimuli), rng)
     aborted = False
+    # realtime_catchup only: repays dropped-frame debt by shortening/skipping upcoming stimuli so
+    # the rate stays locked to real time. None in frame_count mode -> the full n_frames path below,
+    # byte-for-byte unchanged.
+    catchup = _CatchupBudget(window) if timing_recovery == "realtime_catchup" else None
 
     for position in range(1, plan.n_stimuli_to_show + 1):
         if abort_check():
@@ -1052,6 +1108,21 @@ def _present_oddball_segment(
             stim = stream.base_stimuli[base_pool.next()]
             trigger_code = stream.base_trigger_code
             onset_event_type = "stimulus_onset"
+
+        # realtime_catchup: how many frames to actually draw this stimulus for (repaying debt), or
+        # 0 to skip it outright because a whole stimulus-worth of frames was already lost. The image
+        # was already drawn from the pool above (identities keep advancing, like the legacy app's
+        # goToNextImage); the skip just omits its frames and logs it so analysis can see the gap.
+        n_frames_to_draw = plan.n_frames_per_stim
+        if catchup is not None:
+            n_frames_to_draw = catchup.budget_for(plan.n_frames_per_stim)
+            if n_frames_to_draw == 0:
+                event_sink.log(
+                    "stimulus_skipped_catchup",
+                    {"stim_index": position - 1, "is_oddball": is_oddball},
+                )
+                continue
+
         # One position draw per stimulus (C3), for both base and oddball positions. None provider
         # -> centered (stim_position stays None). Named stim_position to avoid shadowing the
         # 1-indexed stream ``position`` loop variable.
@@ -1062,7 +1133,7 @@ def _present_oddball_segment(
         frames_this_stim, stim_aborted, onset_time = _present_stimulus(
             window=window,
             stim=stim,
-            n_frames=plan.n_frames_per_stim,
+            n_frames=n_frames_to_draw,
             start_frame_index=global_frame_index,
             trigger=trigger,
             clock=clock,
@@ -1080,7 +1151,11 @@ def _present_oddball_segment(
             size_scale=stim_scale,
             overlays=overlays,
         )
-        global_frame_index += frames_this_stim
+        # Advance the global frame index by the REAL refreshes this stimulus occupied -- the frames
+        # drawn PLUS any dropped during it (catch-up only) -- so the frame grid that drives
+        # modulation/photodiode/overlay scheduling stays on real wall-clock time.
+        dropped_during = catchup.record_drops() if catchup is not None else 0
+        global_frame_index += frames_this_stim + dropped_during
         frames_presented += frames_this_stim
         if frames_this_stim > 0:
             stimuli_shown += 1
@@ -1121,6 +1196,7 @@ def _run_oddball_segments(
     position_provider: Callable[[], tuple[float, float]] | None,
     size_provider: Callable[[], float] | None = None,
     overlays: "list[OverlayController]" = (),
+    timing_recovery: str = "frame_count",
 ) -> BaseOddballSequenceResult:
     """Present an ordered list of constant-frequency ``segments`` of a single ``stream`` back-to-back,
     keeping a continuous ``global_frame_index``, one onset list, and ONE buffered ``flip_log`` flushed
@@ -1223,6 +1299,7 @@ def _run_oddball_segments(
                 overlays=overlays,
                 onsets=onsets,
                 flip_log=flip_log,
+                timing_recovery=timing_recovery,
             )
             global_frame_index = seg_run.end_frame_index
             frames_presented += seg_run.frames_presented
@@ -1859,6 +1936,7 @@ def run_base_oddball_sequence(
     position_provider: Callable[[], tuple[float, float]] | None = None,
     size_provider: Callable[[], float] | None = None,
     overlays: "list[OverlayController]" = (),
+    timing_recovery: str = "frame_count",
 ) -> BaseOddballSequenceResult:
     """The actual FPVS paradigm: a continuous base-rate stream where every Kth position (``K``
     from :func:`oddball_period_stimuli`) is drawn from ``oddball_stimuli`` instead of
@@ -1925,4 +2003,5 @@ def run_base_oddball_sequence(
         position_provider=position_provider,
         size_provider=size_provider,
         overlays=overlays,
+        timing_recovery=timing_recovery,
     )
