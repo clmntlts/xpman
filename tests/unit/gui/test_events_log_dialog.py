@@ -39,6 +39,42 @@ def test_dialog_lists_triggers_and_summary(qtbot, tmp_path):
     assert tab_titles == ["Summary", "Timeline"]
 
 
+def test_dialog_shows_dropped_frame_verdict(qtbot, tmp_path):
+    """A run with a long inter-flip gap surfaces a prominent dropped-frame warning up top."""
+    path = tmp_path / "events.csv"
+    _write(
+        path,
+        [
+            ("refresh_rate_measured", {"refresh_rate_hz": 10.0}, 0.0),  # nominal 0.1 s
+            ("base_oddball_sequence_start", {}, 0.0),
+            ("flip", {}, 0.0), ("flip", {}, 0.1), ("flip", {}, 0.3),  # 0.2 s gap = 1 dropped frame
+            ("base_oddball_sequence_end", {}, 0.3),
+        ],
+    )
+    dialog = EventsLogDialog(path)
+    qtbot.addWidget(dialog)
+
+    assert "dropped frame(s)" in dialog._message.text()
+    assert "Dropped frames" in dialog._summary.toPlainText()
+
+
+def test_dialog_shows_clean_timing_verdict(qtbot, tmp_path):
+    path = tmp_path / "events.csv"
+    _write(
+        path,
+        [
+            ("refresh_rate_measured", {"refresh_rate_hz": 10.0}, 0.0),
+            ("base_oddball_sequence_start", {}, 0.0),
+            ("flip", {}, 0.0), ("flip", {}, 0.1), ("flip", {}, 0.2),
+            ("base_oddball_sequence_end", {}, 0.2),
+        ],
+    )
+    dialog = EventsLogDialog(path)
+    qtbot.addWidget(dialog)
+
+    assert "No dropped frames detected" in dialog._message.text()
+
+
 def test_dialog_reports_no_triggers(qtbot, tmp_path):
     path = tmp_path / "events.csv"
     _write(path, [("stimulus_onset", {"stim_index": 0}, 0.1)])  # onset but no trigger fired

@@ -61,6 +61,12 @@ class FlipIntervalStats:
     #: math assumed 60 Hz on a monitor actually running 120 Hz), which would otherwise be invisible.
     median_interval_s: float | None = None
     empirical_refresh_hz: float | None = None
+    #: Dropped-frame count (long inter-flip intervals, > _OUTLIER_FACTOR x nominal) PER stimulation
+    #: segment, in segment order -- so a per-sequence quality readout is possible, not just the
+    #: run-wide ``n_outliers`` total (which equals ``sum(n_outliers_per_segment)``). Each stimulation
+    #: stream (familiarization, baseline, each trial's main sequence) is one segment; see
+    #: :func:`_flip_segments`. Empty when there are too few flips to compute any interval.
+    n_outliers_per_segment: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,27 @@ class VerificationReport:
                     f"  empirical refresh (1/median inter-flip)={fi.empirical_refresh_hz:.2f}Hz  "
                     f"(median={fi.median_interval_s * 1000:.2f}ms){warn}"
                 )
+
+        lines += ["", "Dropped frames (timing quality -- a long inter-flip interval = a late/missed frame):"]
+        fi = self.flip_interval
+        n_segments = len(fi.n_outliers_per_segment)
+        if fi.mean_interval_s is None:
+            lines.append("  Not enough flip events to assess dropped frames.")
+        elif fi.n_outliers == 0:
+            scope = f" across all {n_segments} sequences" if n_segments else ""
+            lines.append(f"  None{scope} -- every frame was presented on time. Timing clean.")
+        else:
+            seqs_with_drops = sum(1 for n in fi.n_outliers_per_segment if n > 0)
+            lines.append(
+                f"  {fi.n_outliers} dropped frame(s) in {seqs_with_drops} of {n_segments} sequences. "
+                "A dropped frame slips that sequence's onsets by one or more refreshes: a few are "
+                "usually harmless, but many (or one big gap) can reduce the tagged-frequency response."
+            )
+            # Per-sequence breakdown so a bad sequence is identifiable (the report asked-for signal),
+            # listing only the sequences that actually dropped frames to keep it short.
+            for seg_index, n in enumerate(fi.n_outliers_per_segment, start=1):
+                if n > 0:
+                    lines.append(f"    sequence {seg_index}: {n} dropped frame(s)")
 
         lines += [
             "",
@@ -231,16 +258,22 @@ def _flip_segments(events_sorted: list[dict[str, Any]]) -> list[list[float]]:
 def _compute_flip_interval_stats(events_sorted: list[dict[str, Any]], nominal_frame_period_s: float) -> FlipIntervalStats:
     segments = _flip_segments(events_sorted)
     n_flips = sum(len(seg) for seg in segments)
+    outlier_threshold_s = _OUTLIER_FACTOR * nominal_frame_period_s
     intervals: list[float] = []
+    # Per-segment dropped-frame counts, in segment order (one entry per stimulation stream), so the
+    # report can show which sequence dropped frames rather than only a run-wide total.
+    per_segment_outliers: list[int] = []
     for seg in segments:
         ordered = sorted(seg)
-        intervals.extend(b - a for a, b in zip(ordered, ordered[1:]))
+        seg_intervals = [b - a for a, b in zip(ordered, ordered[1:])]
+        intervals.extend(seg_intervals)
+        per_segment_outliers.append(sum(1 for iv in seg_intervals if iv > outlier_threshold_s))
     if not intervals:
         return FlipIntervalStats(
             n_flips=n_flips, mean_interval_s=None, stddev_interval_s=None,
             n_outliers=0, nominal_frame_period_s=nominal_frame_period_s,
         )
-    n_outliers = sum(1 for interval in intervals if interval > _OUTLIER_FACTOR * nominal_frame_period_s)
+    n_outliers = sum(1 for interval in intervals if interval > outlier_threshold_s)
     # Median inter-flip interval -> empirical refresh: median resists the dropped-frame outliers that
     # would drag the mean toward a slower apparent refresh, so 1/median is a robust estimate of the
     # true frame period, independent of the assumed nominal (#26).
@@ -254,6 +287,7 @@ def _compute_flip_interval_stats(events_sorted: list[dict[str, Any]], nominal_fr
         nominal_frame_period_s=nominal_frame_period_s,
         median_interval_s=median_interval_s,
         empirical_refresh_hz=empirical_refresh_hz,
+        n_outliers_per_segment=tuple(per_segment_outliers),
     )
 
 

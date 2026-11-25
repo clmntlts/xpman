@@ -37,6 +37,8 @@ def test_flip_interval_stats_mean_stddev_and_outlier_count():
     assert report.flip_interval.mean_interval_s == pytest.approx(0.125)
     assert report.flip_interval.n_outliers == 1
     assert report.flip_interval.nominal_frame_period_s == 0.1
+    # No sequence markers -> one segment, carrying the single dropped frame.
+    assert report.flip_interval.n_outliers_per_segment == (1,)
 
 
 def test_flip_interval_stats_none_with_fewer_than_two_flips():
@@ -73,6 +75,34 @@ def test_flip_intervals_exclude_between_trial_gaps():
     assert report.flip_interval.n_flips == 6
     assert report.flip_interval.mean_interval_s == pytest.approx(0.1)  # only the 0.1 s intervals
     assert report.flip_interval.n_outliers == 0  # the 29.8 s gap is excluded, not an outlier
+    assert report.flip_interval.n_outliers_per_segment == (0, 0)  # two clean sequences
+
+
+def test_dropped_frames_counted_and_attributed_per_sequence():
+    """Per-sequence dropped-frame attribution (the #2 'images perdues' readout): a clean first
+    sequence and a second that drops one frame -> (0, 1), and the summary names sequence 2."""
+    events = [
+        _event("base_oddball_sequence_start", 0.0),
+        _event("flip", 0.0), _event("flip", 0.1), _event("flip", 0.2),  # clean
+        _event("base_oddball_sequence_end", 0.2),
+        _event("base_oddball_sequence_start", 30.0),
+        _event("flip", 30.0), _event("flip", 30.1), _event("flip", 30.3),  # 0.2 s gap = 1 drop
+        _event("base_oddball_sequence_end", 30.3),
+    ]
+    report = build_verification_report(events, nominal_frame_period_s=0.1)
+
+    assert report.flip_interval.n_outliers == 1
+    assert report.flip_interval.n_outliers_per_segment == (0, 1)
+    text = report.format()
+    assert "Dropped frames" in text
+    assert "sequence 2: 1 dropped frame(s)" in text
+
+
+def test_dropped_frames_section_says_none_when_clean():
+    events = [_event("flip", 0.0), _event("flip", 0.1), _event("flip", 0.2)]
+    text = build_verification_report(events, nominal_frame_period_s=0.1).format()
+    assert "Dropped frames" in text
+    assert "None" in text.split("Dropped frames")[1].splitlines()[1]
 
 
 def test_flip_intervals_single_stream_without_sequence_markers():
@@ -309,7 +339,10 @@ def test_format_does_not_crash_and_mentions_all_sections_with_full_data():
     ]
     text = build_verification_report(events, nominal_frame_period_s=0.1).format()
 
-    for expected in ("Inter-flip interval", "Trigger-vs-onset log delta", "Trigger codes sent", "Frequency check"):
+    for expected in (
+        "Inter-flip interval", "Dropped frames", "Trigger-vs-onset log delta",
+        "Trigger codes sent", "Frequency check",
+    ):
         assert expected in text
 
 

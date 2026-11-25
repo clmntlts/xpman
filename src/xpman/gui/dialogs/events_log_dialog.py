@@ -98,6 +98,24 @@ class EventsLogDialog(QDialog):
                 "electrical pulse."
             )
 
+        # Prominent dropped-frame verdict up top: the single clearest quality signal for a run, so a
+        # bad session is visible without scrolling the Summary tab. Derived from the inter-flip
+        # intervals the same way the report is (a long interval = a late/missed frame).
+        fi = report.flip_interval
+        if fi.mean_interval_s is None:
+            dropped_line = ""
+        elif fi.n_outliers == 0:
+            dropped_line = "\n✓ No dropped frames detected — frame timing was clean."
+        else:
+            seqs = sum(1 for n in fi.n_outliers_per_segment if n > 0)
+            total_seqs = len(fi.n_outliers_per_segment)
+            dropped_line = (
+                f"\n⚠ {fi.n_outliers} dropped frame(s) in {seqs} of {total_seqs} sequences — "
+                "see the 'Dropped frames' section in the Summary tab for which ones."
+            )
+        if dropped_line:
+            self._message.setText(self._message.text() + dropped_line)
+
         self._summary.setPlainText(report.format())
         self._populate_table(triggers)
 
