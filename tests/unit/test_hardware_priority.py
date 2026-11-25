@@ -7,11 +7,18 @@ the OS. ``psychopy.core.rush`` is patched throughout so no real process priority
 
 from __future__ import annotations
 
+import gc
 from unittest.mock import call, patch
 
 import pytest
 
-from xpman.hardware.priority import DISABLE_ENV_VAR, realtime_priority
+from xpman.hardware.priority import (
+    DISABLE_ENV_VAR,
+    DISABLE_GC_PAUSE_ENV_VAR,
+    pause_collection,
+    realtime_priority,
+    resume_collection,
+)
 
 
 def test_applies_and_drops_priority_when_enabled_and_granted():
@@ -79,3 +86,75 @@ def test_a_failure_dropping_priority_is_swallowed():
         with realtime_priority(enabled=True) as applied:
             assert applied is True
     # No exception escaped the context manager.
+
+
+# --- pause_collection / resume_collection -------------------------------------------------------
+#
+# These touch the *real* process-global GC state, so every test restores it in a fixture: a test
+# must never leak a disabled collector into the rest of the suite.
+
+
+@pytest.fixture(autouse=True)
+def _restore_gc_state():
+    was_enabled = gc.isenabled()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+def test_pause_disables_gc_and_resume_restores_it():
+    gc.enable()  # start from the normal (enabled) state
+    was_enabled = pause_collection()
+    try:
+        assert was_enabled is True
+        assert not gc.isenabled()  # automatic collection is off for the "timed loop"
+    finally:
+        resume_collection(was_enabled)
+    assert gc.isenabled()  # restored
+
+
+def test_pause_collects_once_at_the_boundary():
+    """pause_collection must run exactly one explicit collect() -- clearing setup allocations at
+    the sequence boundary so no stop-the-world pass is left to land mid-flip."""
+    with patch("gc.collect") as mock_collect:
+        was_enabled = pause_collection()
+    resume_collection(was_enabled)
+    mock_collect.assert_called_once()
+
+
+def test_resume_leaves_gc_disabled_when_it_was_already_disabled():
+    """A nested / already-paused case: pause reports False, and resume(False) must NOT re-enable
+    (the OUTER pause owns the restore)."""
+    gc.disable()
+    was_enabled = pause_collection()
+    assert was_enabled is False
+    resume_collection(was_enabled)
+    assert not gc.isenabled()  # still disabled -- resume(False) left it alone
+
+
+def test_env_var_forces_no_op(monkeypatch):
+    """XPMAN_DISABLE_GC_PAUSE makes pause_collection a no-op: GC is untouched and False is
+    returned (nothing to restore), so the old always-on-GC behaviour is back."""
+    monkeypatch.setenv(DISABLE_GC_PAUSE_ENV_VAR, "1")
+    gc.enable()
+    with patch("gc.disable") as mock_disable, patch("gc.collect") as mock_collect:
+        was_enabled = pause_collection()
+    assert was_enabled is False
+    mock_disable.assert_not_called()
+    mock_collect.assert_not_called()
+    assert gc.isenabled()  # untouched
+
+
+def test_blank_env_value_does_not_disable_the_pause(monkeypatch):
+    monkeypatch.setenv(DISABLE_GC_PAUSE_ENV_VAR, "   ")
+    gc.enable()
+    was_enabled = pause_collection()
+    try:
+        assert was_enabled is True
+        assert not gc.isenabled()  # a blank value is ignored -> the pause still happens
+    finally:
+        resume_collection(was_enabled)

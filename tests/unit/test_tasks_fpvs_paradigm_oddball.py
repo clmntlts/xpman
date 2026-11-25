@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import json
 from unittest.mock import MagicMock
 
@@ -185,6 +186,41 @@ def test_correct_frame_and_stimulus_counts(mock_window, stimuli, event_sink, tri
     assert result.achieved_base_freq_hz == 6.0
     assert result.requested_base_freq_hz == 6.0
     assert result.aborted is False
+
+
+def test_gc_is_paused_during_the_sequence_and_restored_after(
+    mock_window, stimuli, event_sink, trigger, clock
+):
+    """The cyclic GC must be disabled for every frame of a timed sequence -- so a stop-the-world
+    collection can't land on a Window.flip() and make the frame late (a measured ~50 ms freeze was
+    traced to exactly that) -- and re-enabled once the sequence ends. Each stim.draw() runs inside
+    the timed loop, so recording gc.isenabled() there samples the collector state per frame."""
+    gc_state_per_draw: list[bool] = []
+    for stim in stimuli:
+        stim.draw.side_effect = lambda: gc_state_per_draw.append(gc.isenabled())
+
+    outer_state = gc.isenabled()
+    gc.enable()  # start enabled so "restored" verifiably means re-enabled
+    try:
+        run_base_sequence(
+            window=mock_window,
+            stimuli=stimuli,
+            params=BaseSequenceParams(base_freq_hz=6.0, trial_duration_seconds=1.0),
+            refresh_rate_hz=60.0,
+            trigger=trigger,
+            clock=clock,
+            event_sink=event_sink,
+        )
+        # Restored immediately on return, before the fixture-teardown normalisation below.
+        assert gc.isenabled() is True
+    finally:
+        if outer_state:
+            gc.enable()
+        else:
+            gc.disable()
+
+    assert gc_state_per_draw  # the sequence actually drew frames
+    assert not any(gc_state_per_draw)  # GC was disabled on every frame of the timed loop
 
 
 def test_cycles_through_stimuli_list_wrapping_around(mock_window, stimuli, event_sink, trigger, clock):

@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
+from xpman.hardware.priority import pause_collection, resume_collection
 from xpman.tasks.fpvs.modulation import ModulationParams, build_contrast_table, envelope_at_frame
 from xpman.tasks.fpvs.photodiode import PhotodiodeParams, should_toggle
 from xpman.tasks.fpvs.trigger_combine import ReservedCodeTable, StreamOnset, resolve_frame_trigger
@@ -749,6 +750,9 @@ def run_base_sequence(
     flip_log: list[tuple[str, dict, float]] = []
     pool = _PoolSequencer(len(stimuli), rng)
 
+    # Pause cyclic GC for this timed sequence so a stop-the-world collection can't land mid-flip
+    # (see pause_collection); restored in the finally no matter how the loop ends.
+    _gc_was_enabled = pause_collection()
     try:
         for stim_index in range(n_stimuli_to_show):
             if abort_check():
@@ -795,6 +799,7 @@ def run_base_sequence(
         # frame). See the matching note in run_base_oddball_sequence.
         trigger.clear_code()
     finally:
+        resume_collection(_gc_was_enabled)
         # Flush the per-frame flip records in a finally so a flip raising mid-trial still leaves this
         # trial's per-frame timeline on disk (onset/trigger events are already logged inline). On the
         # normal path this runs at exactly the same point as before -- event-log order is unchanged.
@@ -1178,6 +1183,9 @@ def _run_oddball_segments(
     aborted = False
     segment_outcomes: list[SegmentOutcome] = []
 
+    # Pause cyclic GC for this timed sequence so a stop-the-world collection can't land mid-flip
+    # (see pause_collection); restored in the finally no matter how the loop ends.
+    _gc_was_enabled = pause_collection()
     try:
         for i, (seg, plan) in enumerate(zip(segments, plans)):
             seg_oddball = seg.oddball
@@ -1254,6 +1262,7 @@ def _run_oddball_segments(
         # following frame to clear it.
         trigger.clear_code()
     finally:
+        resume_collection(_gc_was_enabled)
         # ONE flip-log flush for the WHOLE trial (invariant #2), in a finally so a flip raising mid-
         # trial still leaves the per-frame timeline on disk. On the normal path it runs at the same
         # point as before -- event-log order unchanged.
@@ -1527,6 +1536,9 @@ def _run_dual_stream(
     segment_start_frame = starting_frame_index  # global frame each time-segment begins on
     segment_outcomes: list[SegmentOutcome] = []  # per-time-segment metrics for a sweep (#14)
 
+    # Pause cyclic GC for this timed sequence so a stop-the-world collection can't land mid-flip
+    # (see pause_collection); restored in the finally no matter how the loop ends.
+    _gc_was_enabled = pause_collection()
     try:
         for time_index, seg_list in enumerate(timeline):
             if aborted:
@@ -1762,6 +1774,7 @@ def _run_dual_stream(
 
         trigger.clear_code()
     finally:
+        resume_collection(_gc_was_enabled)
         # ONE flip-log flush for the WHOLE trial, in a finally so a flip raising mid-trial still leaves
         # the per-frame timeline on disk (onset/trigger events are logged inline). On the normal path it
         # runs at the same point as before -- event-log order unchanged.

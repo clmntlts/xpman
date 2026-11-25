@@ -28,6 +28,7 @@ Deliberately best-effort and non-fatal:
 
 from __future__ import annotations
 
+import gc
 import os
 from contextlib import contextmanager
 from typing import Iterator
@@ -74,3 +75,54 @@ def realtime_priority(enabled: bool = True) -> Iterator[bool]:
                 _psychopy_core.rush(False)
             except Exception:  # noqa: BLE001 - dropping priority must never mask the block's outcome
                 pass
+
+
+#: Environment variable that, when set to any non-empty value, forces :func:`pause_collection`
+#: onto its no-op path -- an escape hatch to restore the old always-on-GC behaviour on a machine
+#: where pausing it is suspected to cause trouble (same pattern as :data:`DISABLE_ENV_VAR`).
+DISABLE_GC_PAUSE_ENV_VAR = "XPMAN_DISABLE_GC_PAUSE"
+
+
+def pause_collection() -> bool:
+    """Pause Python's *cyclic* garbage collector for a single timed presentation sequence.
+
+    Why this matters for FPVS timing: CPython frees most objects immediately by reference
+    counting, but the generational GC additionally runs periodically to reclaim *reference
+    cycles*, and when it runs it **stops the world** at an unpredictable moment. On a mature
+    heap that pause is tens of milliseconds; if it lands during a :meth:`Window.flip` the frame
+    is late and the stimulus (plus its trigger) slips by one or more refresh intervals. A
+    photodiode run measured a ~50 ms freeze in the middle of one sequence -- long enough to
+    collapse that sequence's tagged-frequency amplitude (the oddball harmonic fell to ~13 %) --
+    and it was traced to exactly one such collection landing on a frame.
+
+    This runs **one** explicit :func:`gc.collect` *now*, at the sequence boundary where a pause
+    is harmless, to reclaim everything allocated while planning the sequence, then disables
+    automatic collection for the timed loop that follows. Reference counting still frees
+    non-cyclic garbage immediately, so memory stays bounded; only the stop-the-world cycle
+    sweep is deferred until :func:`resume_collection` re-enables it between sequences.
+
+    Returns:
+        Whether the collector was enabled *before* this call. Pass that value straight to
+        :func:`resume_collection` (in a ``finally``) so the prior state is restored no matter
+        how the loop ends -- a crashed run then never leaves GC globally disabled, and nested
+        sequences restore correctly. If disabled via ``XPMAN_DISABLE_GC_PAUSE`` this is a no-op
+        and returns ``False`` (nothing to restore).
+    """
+    if os.environ.get(DISABLE_GC_PAUSE_ENV_VAR, "").strip():
+        return False
+    was_enabled = gc.isenabled()
+    # Collect at the boundary (timing doesn't matter here) so the setup allocations can't trigger
+    # a stop-the-world pause mid-sequence, THEN stop automatic collection for the timed loop.
+    gc.collect()
+    gc.disable()
+    return was_enabled
+
+
+def resume_collection(was_enabled: bool) -> None:
+    """Restore the collector state captured by :func:`pause_collection`.
+
+    Re-enables automatic GC only if it was enabled before the matching :func:`pause_collection`
+    (so a no-op / already-disabled / nested case leaves it as it was). Call it in a ``finally``.
+    """
+    if was_enabled:
+        gc.enable()
