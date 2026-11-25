@@ -12,6 +12,36 @@ semantic versioning (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-25
+
+Timing robustness and transparency for FPVS: the cyclic garbage collector can no longer freeze a
+sequence, dropped frames are now reported per sequence, and a configurable recovery mode lets
+single-stream runs choose how to react to a late frame. Adds a complete French user guide.
+Backward compatible — existing Instances load unchanged and the default behaviour is preserved.
+
+### Added
+
+- **Dropped-frame readout.** The run report now surfaces late/missed frames **per sequence** (a
+  "Dropped frames" section derived from the recorded inter-flip intervals), and the event-log dialog
+  shows a one-line verdict. The detection threshold scales with the **measured** refresh rate (an
+  inter-flip interval longer than 1.5× the nominal frame period), so it is correct at 60 Hz and
+  120 Hz alike — no per-machine tuning needed.
+- **Configurable timing recovery (`timing_recovery`).** Single-stream FPVS conditions can choose
+  `frame_count` (default — keep frame counts exact; a late frame shifts the sequence one frame) or
+  `realtime_catchup` (shorten/skip content to stay locked to real time, as the legacy app did).
+  Multi-stream conditions remain `frame_count`. FPVS condition schema **v10 → v11** (additive
+  migration; existing Instances load with the default).
+- **French user guide** (`docs/GUIDE_UTILISATEUR.md`) with generated screenshots, plus a
+  restructured README landing page and a per-domain documentation accuracy pass.
+
+### Fixed
+
+- **Cyclic garbage collector no longer freezes a timed sequence.** The GC is collected at each
+  sequence boundary and disabled for the duration of the timed loop (then restored), preventing the
+  unpredictable multi-millisecond stop-the-world pause that could distort a sequence's frequency
+  content. Set `XPMAN_DISABLE_GC_PAUSE` to opt out. No change to experiment output (golden
+  regression tests unchanged).
+
 ## [1.0.1] — 2026-09-27
 
 Packaging/setup fixes for the parallel-port trigger path. No behavioural change to experiments.
